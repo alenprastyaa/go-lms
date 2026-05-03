@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"os"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -22,10 +23,24 @@ func main() {
 	app := fiber.New(fiber.Config{
 		BodyLimit: 25 * 1024 * 1024,
 	})
+
+	allowedOrigins := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
+	if allowedOrigins == "" {
+		allowedOrigins = strings.Join([]string{
+			"https://school-system.my.id",
+			"https://alentest.my.id",
+			"http://localhost:8080",
+			"http://localhost:5173",
+			"http://127.0.0.1:8080",
+			"http://127.0.0.1:5173",
+		}, ",")
+	}
+
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: "https://school-system.my.id,https://alentest.my.id,http://localhost:8080,http://localhost:5173",
-		AllowMethods: "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-		AllowHeaders: "Origin,Content-Type,Accept,Authorization",
+		AllowOrigins:  allowedOrigins,
+		AllowMethods:  "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+		AllowHeaders:  "Origin,Content-Type,Accept,Authorization,X-Requested-With",
+		AllowCredentials: true,
 	}))
 	app.Static("/uploads", "./uploads")
 
