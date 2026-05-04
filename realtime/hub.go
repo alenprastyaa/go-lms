@@ -37,6 +37,11 @@ type subscriber struct {
 	closeOnce sync.Once
 }
 
+type subjectCacheEntry struct {
+	subjects  map[uint]struct{}
+	expiresAt time.Time
+}
+
 type Hub struct {
 	db *gorm.DB
 
@@ -44,13 +49,19 @@ type Hub struct {
 	subscribers  map[uint64]*subscriber
 	nextID       atomic.Uint64
 	heartbeatGap time.Duration
+
+	cacheMu          sync.RWMutex
+	subjectsCache    map[string]subjectCacheEntry
+	subjectsCacheTTL time.Duration
 }
 
 func NewHub(db *gorm.DB) *Hub {
 	return &Hub{
-		db:           db,
-		subscribers:  make(map[uint64]*subscriber),
-		heartbeatGap: 25 * time.Second,
+		db:               db,
+		subscribers:      make(map[uint64]*subscriber),
+		heartbeatGap:     25 * time.Second,
+		subjectsCache:    make(map[string]subjectCacheEntry),
+		subjectsCacheTTL: 45 * time.Second,
 	}
 }
 
@@ -92,10 +103,11 @@ func (h *Hub) FiberHandler(c *fiber.Ctx) error {
 		defer h.unregister(client.id)
 
 		if err := writeSSEToWriter(w, "realtime:connected", map[string]any{
-			"success":   true,
-			"user_id":   client.userID,
-			"school_id": client.schoolID,
-			"subjects":  len(client.subjects),
+			"success":      true,
+			"user_id":      client.userID,
+			"school_id":    client.schoolID,
+			"subjects":     len(client.subjects),
+			"online_count": h.OnlineCountBySchool(client.schoolID),
 		}); err != nil {
 			return
 		}
@@ -147,6 +159,10 @@ func (h *Hub) BroadcastSubjectChatMessage(subjectID any, payload any) {
 
 func (h *Hub) BroadcastSubjectReadUpdated(subjectID any, payload any) {
 	h.broadcastSubjectEvent("learning-chat:read-updated", subjectID, payload)
+}
+
+func (h *Hub) BroadcastSubjectTyping(subjectID any, payload any) {
+	h.broadcastSubjectEvent("learning-chat:typing", subjectID, payload)
 }
 
 func (h *Hub) broadcastSubjectEvent(eventName string, subjectID any, payload any) {
@@ -220,10 +236,11 @@ func (h *Hub) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := writeSSE(w, "realtime:connected", map[string]any{
-		"success":   true,
-		"user_id":   client.userID,
-		"school_id": client.schoolID,
-		"subjects":  len(client.subjects),
+		"success":      true,
+		"user_id":      client.userID,
+		"school_id":    client.schoolID,
+		"subjects":     len(client.subjects),
+		"online_count": h.OnlineCountBySchool(client.schoolID),
 	}); err != nil {
 		return
 	}
@@ -257,26 +274,110 @@ func (h *Hub) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *Hub) register(client *subscriber) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	h.subscribers[client.id] = client
+	schoolID := client.schoolID
+	h.mu.Unlock()
+
+	h.broadcastPresenceUpdate(schoolID)
 }
 
 func (h *Hub) unregister(id uint64) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
+	var schoolID uint
 	if sub, ok := h.subscribers[id]; ok {
+		schoolID = sub.schoolID
 		sub.closeOnce.Do(func() {
 			close(sub.ch)
 		})
 		delete(h.subscribers, id)
 	}
+	h.mu.Unlock()
+
+	if schoolID != 0 {
+		h.broadcastPresenceUpdate(schoolID)
+	}
+}
+
+func (h *Hub) broadcastPresenceUpdate(schoolID uint) {
+	if h == nil || schoolID == 0 {
+		return
+	}
+
+	count := h.OnlineCountBySchool(schoolID)
+	payload, err := json.Marshal(map[string]any{
+		"school_id":    schoolID,
+		"online_count": count,
+		"updated_at":   time.Now().UnixMilli(),
+	})
+	if err != nil {
+		return
+	}
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, sub := range h.subscribers {
+		if sub.schoolID != schoolID {
+			continue
+		}
+		select {
+		case sub.ch <- sseEvent{Name: "learning-presence:updated", Data: payload}:
+		default:
+		}
+	}
+}
+
+func (h *Hub) OnlineCountBySchool(schoolID uint) int {
+	if h == nil || schoolID == 0 {
+		return 0
+	}
+
+	onlineUsers := map[uint]struct{}{}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, sub := range h.subscribers {
+		if sub.schoolID != schoolID || sub.userID == 0 {
+			continue
+		}
+		onlineUsers[sub.userID] = struct{}{}
+	}
+	return len(onlineUsers)
+}
+
+func (h *Hub) SubjectOnlineUsers(schoolID, subjectID uint) []uint {
+	if h == nil || schoolID == 0 || subjectID == 0 {
+		return []uint{}
+	}
+
+	onlineUsers := map[uint]struct{}{}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, sub := range h.subscribers {
+		if sub.schoolID != schoolID || sub.userID == 0 {
+			continue
+		}
+		if len(sub.subjects) > 0 {
+			if _, ok := sub.subjects[subjectID]; !ok {
+				continue
+			}
+		}
+		onlineUsers[sub.userID] = struct{}{}
+	}
+
+	result := make([]uint, 0, len(onlineUsers))
+	for userID := range onlineUsers {
+		result = append(result, userID)
+	}
+	return result
 }
 
 func (h *Hub) loadAllowedSubjects(claims *AuthClaims) map[uint]struct{} {
 	if h == nil || h.db == nil || claims == nil {
 		return map[uint]struct{}{}
+	}
+
+	cacheKey := fmt.Sprintf("%d:%d:%s", claims.SchoolID, claims.UserID, strings.ToUpper(strings.TrimSpace(claims.Role)))
+	if cached, ok := h.getSubjectsFromCache(cacheKey); ok {
+		return cached
 	}
 
 	subjectIDs := make([]uint, 0)
@@ -291,9 +392,9 @@ func (h *Hub) loadAllowedSubjects(claims *AuthClaims) map[uint]struct{} {
 		_ = h.db.Raw(`
 			SELECT ls.id
 			FROM learning_subjects ls
-			INNER JOIN users u ON u.class_id = ls.class_id
-			WHERE u.id = ? AND ls.school_id = ?
-		`, claims.UserID, claims.SchoolID).Scan(&subjectIDs).Error
+			WHERE ls.school_id = ?
+			  AND ls.class_id = (SELECT class_id FROM users WHERE id = ? LIMIT 1)
+		`, claims.SchoolID, claims.UserID).Scan(&subjectIDs).Error
 	default:
 		// Keep an empty subscription set for roles that do not use live chat.
 	}
@@ -306,7 +407,50 @@ func (h *Hub) loadAllowedSubjects(claims *AuthClaims) map[uint]struct{} {
 		allowed[id] = struct{}{}
 	}
 
+	h.setSubjectsCache(cacheKey, allowed)
 	return allowed
+}
+
+func (h *Hub) getSubjectsFromCache(key string) (map[uint]struct{}, bool) {
+	if h == nil || key == "" {
+		return nil, false
+	}
+
+	h.cacheMu.RLock()
+	entry, ok := h.subjectsCache[key]
+	h.cacheMu.RUnlock()
+	if !ok || time.Now().After(entry.expiresAt) {
+		if ok {
+			h.cacheMu.Lock()
+			delete(h.subjectsCache, key)
+			h.cacheMu.Unlock()
+		}
+		return nil, false
+	}
+
+	out := make(map[uint]struct{}, len(entry.subjects))
+	for id := range entry.subjects {
+		out[id] = struct{}{}
+	}
+	return out, true
+}
+
+func (h *Hub) setSubjectsCache(key string, subjects map[uint]struct{}) {
+	if h == nil || key == "" {
+		return
+	}
+
+	cp := make(map[uint]struct{}, len(subjects))
+	for id := range subjects {
+		cp[id] = struct{}{}
+	}
+
+	h.cacheMu.Lock()
+	h.subjectsCache[key] = subjectCacheEntry{
+		subjects:  cp,
+		expiresAt: time.Now().Add(h.subjectsCacheTTL),
+	}
+	h.cacheMu.Unlock()
 }
 
 func (h *Hub) extractClaims(r *http.Request) (*AuthClaims, error) {

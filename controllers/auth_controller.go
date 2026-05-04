@@ -3,6 +3,7 @@ package controllers
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -221,6 +222,78 @@ func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Failed Get Profile", err.Error())
 	}
 	return utils.Success(c, 200, "Success Get Profile", profile)
+}
+
+func (a *AppContext) UpdateMyProfile(c *fiber.Ctx) error {
+	userID := c.Locals("userID").(uint)
+
+	var current models.User
+	if err := a.DB.Where("id = ?", userID).First(&current).Error; err != nil {
+		return utils.Error(c, 404, "User not found")
+	}
+
+	fullName := strings.TrimSpace(c.FormValue("full_name"))
+	parentEmail := strings.TrimSpace(c.FormValue("parent_email"))
+	phoneNumber := strings.TrimSpace(c.FormValue("phone_number"))
+	currentPassword := c.FormValue("current_password")
+	newPassword := c.FormValue("new_password")
+	confirmPassword := c.FormValue("confirm_password")
+
+	updates := map[string]interface{}{}
+
+	if fullName != "" {
+		updates["full_name"] = fullName
+	} else {
+		updates["full_name"] = nil
+	}
+	if parentEmail != "" {
+		updates["parent_email"] = parentEmail
+	} else {
+		updates["parent_email"] = nil
+	}
+	if phoneNumber != "" {
+		updates["phone_number"] = phoneNumber
+	} else {
+		updates["phone_number"] = nil
+	}
+
+	if newPassword != "" || confirmPassword != "" || currentPassword != "" {
+		if currentPassword == "" {
+			return utils.Error(c, 400, "Password saat ini wajib diisi untuk mengganti password")
+		}
+		if newPassword == "" {
+			return utils.Error(c, 400, "Password baru wajib diisi")
+		}
+		if len(newPassword) < 6 {
+			return utils.Error(c, 400, "Password baru minimal 6 karakter")
+		}
+		if newPassword != confirmPassword {
+			return utils.Error(c, 400, "Konfirmasi password baru tidak cocok")
+		}
+		if bcrypt.CompareHashAndPassword([]byte(current.Password), []byte(currentPassword)) != nil {
+			return utils.Error(c, 401, "Password saat ini salah")
+		}
+		hash, _ := bcrypt.GenerateFromPassword([]byte(newPassword), 8)
+		updates["password"] = string(hash)
+	}
+
+	if f, err := c.FormFile("profile_image"); err == nil && f != nil {
+		saved, upErr := utils.SaveUploadedFile(c, f)
+		if upErr != nil {
+			return utils.Error(c, 500, "Gagal upload foto profil", upErr.Error())
+		}
+		updates["profile_image"] = saved
+	}
+
+	if len(updates) == 0 {
+		return utils.Error(c, 400, "Tidak ada perubahan profil")
+	}
+
+	if err := a.DB.Table("users").Where("id = ?", userID).Updates(updates).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memperbarui profil", err.Error())
+	}
+
+	return a.GetMyProfile(c)
 }
 
 func coalesceStrPtr(v *string, fallback *string) interface{} {

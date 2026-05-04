@@ -468,6 +468,95 @@ func (a *AppContext) MarkSubjectChatAsRead(c *fiber.Ctx) error {
 	return utils.Success(c, 200, "Success Mark Subject Chat As Read", payload)
 }
 
+func (a *AppContext) BroadcastSubjectTyping(c *fiber.Ctx) error {
+	subjectID := c.Params("subjectId")
+	userID := c.Locals("userID").(uint)
+	var body struct {
+		IsTyping bool   `json:"is_typing"`
+		ClientID string `json:"client_id"`
+	}
+	_ = c.BodyParser(&body)
+
+	clientID := strings.TrimSpace(body.ClientID)
+	if clientID == "" {
+		clientID = strings.TrimSpace(c.FormValue("client_id"))
+	}
+
+	var sender struct {
+		Username string `json:"username"`
+	}
+	_ = a.DB.Raw(`SELECT username FROM users WHERE id = ?`, userID).Scan(&sender).Error
+
+	payload := fiber.Map{
+		"subject_id":        subjectID,
+		"user_id":           userID,
+		"sender_name":       sender.Username,
+		"is_typing":         body.IsTyping,
+		"origin_client_id":  clientID,
+		"updated_at_unixms": time.Now().UnixMilli(),
+	}
+	if a.Realtime != nil {
+		a.Realtime.BroadcastSubjectTyping(subjectID, payload)
+	}
+	return utils.Success(c, 200, "Success Broadcast Subject Typing", payload)
+}
+
+func (a *AppContext) GetSubjectOnlineUsers(c *fiber.Ctx) error {
+	subjectID := uint(utils.ToInt(c.Params("subjectId"), 0))
+	schoolID := c.Locals("schoolID").(uint)
+	if subjectID == 0 {
+		return utils.Error(c, 400, "subject id tidak valid")
+	}
+
+	if a.Realtime == nil {
+		return utils.Success(c, 200, "Success Get Subject Online Users", fiber.Map{
+			"subject_id":   subjectID,
+			"online_count": 0,
+			"users":        []fiber.Map{},
+		})
+	}
+
+	userIDs := a.Realtime.SubjectOnlineUsers(schoolID, subjectID)
+	if len(userIDs) == 0 {
+		return utils.Success(c, 200, "Success Get Subject Online Users", fiber.Map{
+			"subject_id":   subjectID,
+			"online_count": 0,
+			"users":        []fiber.Map{},
+		})
+	}
+
+	type onlineUserRow struct {
+		ID           uint   `json:"id"`
+		Username     string `json:"username"`
+		Role         string `json:"role"`
+		FullName     string `json:"full_name"`
+		ProfileImage string `json:"profile_image"`
+	}
+	var rows []onlineUserRow
+	_ = a.DB.Table("users").
+		Select("id, username, role, full_name, profile_image").
+		Where("id IN ? AND school_id = ?", userIDs, schoolID).
+		Order("username ASC").
+		Scan(&rows).Error
+
+	users := make([]fiber.Map, 0, len(rows))
+	for _, row := range rows {
+		users = append(users, fiber.Map{
+			"id":            row.ID,
+			"username":      row.Username,
+			"role":          row.Role,
+			"full_name":     row.FullName,
+			"profile_image": row.ProfileImage,
+		})
+	}
+
+	return utils.Success(c, 200, "Success Get Subject Online Users", fiber.Map{
+		"subject_id":   subjectID,
+		"online_count": len(users),
+		"users":        users,
+	})
+}
+
 func detectChatMessageType(explicitType, mimeType, attachmentName, attachmentURL string) string {
 	normalized := strings.ToUpper(strings.TrimSpace(explicitType))
 	if normalized != "" {

@@ -37,6 +37,7 @@ func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
 	p.Put("/user-school/:id", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.UpdateUserSchool)
 	p.Delete("/user-school/:id", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.DeleteUserSchool)
 	p.Get("/profile", ctx.GetMyProfile)
+	p.Put("/profile", ctx.UpdateMyProfile)
 }
 
 func registerSchool(api fiber.Router, ctx *controllers.AppContext) {
@@ -101,8 +102,10 @@ func registerGuru(api fiber.Router, ctx *controllers.AppContext) {
 	l.Post("/subjects/:subjectId/question-bank/bulk-delete", middlewares.RoleAllowed("GURU"), ctx.DeleteLearningQuestionBankItemsBulk)
 	l.Get("/chat/summary", middlewares.RoleAllowed("GURU", "SISWA"), ctx.GetLearningChatSummary)
 	l.Get("/subjects/:subjectId/chat", middlewares.RoleAllowed("GURU", "SISWA"), ctx.GetSubjectChatMessages)
+	l.Get("/subjects/:subjectId/chat/online", middlewares.RoleAllowed("GURU", "SISWA"), ctx.GetSubjectOnlineUsers)
 	l.Post("/subjects/:subjectId/chat", middlewares.RoleAllowed("GURU", "SISWA"), ctx.CreateSubjectChatMessage)
 	l.Post("/subjects/:subjectId/chat/read", middlewares.RoleAllowed("GURU", "SISWA"), ctx.MarkSubjectChatAsRead)
+	l.Post("/subjects/:subjectId/chat/typing", middlewares.RoleAllowed("GURU", "SISWA"), ctx.BroadcastSubjectTyping)
 	l.Put("/subjects/:subjectId/chat-icon", middlewares.RoleAllowed("GURU"), ctx.UpdateLearningSubjectChatIconByTeacher)
 	l.Post("/assignments/:assignmentId/exam-package", middlewares.RoleAllowed("GURU"), ctx.SubmitExamPackageByTeacher)
 	l.Get("/assignments/:assignmentId/overview", middlewares.RoleAllowed("GURU"), ctx.GetQuizAssignmentOverviewForTeacher)

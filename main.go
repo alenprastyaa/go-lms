@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"lms/config"
 	"lms/realtime"
@@ -37,10 +38,16 @@ func main() {
 	}
 
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:  allowedOrigins,
-		AllowMethods:  "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-		AllowHeaders:  "Origin,Content-Type,Accept,Authorization,X-Requested-With",
+		AllowOrigins:     allowedOrigins,
+		AllowMethods:     "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+		AllowHeaders:     "Origin,Content-Type,Accept,Authorization,X-Requested-With",
 		AllowCredentials: true,
+	}))
+	app.Use(compress.New(compress.Config{
+		Level: compress.LevelBestSpeed,
+		Next: func(c *fiber.Ctx) bool {
+			return c.Path() == "/api/realtime/events"
+		},
 	}))
 	app.Static("/uploads", "./uploads")
 

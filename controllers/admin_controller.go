@@ -203,51 +203,41 @@ func (a *AppContext) SendHomeroomAttendanceReport(c *fiber.Ctx) error {
 
 func (a *AppContext) GetAdminSettingsSummary(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
-	var counts map[string]interface{}
-	a.DB.Raw(`
-		WITH subject_scope AS (SELECT id FROM learning_subjects WHERE school_id = ?)
-		SELECT json_build_object(
-		  'teachers', (SELECT COUNT(*)::int FROM users WHERE school_id = ? AND role = 'GURU'),
-		  'students', (SELECT COUNT(*)::int FROM users WHERE school_id = ? AND role = 'SISWA'),
-		  'classes', (SELECT COUNT(*)::int FROM class WHERE school_id = ?),
-		  'subjects', (SELECT COUNT(*)::int FROM learning_subjects WHERE school_id = ?),
-		  'question_bank', (SELECT COUNT(*)::int FROM learning_question_bank WHERE subject_id IN (SELECT id FROM subject_scope)),
-		  'quizzes', (SELECT COUNT(*)::int FROM learning_assignments WHERE subject_id IN (SELECT id FROM subject_scope) AND COALESCE(is_exam, false) = false AND assignment_type IN ('MCQ', 'ESSAY')),
-		  'official_exams', (SELECT COUNT(*)::int FROM learning_assignments WHERE subject_id IN (SELECT id FROM subject_scope) AND COALESCE(is_exam, false) = true),
-		  'attendance', (SELECT COUNT(*)::int FROM attendance WHERE user_id IN (SELECT id FROM users WHERE school_id = ? AND role = 'SISWA')),
-		  'receipts', (SELECT COUNT(*)::int FROM payment_receipt WHERE user_id IN (SELECT id FROM users WHERE school_id = ? AND role = 'SISWA'))
-		) AS counts
-	`, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID).Scan(&counts)
-
-	var wrapper struct {
-		Counts map[string]interface{} `json:"counts"`
+	var summary struct {
+		Teachers      int `json:"teachers"`
+		Students      int `json:"students"`
+		Classes       int `json:"classes"`
+		Subjects      int `json:"subjects"`
+		QuestionBank  int `json:"question_bank"`
+		Quizzes       int `json:"quizzes"`
+		OfficialExams int `json:"official_exams"`
+		Attendance    int `json:"attendance"`
+		Receipts      int `json:"receipts"`
 	}
 	_ = a.DB.Raw(`
 		WITH subject_scope AS (SELECT id FROM learning_subjects WHERE school_id = ?)
-		SELECT json_build_object(
-		  'teachers', (SELECT COUNT(*)::int FROM users WHERE school_id = ? AND role = 'GURU'),
-		  'students', (SELECT COUNT(*)::int FROM users WHERE school_id = ? AND role = 'SISWA'),
-		  'classes', (SELECT COUNT(*)::int FROM class WHERE school_id = ?),
-		  'subjects', (SELECT COUNT(*)::int FROM learning_subjects WHERE school_id = ?),
-		  'question_bank', (SELECT COUNT(*)::int FROM learning_question_bank WHERE subject_id IN (SELECT id FROM subject_scope)),
-		  'quizzes', (SELECT COUNT(*)::int FROM learning_assignments WHERE subject_id IN (SELECT id FROM subject_scope) AND COALESCE(is_exam, false) = false AND assignment_type IN ('MCQ', 'ESSAY')),
-		  'official_exams', (SELECT COUNT(*)::int FROM learning_assignments WHERE subject_id IN (SELECT id FROM subject_scope) AND COALESCE(is_exam, false) = true),
-		  'attendance', (SELECT COUNT(*)::int FROM attendance WHERE user_id IN (SELECT id FROM users WHERE school_id = ? AND role = 'SISWA')),
-		  'receipts', (SELECT COUNT(*)::int FROM payment_receipt WHERE user_id IN (SELECT id FROM users WHERE school_id = ? AND role = 'SISWA'))
-		) AS counts
-	`, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID).Scan(&wrapper).Error
+		SELECT
+		  (SELECT COUNT(*)::int FROM users WHERE school_id = ? AND role = 'GURU') AS teachers,
+		  (SELECT COUNT(*)::int FROM users WHERE school_id = ? AND role = 'SISWA') AS students,
+		  (SELECT COUNT(*)::int FROM class WHERE school_id = ?) AS classes,
+		  (SELECT COUNT(*)::int FROM learning_subjects WHERE school_id = ?) AS subjects,
+		  (SELECT COUNT(*)::int FROM learning_question_bank WHERE subject_id IN (SELECT id FROM subject_scope)) AS question_bank,
+		  (SELECT COUNT(*)::int FROM learning_assignments WHERE subject_id IN (SELECT id FROM subject_scope) AND COALESCE(is_exam, false) = false AND assignment_type IN ('MCQ', 'ESSAY')) AS quizzes,
+		  (SELECT COUNT(*)::int FROM learning_assignments WHERE subject_id IN (SELECT id FROM subject_scope) AND COALESCE(is_exam, false) = true) AS official_exams,
+		  (SELECT COUNT(*)::int FROM attendance WHERE user_id IN (SELECT id FROM users WHERE school_id = ? AND role = 'SISWA')) AS attendance,
+		  (SELECT COUNT(*)::int FROM payment_receipt WHERE user_id IN (SELECT id FROM users WHERE school_id = ? AND role = 'SISWA')) AS receipts
+	`, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID).Scan(&summary).Error
 
-	cn := wrapper.Counts
 	items := []map[string]interface{}{
-		{"key": "teachers", "label": "Guru", "description": "Menghapus semua akun guru pada sekolah ini.", "count": toIntAny(cn["teachers"])},
-		{"key": "students", "label": "Siswa", "description": "Menghapus semua akun siswa pada sekolah ini beserta data terkait siswa.", "count": toIntAny(cn["students"])},
-		{"key": "classes", "label": "Kelas", "description": "Menghapus semua kelas pada sekolah ini.", "count": toIntAny(cn["classes"])},
-		{"key": "subjects", "label": "Mapel Pembelajaran", "description": "Menghapus semua mapel pembelajaran beserta materi, chat, quiz, ujian, dan bank soal yang terkait.", "count": toIntAny(cn["subjects"])},
-		{"key": "question_bank", "label": "Bank Soal", "description": "Menghapus seluruh bank soal pada sekolah ini.", "count": toIntAny(cn["question_bank"])},
-		{"key": "quizzes", "label": "Quiz", "description": "Menghapus semua quiz biasa beserta submission siswa.", "count": toIntAny(cn["quizzes"])},
-		{"key": "official_exams", "label": "Ujian Resmi", "description": "Menghapus semua ujian resmi beserta submission siswa.", "count": toIntAny(cn["official_exams"])},
-		{"key": "attendance", "label": "Absensi", "description": "Menghapus seluruh riwayat absensi siswa pada sekolah ini.", "count": toIntAny(cn["attendance"])},
-		{"key": "receipts", "label": "Bukti Pembayaran", "description": "Menghapus seluruh bukti pembayaran siswa pada sekolah ini.", "count": toIntAny(cn["receipts"])},
+		{"key": "teachers", "label": "Guru", "description": "Menghapus semua akun guru pada sekolah ini.", "count": summary.Teachers},
+		{"key": "students", "label": "Siswa", "description": "Menghapus semua akun siswa pada sekolah ini beserta data terkait siswa.", "count": summary.Students},
+		{"key": "classes", "label": "Kelas", "description": "Menghapus semua kelas pada sekolah ini.", "count": summary.Classes},
+		{"key": "subjects", "label": "Mapel Pembelajaran", "description": "Menghapus semua mapel pembelajaran beserta materi, chat, quiz, ujian, dan bank soal yang terkait.", "count": summary.Subjects},
+		{"key": "question_bank", "label": "Bank Soal", "description": "Menghapus seluruh bank soal pada sekolah ini.", "count": summary.QuestionBank},
+		{"key": "quizzes", "label": "Quiz", "description": "Menghapus semua quiz biasa beserta submission siswa.", "count": summary.Quizzes},
+		{"key": "official_exams", "label": "Ujian Resmi", "description": "Menghapus semua ujian resmi beserta submission siswa.", "count": summary.OfficialExams},
+		{"key": "attendance", "label": "Absensi", "description": "Menghapus seluruh riwayat absensi siswa pada sekolah ini.", "count": summary.Attendance},
+		{"key": "receipts", "label": "Bukti Pembayaran", "description": "Menghapus seluruh bukti pembayaran siswa pada sekolah ini.", "count": summary.Receipts},
 	}
 	return utils.Success(c, 200, "Success Get Admin Settings Summary", fiber.Map{"items": items})
 }
