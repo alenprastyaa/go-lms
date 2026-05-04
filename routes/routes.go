@@ -73,6 +73,9 @@ func registerReceipt(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/receipt", middlewares.Auth(), middlewares.ExtractClaims())
 	r.Post("/", ctx.CreateReceipt)
 	r.Get("/", ctx.GetReceipt)
+	r.Get("/:id", ctx.GetReceiptByID)
+	r.Put("/:id", ctx.UpdateReceipt)
+	r.Delete("/:id", ctx.DeleteReceipt)
 }
 
 func registerGuru(api fiber.Router, ctx *controllers.AppContext) {
