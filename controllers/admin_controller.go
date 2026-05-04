@@ -252,6 +252,20 @@ func (a *AppContext) GetAdminSettingsSummary(c *fiber.Ctx) error {
 	return utils.Success(c, 200, "Success Get Admin Settings Summary", fiber.Map{"items": items})
 }
 
+func (a *AppContext) GetPublicStudentRegistrationLink(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+
+	token, err := utils.GenerateSchoolRegistrationToken(schoolID, 180*24*time.Hour)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal membuat link pendaftaran")
+	}
+
+	return utils.Success(c, 200, "Success Generate Public Registration Link", fiber.Map{
+		"token": token,
+		"path":  "/student-registration?token=" + token,
+	})
+}
+
 func (a *AppContext) ResetAdminScope(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 	var body struct {

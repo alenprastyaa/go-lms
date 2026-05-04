@@ -14,6 +14,7 @@ import (
 
 func (a *AppContext) RegisterUser(c *fiber.Ctx) error {
 	var body struct {
+		FullName string `json:"full_name"`
 		Username string `json:"username"`
 		Password string `json:"password"`
 		Role     string `json:"role"`
@@ -24,7 +25,7 @@ func (a *AppContext) RegisterUser(c *fiber.Ctx) error {
 	}
 
 	hash, _ := bcrypt.GenerateFromPassword([]byte(body.Password), 8)
-	user := models.User{Username: body.Username, Password: string(hash), Role: body.Role, SchoolID: body.SchoolID}
+	user := models.User{FullName: utils.StringPtr(body.FullName), Username: body.Username, Password: string(hash), Role: body.Role, SchoolID: body.SchoolID}
 	if err := a.DB.Create(&user).Error; err != nil {
 		return utils.Error(c, 500, "Registration failed", err.Error())
 	}
@@ -81,6 +82,7 @@ func (a *AppContext) registerScopedUser(c *fiber.Ctx, asStudent bool) error {
 
 	hash, _ := bcrypt.GenerateFromPassword([]byte(utils.ToString(body["password"])), 8)
 	user := models.User{
+		FullName:    utils.StringPtr(body["full_name"]),
 		Username:    utils.ToString(body["username"]),
 		Password:    string(hash),
 		Role:        role,
@@ -102,11 +104,38 @@ func (a *AppContext) registerScopedUser(c *fiber.Ctx, asStudent bool) error {
 func (a *AppContext) GetUserSchoolList(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 	role := c.Query("role")
+	page := utils.ToInt(c.Query("page", "1"), 1)
+	limit := utils.ToInt(c.Query("limit", "10"), 10)
+	if page < 1 {
+		page = 1
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	offset := (page - 1) * limit
+	usePagination := c.Query("paginate") == "1"
+
 	var users []map[string]interface{}
-	q := a.DB.Table("users").Select("id, username, role, school_id, parent_email, phone_number, profile_image").Where("school_id = ?", schoolID)
+	q := a.DB.Table("users").Select("id, full_name, username, role, school_id, parent_email, phone_number, profile_image").Where("school_id = ?", schoolID)
 	if role != "" {
 		q = q.Where("role = ?", role)
 	}
+	if usePagination {
+		var total int64
+		if err := q.Count(&total).Error; err != nil {
+			return utils.Error(c, 500, "Failed Count User School", err.Error())
+		}
+		if err := q.Order("username asc").Limit(limit).Offset(offset).Scan(&users).Error; err != nil {
+			return utils.Error(c, 500, "Failed Get User School", err.Error())
+		}
+		return utils.Success(c, 200, "Success Get User School", fiber.Map{
+			"page":  page,
+			"limit": limit,
+			"total": total,
+			"data":  users,
+		})
+	}
+
 	if err := q.Order("username asc").Scan(&users).Error; err != nil {
 		return utils.Error(c, 500, "Failed Get User School", err.Error())
 	}
@@ -117,6 +146,7 @@ func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 	id := c.Params("id")
 	schoolID := c.Locals("schoolID").(uint)
 	var body struct {
+		FullName    *string `json:"full_name"`
 		Username    *string `json:"username"`
 		Password    *string `json:"password"`
 		Role        *string `json:"role"`
@@ -140,6 +170,7 @@ func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 		nextRole = *body.Role
 	}
 	updates := map[string]interface{}{
+		"full_name":    coalesceStrPtr(body.FullName, current.FullName),
 		"username":     nextUsername,
 		"role":         nextRole,
 		"parent_email": coalesceStrPtr(body.ParentEmail, current.ParentEmail),
@@ -151,7 +182,7 @@ func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 	}
 	a.DB.Table("users").Where("id = ? AND school_id = ?", id, schoolID).Updates(updates)
 	var updated map[string]interface{}
-	a.DB.Table("users").Select("id, username, role, school_id, parent_email, phone_number, profile_image").Where("id = ?", id).Scan(&updated)
+	a.DB.Table("users").Select("id, full_name, username, role, school_id, parent_email, phone_number, profile_image").Where("id = ?", id).Scan(&updated)
 	return utils.Success(c, 200, "User school updated successfully", updated)
 }
 func (a *AppContext) DeleteUserSchool(c *fiber.Ctx) error {
@@ -172,6 +203,7 @@ func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 	userID := c.Locals("userID").(uint)
 	var profile struct {
 		ID           uint    `json:"id"`
+		FullName     *string `json:"full_name"`
 		Username     string  `json:"username"`
 		Role         string  `json:"role"`
 		SchoolID     *uint   `json:"school_id"`
@@ -181,7 +213,7 @@ func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 		SchoolName   *string `json:"school_name"`
 	}
 	err := a.DB.Table("users u").
-		Select("u.id, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, s.name as school_name").
+		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, s.name as school_name").
 		Joins("left join schools s on s.id = u.school_id").
 		Where("u.id = ?", userID).
 		Scan(&profile).Error

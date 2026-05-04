@@ -10,15 +10,67 @@ import (
 
 func (a *AppContext) GetAdminSubjects(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
+	page := utils.ToInt(c.Query("page", "1"), 1)
+	limit := utils.ToInt(c.Query("limit", "10"), 10)
+	if page < 1 {
+		page = 1
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	offset := (page - 1) * limit
+	usePagination := c.Query("paginate") == "1"
+	search := strings.TrimSpace(c.Query("q"))
+
+	whereClause := "WHERE ls.school_id = ?"
+	args := []interface{}{schoolID}
+	if search != "" {
+		whereClause += " AND (LOWER(ls.name) LIKE LOWER(?) OR LOWER(c.class_name) LIKE LOWER(?) OR LOWER(t.username) LIKE LOWER(?))"
+		keyword := "%" + search + "%"
+		args = append(args, keyword, keyword, keyword)
+	}
+
+	if usePagination {
+		var totalRow struct {
+			Total int64 `json:"total"`
+		}
+		countQuery := `
+			SELECT COUNT(*) AS total
+			FROM learning_subjects ls
+			LEFT JOIN class c ON c.id = ls.class_id
+			LEFT JOIN users t ON t.id = ls.teacher_id
+		` + whereClause
+		_ = a.DB.Raw(countQuery, args...).Scan(&totalRow).Error
+
+		var rows []map[string]interface{}
+		listQuery := `
+			SELECT ls.*, c.class_name, t.username AS teacher_name
+			FROM learning_subjects ls
+			LEFT JOIN class c ON c.id = ls.class_id
+			LEFT JOIN users t ON t.id = ls.teacher_id
+		` + whereClause + `
+			ORDER BY ls.created_at DESC
+			LIMIT ? OFFSET ?
+		`
+		listArgs := append(args, limit, offset)
+		a.DB.Raw(listQuery, listArgs...).Scan(&rows)
+		return utils.Success(c, 200, "Success Get Subjects", fiber.Map{
+			"page":  page,
+			"limit": limit,
+			"total": totalRow.Total,
+			"data":  rows,
+		})
+	}
+
 	var rows []map[string]interface{}
 	a.DB.Raw(`
 		SELECT ls.*, c.class_name, t.username AS teacher_name
 		FROM learning_subjects ls
 		LEFT JOIN class c ON c.id = ls.class_id
 		LEFT JOIN users t ON t.id = ls.teacher_id
-		WHERE ls.school_id = ?
+	`+whereClause+`
 		ORDER BY ls.created_at DESC
-	`, schoolID).Scan(&rows)
+	`, args...).Scan(&rows)
 	return utils.Success(c, 200, "Success Get Subjects", rows)
 }
 

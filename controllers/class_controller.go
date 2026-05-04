@@ -22,6 +22,41 @@ func (a *AppContext) CreateClass(c *fiber.Ctx) error {
 
 func (a *AppContext) GetClasses(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
+	page := utils.ToInt(c.Query("page", "1"), 1)
+	limit := utils.ToInt(c.Query("limit", "10"), 10)
+	if page < 1 {
+		page = 1
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	offset := (page - 1) * limit
+	usePagination := c.Query("paginate") == "1"
+
+	if usePagination {
+		var totalRow struct {
+			Total int64 `json:"total"`
+		}
+		_ = a.DB.Raw(`SELECT COUNT(*) AS total FROM class WHERE school_id = ?`, schoolID).Scan(&totalRow).Error
+
+		var rows []map[string]interface{}
+		a.DB.Raw(`
+			SELECT c.id, c.class_name, c.school_id, c.wali_guru_id,
+			       u.username AS wali_guru_name, u.parent_email AS wali_guru_email, u.phone_number AS wali_guru_phone_number
+			FROM class c
+			LEFT JOIN users u ON c.wali_guru_id = u.id
+			WHERE c.school_id = ?
+			ORDER BY c.class_name ASC
+			LIMIT ? OFFSET ?
+		`, schoolID, limit, offset).Scan(&rows)
+		return utils.Success(c, 200, "Succes Get Data class", fiber.Map{
+			"page":  page,
+			"limit": limit,
+			"total": totalRow.Total,
+			"data":  rows,
+		})
+	}
+
 	var rows []map[string]interface{}
 	a.DB.Raw(`
 		SELECT c.id, c.class_name, c.school_id, c.wali_guru_id,
@@ -31,7 +66,7 @@ func (a *AppContext) GetClasses(c *fiber.Ctx) error {
 		WHERE c.school_id = ?
 		ORDER BY c.class_name ASC
 	`, schoolID).Scan(&rows)
-	return utils.Success(c, 201, "Succes Get Data class", rows)
+	return utils.Success(c, 200, "Succes Get Data class", rows)
 }
 
 func (a *AppContext) UpdateClass(c *fiber.Ctx) error {

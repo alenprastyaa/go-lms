@@ -8,30 +8,46 @@ import (
 )
 
 func (a *AppContext) GetPublicRegistrationOptions(c *fiber.Ctx) error {
-	var schools []models.School
-	a.DB.Order("name asc").Find(&schools)
-
-	result := make([]fiber.Map, 0, len(schools))
-	for _, school := range schools {
-		var classes []models.Class
-		a.DB.Where("school_id = ?", school.ID).Order("class_name asc").Find(&classes)
-		result = append(result, fiber.Map{"id": school.ID, "name": school.Name, "classes": classes})
+	token := c.Query("token")
+	schoolID, err := utils.ParseSchoolRegistrationToken(token)
+	if err != nil {
+		return utils.Error(c, 401, "Link pendaftaran tidak valid atau sudah kadaluarsa")
 	}
-	return utils.Success(c, 200, "Success Get Registration Options", result)
+
+	var school models.School
+	if err := a.DB.Where("id = ?", schoolID).First(&school).Error; err != nil {
+		return utils.Error(c, 404, "Sekolah tidak ditemukan")
+	}
+
+	var classes []models.Class
+	a.DB.Where("school_id = ?", schoolID).Order("class_name asc").Find(&classes)
+	return utils.Success(c, 200, "Success Get Registration Options", fiber.Map{
+		"school": fiber.Map{
+			"id":   school.ID,
+			"name": school.Name,
+		},
+		"classes": classes,
+	})
 }
 
 func (a *AppContext) RegisterStudentPublic(c *fiber.Ctx) error {
 	var body struct {
 		Username    string  `json:"username"`
 		Password    string  `json:"password"`
+		Token       string  `json:"token"`
 		ClassID     uint    `json:"class_id"`
 		ParentEmail *string `json:"parent_email"`
 		PhoneNumber *string `json:"phone_number"`
 	}
 	_ = c.BodyParser(&body)
 
+	schoolID, err := utils.ParseSchoolRegistrationToken(body.Token)
+	if err != nil {
+		return utils.Error(c, 401, "Link pendaftaran tidak valid atau sudah kadaluarsa")
+	}
+
 	var classItem models.Class
-	if err := a.DB.Where("id = ?", body.ClassID).First(&classItem).Error; err != nil {
+	if err := a.DB.Where("id = ? AND school_id = ?", body.ClassID, schoolID).First(&classItem).Error; err != nil {
 		return utils.Error(c, 404, "Class not found")
 	}
 
@@ -40,7 +56,7 @@ func (a *AppContext) RegisterStudentPublic(c *fiber.Ctx) error {
 		Username:    body.Username,
 		Password:    string(hash),
 		Role:        "SISWA",
-		SchoolID:    &classItem.SchoolID,
+		SchoolID:    &schoolID,
 		ClassID:     &body.ClassID,
 		ParentEmail: body.ParentEmail,
 		PhoneNumber: body.PhoneNumber,

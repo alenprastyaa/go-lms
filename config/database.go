@@ -18,5 +18,14 @@ func NewDatabase() (*gorm.DB, error) {
 		os.Getenv("DB_PORT"),
 	)
 
-	return gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name TEXT`).Error; err != nil {
+		return nil, err
+	}
+
+	return db, nil
 }
