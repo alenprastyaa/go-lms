@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -230,12 +231,21 @@ func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 	startAt := c.FormValue("start_at")
 	qDur := c.FormValue("question_duration_seconds")
 	examCount := c.FormValue("exam_target_question_count")
+	questionBankIDsRaw := strings.TrimSpace(c.FormValue("question_bank_ids"))
+	shuffleQuestions := strings.ToLower(strings.TrimSpace(c.FormValue("shuffle_questions"))) == "true"
 
 	if assignmentType == "" {
 		assignmentType = "FILE"
 	}
 	if title == "" || subjectID == "" {
 		return utils.Error(c, 400, "subject_id and title are required")
+	}
+
+	questionBankIDs := []int{}
+	if questionBankIDsRaw != "" {
+		if err := json.Unmarshal([]byte(questionBankIDsRaw), &questionBankIDs); err != nil {
+			return utils.Error(c, 400, "question_bank_ids harus berupa JSON array id soal")
+		}
 	}
 
 	var subject struct {
@@ -271,17 +281,76 @@ func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 	}
 
 	academicYearID, semesterID := a.resolveActiveAcademicPeriod(int(schoolID))
+	quizPayload := []map[string]interface{}{}
+	if assignmentType == "MCQ" || assignmentType == "ESSAY" {
+		if len(questionBankIDs) == 0 {
+			return utils.Error(c, 400, "question_bank_ids wajib diisi untuk quiz")
+		}
+
+		query := `
+			SELECT id, question_type, question_text, options, correct_option, rubric
+			FROM learning_question_bank
+			WHERE subject_id = ? AND id IN ?
+		`
+		if assignmentType == "MCQ" || assignmentType == "ESSAY" {
+			query += " AND question_type = ?"
+		}
+
+		var selectedRows []map[string]interface{}
+		a.DB.Raw(query, subjectID, questionBankIDs, assignmentType).Scan(&selectedRows)
+		if len(selectedRows) == 0 {
+			return utils.Error(c, 400, "soal yang dipilih tidak valid untuk assignment ini")
+		}
+
+		rowByID := map[int]map[string]interface{}{}
+		for _, row := range selectedRows {
+			if idFloat, ok := row["id"].(float64); ok {
+				rowByID[int(idFloat)] = row
+				continue
+			}
+			idInt := utils.ToInt(fmt.Sprint(row["id"]), 0)
+			if idInt > 0 {
+				rowByID[idInt] = row
+			}
+		}
+
+		for _, qid := range questionBankIDs {
+			row, ok := rowByID[qid]
+			if !ok {
+				continue
+			}
+			item := map[string]interface{}{
+				"question_id":   row["id"],
+				"question_type": row["question_type"],
+				"question":      row["question_text"],
+			}
+			if assignmentType == "MCQ" {
+				item["options"] = row["options"]
+				item["correct_option"] = row["correct_option"]
+			} else {
+				item["rubric"] = row["rubric"]
+			}
+			quizPayload = append(quizPayload, item)
+		}
+
+		if len(quizPayload) == 0 {
+			return utils.Error(c, 400, "tidak ada soal valid yang bisa dipakai untuk quiz")
+		}
+	}
+
 	var row map[string]interface{}
 	a.DB.Raw(`
 		INSERT INTO learning_assignments (
 		  subject_id, title, description, assignment_type, is_exam, exam_category, exam_code, exam_status,
+		  question_bank_ids, shuffle_questions, quiz_payload,
 		  start_at, managed_by_admin, exam_target_question_count, academic_year_id, semester_id,
 		  question_duration_seconds, attachment_url, due_date, created_by, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
 		RETURNING *
 	`,
 		subjectID, title, description, assignmentType, isExam, nullIfEmpty(examCategory), nullIfEmpty(examCode),
-		ternaryString(isExam, "REQUESTED", ""), nullIfEmpty(startAt), true, nullIfEmpty(examCount),
+		ternaryString(isExam, "REQUESTED", ""), toJSONRaw(questionBankIDs), shuffleQuestions, toJSONRaw(quizPayload),
+		nullIfEmpty(startAt), true, nullIfEmpty(examCount),
 		nullIfZero(academicYearID), nullIfZero(semesterID), nullIfEmpty(qDur), nullIfEmpty(attachmentURL),
 		nullIfEmpty(dueDate), userID,
 	).Scan(&row)

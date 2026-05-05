@@ -1,11 +1,16 @@
 package controllers
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"html"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,6 +18,217 @@ import (
 	"lms/services"
 	"lms/utils"
 )
+
+func extractDocxText(raw []byte) (string, error) {
+	readerAt := bytes.NewReader(raw)
+	zr, err := zip.NewReader(readerAt, int64(len(raw)))
+	if err != nil {
+		return "", err
+	}
+
+	var documentXML []byte
+	for _, f := range zr.File {
+		if f.Name != "word/document.xml" {
+			continue
+		}
+		rc, openErr := f.Open()
+		if openErr != nil {
+			return "", openErr
+		}
+		documentXML, err = io.ReadAll(rc)
+		_ = rc.Close()
+		if err != nil {
+			return "", err
+		}
+		break
+	}
+	if len(documentXML) == 0 {
+		return "", fmt.Errorf("word/document.xml not found")
+	}
+
+	dec := xml.NewDecoder(bytes.NewReader(documentXML))
+	var out strings.Builder
+	for {
+		token, tokenErr := dec.Token()
+		if tokenErr == io.EOF {
+			break
+		}
+		if tokenErr != nil {
+			return "", tokenErr
+		}
+		switch t := token.(type) {
+		case xml.StartElement:
+			if t.Name.Local == "tab" {
+				out.WriteString("\t")
+			}
+		case xml.EndElement:
+			if t.Name.Local == "p" || t.Name.Local == "br" {
+				out.WriteString("\n")
+			}
+		case xml.CharData:
+			out.WriteString(string(t))
+		}
+	}
+	return html.UnescapeString(out.String()), nil
+}
+
+func parseSimpleMCQTemplate(content string) []map[string]interface{} {
+	normalize := strings.NewReplacer("\r\n", "\n", "\r", "\n")
+	lines := strings.Split(normalize.Replace(content), "\n")
+	filtered := make([]string, 0, len(lines))
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line != "" {
+			filtered = append(filtered, line)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	kunciIdx := -1
+	for i, line := range filtered {
+		if strings.HasPrefix(strings.ToUpper(line), "KUNCI JAWABAN") {
+			kunciIdx = i
+			break
+		}
+	}
+
+	answerLineRe := regexp.MustCompile(`(?i)^\s*(?:\d+[\.\)]\s*)?([A-E])\s*$`)
+	answers := make([]string, 0)
+	if kunciIdx >= 0 {
+		for _, line := range filtered[kunciIdx+1:] {
+			m := answerLineRe.FindStringSubmatch(line)
+			if len(m) == 2 {
+				answers = append(answers, strings.ToUpper(m[1]))
+			}
+		}
+		filtered = filtered[:kunciIdx]
+	}
+
+	questionStartRe := regexp.MustCompile(`^\d+[\.\)]?$`)
+	questionInlineRe := regexp.MustCompile(`^\d+[\.\)]?\s+(.+)$`)
+	optionRe := regexp.MustCompile(`^([A-Ea-e])\s*[\.\):\-]\s*(.+)$`)
+	type parsedQuestion struct {
+		question string
+		options  [5]string
+	}
+	parsed := make([]parsedQuestion, 0)
+
+	for i := 0; i < len(filtered); i++ {
+		inline := questionInlineRe.FindStringSubmatch(filtered[i])
+		start := questionStartRe.FindStringSubmatch(filtered[i])
+		if len(inline) != 2 && len(start) == 0 {
+			continue
+		}
+		item := parsedQuestion{}
+		if len(inline) == 2 {
+			item.question = strings.TrimSpace(inline[1])
+		}
+		j := i + 1
+		if item.question == "" {
+			for ; j < len(filtered); j++ {
+				if questionStartRe.MatchString(filtered[j]) || questionInlineRe.MatchString(filtered[j]) {
+					break
+				}
+				opt := optionRe.FindStringSubmatch(filtered[j])
+				if len(opt) == 0 {
+					item.question = strings.TrimSpace(filtered[j])
+					j++
+					break
+				}
+			}
+		}
+		for ; j < len(filtered); j++ {
+			if questionStartRe.MatchString(filtered[j]) || questionInlineRe.MatchString(filtered[j]) {
+				break
+			}
+			opt := optionRe.FindStringSubmatch(filtered[j])
+			if len(opt) != 3 {
+				continue
+			}
+			idx := int(strings.ToUpper(opt[1])[0] - 'A')
+			if idx >= 0 && idx < 5 {
+				item.options[idx] = strings.TrimSpace(opt[2])
+			}
+		}
+		i = j - 1
+		if item.question == "" || item.options[0] == "" || item.options[1] == "" || item.options[2] == "" || item.options[3] == "" || item.options[4] == "" {
+			continue
+		}
+		parsed = append(parsed, item)
+	}
+
+	if len(parsed) == 0 {
+		for i := 0; i < len(filtered); i++ {
+			if strings.HasPrefix(strings.ToUpper(filtered[i]), "SOAL PILIHAN GANDA") || strings.HasPrefix(strings.ToUpper(filtered[i]), "PETUNJUK") {
+				continue
+			}
+			start := i
+			questionLine := filtered[i]
+			if questionStartRe.MatchString(questionLine) && i+1 < len(filtered) {
+				start = i + 1
+				questionLine = filtered[start]
+			}
+			if questionLine == "" || questionStartRe.MatchString(questionLine) {
+				continue
+			}
+
+			if start+5 >= len(filtered) {
+				continue
+			}
+
+			item := parsedQuestion{question: questionLine}
+			ok := true
+			for k := 0; k < 5; k++ {
+				line := filtered[start+1+k]
+				opt := optionRe.FindStringSubmatch(line)
+				if len(opt) != 3 {
+					ok = false
+					break
+				}
+				idx := int(strings.ToUpper(opt[1])[0] - 'A')
+				if idx != k {
+					ok = false
+					break
+				}
+				item.options[idx] = strings.TrimSpace(opt[2])
+			}
+			if !ok {
+				continue
+			}
+			parsed = append(parsed, item)
+			i = start + 5
+		}
+	}
+
+	if len(parsed) == 0 {
+		return nil
+	}
+
+	items := make([]map[string]interface{}, 0, len(parsed))
+	for idx, item := range parsed {
+		correct := 0
+		if idx < len(answers) {
+			switch answers[idx] {
+			case "B":
+				correct = 1
+			case "C":
+				correct = 2
+			case "D":
+				correct = 3
+			case "E":
+				correct = 4
+			}
+		}
+		items = append(items, map[string]interface{}{
+			"question_text":  item.question,
+			"options":        []string{item.options[0], item.options[1], item.options[2], item.options[3], item.options[4]},
+			"correct_option": correct,
+		})
+	}
+	return items
+}
 
 func (a *AppContext) GetGuruDashboard(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
@@ -922,51 +1138,14 @@ func (a *AppContext) SaveGeneratedLearningQuestionBankItems(c *fiber.Ctx) error 
 }
 
 func (a *AppContext) DownloadLearningQuestionBankTemplate(c *fiber.Ctx) error {
-	qType := strings.ToUpper(strings.TrimSpace(c.Query("question_type", "MCQ")))
-	c.Set("Content-Type", "application/msword")
-	c.Set("Content-Disposition", `attachment; filename="question-bank-template.doc"`)
+	c.Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+	c.Set("Content-Disposition", `attachment; filename="template_soal_pilihan_ganda.docx"`)
 
-	var raw strings.Builder
-	if qType == "ESSAY" {
-		raw.WriteString("TEMPLATE SOAL URAIAN\n")
-		raw.WriteString("Petunjuk: satu blok [SOAL] untuk satu soal. Isi 25 soal berikut.\n\n")
-		for i := 1; i <= 25; i++ {
-			raw.WriteString("[SOAL]\n")
-			raw.WriteString(fmt.Sprintf("NOMOR: %d\n", i))
-			raw.WriteString("TIPE: ESSAY\n")
-			raw.WriteString(fmt.Sprintf("PERTANYAAN: Tulis soal uraian nomor %d di sini.\n", i))
-			raw.WriteString("RUBRIK: Skor 0-100 berdasarkan ketepatan konsep, kelengkapan jawaban, dan kejelasan penjelasan.\n")
-			raw.WriteString("[/SOAL]\n\n")
-		}
-	} else {
-		raw.WriteString("TEMPLATE SOAL PILIHAN GANDA\n")
-		raw.WriteString("Petunjuk: JAWABAN diisi A/B/C/D/E. Isi 25 soal berikut.\n\n")
-		for i := 1; i <= 25; i++ {
-			raw.WriteString("[SOAL]\n")
-			raw.WriteString(fmt.Sprintf("NOMOR: %d\n", i))
-			raw.WriteString("TIPE: MCQ\n")
-			raw.WriteString(fmt.Sprintf("PERTANYAAN: Tulis soal pilihan ganda nomor %d di sini.\n", i))
-			raw.WriteString("A: Opsi A\n")
-			raw.WriteString("B: Opsi B\n")
-			raw.WriteString("C: Opsi C\n")
-			raw.WriteString("D: Opsi D\n")
-			raw.WriteString("E: Opsi E\n")
-			raw.WriteString("JAWABAN: A\n")
-			raw.WriteString("[/SOAL]\n\n")
-		}
+	templatePath := "template_soal_pilihan_ganda.docx"
+	if _, err := os.Stat(templatePath); err != nil {
+		templatePath = "Go/template_soal_pilihan_ganda.docx"
 	}
-
-	escaped := strings.ReplaceAll(raw.String(), "&", "&amp;")
-	escaped = strings.ReplaceAll(escaped, "<", "&lt;")
-	escaped = strings.ReplaceAll(escaped, ">", "&gt;")
-	escaped = strings.ReplaceAll(escaped, "\n", "<br>")
-
-	var content strings.Builder
-	content.WriteString("<html><head><meta charset=\"utf-8\"></head>")
-	content.WriteString("<body style=\"font-family: Arial, sans-serif; font-size: 12pt;\">")
-	content.WriteString(escaped)
-	content.WriteString("</body></html>")
-	return c.SendString(content.String())
+	return c.SendFile(templatePath)
 }
 
 func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error {
@@ -975,6 +1154,9 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 	f, err := c.FormFile("document")
 	if err != nil || f == nil {
 		return utils.Error(c, 400, "document is required")
+	}
+	if !strings.HasSuffix(strings.ToLower(strings.TrimSpace(f.Filename)), ".docx") {
+		return utils.Error(c, 400, "format file harus .docx sesuai template")
 	}
 	fileReader, openErr := f.Open()
 	if openErr != nil {
@@ -986,7 +1168,15 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 	if readAllErr != nil {
 		return utils.Error(c, 400, "failed to read uploaded document")
 	}
-	content := strings.ReplaceAll(string(rawBytes), "\r\n", "\n")
+	content := string(rawBytes)
+	if strings.HasSuffix(strings.ToLower(f.Filename), ".docx") {
+		docxText, docxErr := extractDocxText(rawBytes)
+		if docxErr != nil {
+			return utils.Error(c, 400, "gagal membaca file .docx, pastikan format file valid")
+		}
+		content = docxText
+	}
+	content = strings.ReplaceAll(content, "\r\n", "\n")
 	content = strings.ReplaceAll(content, "\r", "\n")
 
 	normalizeHeader := func(value string) string {
@@ -1081,89 +1271,98 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 		reader := csv.NewReader(strings.NewReader(content))
 		reader.TrimLeadingSpace = true
 		rows, readErr := reader.ReadAll()
-		if readErr != nil {
-			return utils.Error(c, 400, "format dokumen tidak valid, gunakan template .doc dari sistem")
-		}
-		if len(rows) < 2 {
-			return utils.Error(c, 400, "file tidak berisi data soal")
-		}
-
-		headers := make([]string, 0, len(rows[0]))
-		for _, item := range rows[0] {
-			headers = append(headers, normalizeHeader(item))
-		}
-		headerIndex := map[string]int{}
-		for index, key := range headers {
-			headerIndex[key] = index
-		}
-
-		getValue := func(record []string, key string) string {
-			idx, ok := headerIndex[key]
-			if !ok || idx < 0 || idx >= len(record) {
-				return ""
+		if readErr == nil && len(rows) >= 2 {
+			headers := make([]string, 0, len(rows[0]))
+			for _, item := range rows[0] {
+				headers = append(headers, normalizeHeader(item))
 			}
-			return strings.TrimSpace(record[idx])
-		}
-
-		isEssayTemplate := headerIndex["rubric"] >= 0
-		isMcqTemplate := headerIndex["option_a"] >= 0 && headerIndex["option_b"] >= 0 && headerIndex["option_c"] >= 0 && headerIndex["option_d"] >= 0 && headerIndex["option_e"] >= 0
-
-		if !isEssayTemplate && !isMcqTemplate {
-			return utils.Error(c, 400, "header template tidak dikenali, unduh ulang template terbaru")
-		}
-
-		for rowIndex := 1; rowIndex < len(rows); rowIndex++ {
-			record := rows[rowIndex]
-			questionText := getValue(record, "question_text")
-			if questionText == "" {
-				continue
+			headerIndex := map[string]int{}
+			for index, key := range headers {
+				headerIndex[key] = index
 			}
 
-			if isEssayTemplate && !isMcqTemplate {
-				rubric := getValue(record, "rubric")
+			getValue := func(record []string, key string) string {
+				idx, ok := headerIndex[key]
+				if !ok || idx < 0 || idx >= len(record) {
+					return ""
+				}
+				return strings.TrimSpace(record[idx])
+			}
+
+			isEssayTemplate := headerIndex["rubric"] >= 0
+			isMcqTemplate := headerIndex["option_a"] >= 0 && headerIndex["option_b"] >= 0 && headerIndex["option_c"] >= 0 && headerIndex["option_d"] >= 0 && headerIndex["option_e"] >= 0
+
+			if !isEssayTemplate && !isMcqTemplate {
+				return utils.Error(c, 400, "header template tidak dikenali, unduh ulang template terbaru")
+			}
+
+			for rowIndex := 1; rowIndex < len(rows); rowIndex++ {
+				record := rows[rowIndex]
+				questionText := getValue(record, "question_text")
+				if questionText == "" {
+					continue
+				}
+
+				if isEssayTemplate && !isMcqTemplate {
+					rubric := getValue(record, "rubric")
+					var inserted map[string]interface{}
+					a.DB.Raw(`
+						INSERT INTO learning_question_bank (subject_id, question_type, question_text, rubric, created_by, created_at)
+						VALUES (?, 'ESSAY', ?, ?, ?, NOW())
+						RETURNING *
+					`, subjectID, questionText, nullIfEmpty(rubric), userID).Scan(&inserted)
+					if len(inserted) > 0 {
+						importedItems = append(importedItems, inserted)
+						essayCount++
+					}
+					continue
+				}
+
+				optionA := getValue(record, "option_a")
+				optionB := getValue(record, "option_b")
+				optionC := getValue(record, "option_c")
+				optionD := getValue(record, "option_d")
+				optionE := getValue(record, "option_e")
+				correctRaw := getValue(record, "correct_option_index")
+				if optionA == "" || optionB == "" || optionC == "" || optionD == "" || optionE == "" {
+					continue
+				}
+
+				correct := 0
+				if correctRaw == "1" || strings.EqualFold(correctRaw, "b") {
+					correct = 1
+				} else if correctRaw == "2" || strings.EqualFold(correctRaw, "c") {
+					correct = 2
+				} else if correctRaw == "3" || strings.EqualFold(correctRaw, "d") {
+					correct = 3
+				} else if correctRaw == "4" || strings.EqualFold(correctRaw, "e") {
+					correct = 4
+				}
+
 				var inserted map[string]interface{}
 				a.DB.Raw(`
-					INSERT INTO learning_question_bank (subject_id, question_type, question_text, rubric, created_by, created_at)
-					VALUES (?, 'ESSAY', ?, ?, ?, NOW())
+					INSERT INTO learning_question_bank (subject_id, question_type, question_text, options, correct_option, created_by, created_at)
+					VALUES (?, 'MCQ', ?, ?::jsonb, ?, ?, NOW())
 					RETURNING *
-				`, subjectID, questionText, nullIfEmpty(rubric), userID).Scan(&inserted)
+				`, subjectID, questionText, toJSONRaw([]string{optionA, optionB, optionC, optionD, optionE}), correct, userID).Scan(&inserted)
 				if len(inserted) > 0 {
 					importedItems = append(importedItems, inserted)
-					essayCount++
+					mcqCount++
 				}
-				continue
 			}
-
-			optionA := getValue(record, "option_a")
-			optionB := getValue(record, "option_b")
-			optionC := getValue(record, "option_c")
-			optionD := getValue(record, "option_d")
-			optionE := getValue(record, "option_e")
-			correctRaw := getValue(record, "correct_option_index")
-			if optionA == "" || optionB == "" || optionC == "" || optionD == "" || optionE == "" {
-				continue
-			}
-
-			correct := 0
-			if correctRaw == "1" || strings.EqualFold(correctRaw, "b") {
-				correct = 1
-			} else if correctRaw == "2" || strings.EqualFold(correctRaw, "c") {
-				correct = 2
-			} else if correctRaw == "3" || strings.EqualFold(correctRaw, "d") {
-				correct = 3
-			} else if correctRaw == "4" || strings.EqualFold(correctRaw, "e") {
-				correct = 4
-			}
-
-			var inserted map[string]interface{}
-			a.DB.Raw(`
-				INSERT INTO learning_question_bank (subject_id, question_type, question_text, options, correct_option, created_by, created_at)
-				VALUES (?, 'MCQ', ?, ?::jsonb, ?, ?, NOW())
-				RETURNING *
-			`, subjectID, questionText, toJSONRaw([]string{optionA, optionB, optionC, optionD, optionE}), correct, userID).Scan(&inserted)
-			if len(inserted) > 0 {
-				importedItems = append(importedItems, inserted)
-				mcqCount++
+		} else {
+			parsed := parseSimpleMCQTemplate(content)
+			for _, item := range parsed {
+				var inserted map[string]interface{}
+				a.DB.Raw(`
+					INSERT INTO learning_question_bank (subject_id, question_type, question_text, options, correct_option, created_by, created_at)
+					VALUES (?, 'MCQ', ?, ?::jsonb, ?, ?, NOW())
+					RETURNING *
+				`, subjectID, fmt.Sprint(item["question_text"]), toJSONRaw(item["options"]), item["correct_option"], userID).Scan(&inserted)
+				if len(inserted) > 0 {
+					importedItems = append(importedItems, inserted)
+					mcqCount++
+				}
 			}
 		}
 	}
