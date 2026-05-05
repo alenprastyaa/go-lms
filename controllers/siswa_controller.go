@@ -619,7 +619,7 @@ func parseStudentAnswers(assignmentType, rawAnswers string, quizPayload []map[st
 			if err != nil {
 				return nil, fmt.Errorf("Answer for question %d is invalid", idx+1)
 			}
-			options, _ := quizPayload[idx]["options"].([]interface{})
+			options := normalizeQuizOptions(quizPayload[idx]["options"])
 			if selectedIndex < 0 || selectedIndex >= len(options) {
 				return nil, fmt.Errorf("Answer for question %d is invalid", idx+1)
 			}
@@ -629,6 +629,25 @@ func parseStudentAnswers(assignmentType, rawAnswers string, quizPayload []map[st
 		result = append(result, map[string]interface{}{"answer_text": strings.TrimSpace(fmt.Sprint(answer["answer_text"]))})
 	}
 	return result, nil
+}
+
+func normalizeQuizOptions(value interface{}) []interface{} {
+	switch typed := value.(type) {
+	case []interface{}:
+		return typed
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return []interface{}{}
+		}
+		var parsed []interface{}
+		if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+			return parsed
+		}
+		return []interface{}{}
+	default:
+		return []interface{}{}
+	}
 }
 
 func calculateMcqScore(quizPayload []map[string]interface{}, answers []map[string]interface{}) float64 {
