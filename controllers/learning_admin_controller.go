@@ -215,6 +215,7 @@ func (a *AppContext) GetSubjectAssignments(c *fiber.Ctx) error {
 func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 	userID := c.Locals("userID").(uint)
 	schoolID := c.Locals("schoolID").(uint)
+	role := strings.ToUpper(strings.TrimSpace(fmt.Sprint(c.Locals("role"))))
 
 	subjectID := c.FormValue("subject_id")
 	title := c.FormValue("title")
@@ -236,12 +237,27 @@ func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 	}
 
 	var subject struct {
-		ID      int `json:"id"`
-		School  int `json:"school_id"`
-		ClassID int `json:"class_id"`
+		ID int `json:"id"`
 	}
-	a.DB.Raw(`SELECT id, school_id, class_id FROM learning_subjects WHERE id = ?`, subjectID).Scan(&subject)
-	if subject.ID == 0 || uint(subject.School) != schoolID {
+	if role == "ADMIN" {
+		a.DB.Raw(`
+			SELECT ls.id
+			FROM learning_subjects ls
+			WHERE ls.id = ? AND ls.school_id = ?
+			LIMIT 1
+		`, subjectID, schoolID).Scan(&subject)
+	} else {
+		a.DB.Raw(`
+			SELECT ls.id
+			FROM learning_subjects ls
+			LEFT JOIN class c ON c.id = ls.class_id
+			WHERE ls.id = ?
+			  AND ls.school_id = ?
+			  AND (ls.teacher_id = ? OR c.wali_guru_id = ?)
+			LIMIT 1
+		`, subjectID, schoolID, userID, userID).Scan(&subject)
+	}
+	if subject.ID == 0 {
 		return utils.Error(c, 404, "Subject not found")
 	}
 
