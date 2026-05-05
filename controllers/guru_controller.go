@@ -926,35 +926,46 @@ func (a *AppContext) DownloadLearningQuestionBankTemplate(c *fiber.Ctx) error {
 	c.Set("Content-Type", "application/msword")
 	c.Set("Content-Disposition", `attachment; filename="question-bank-template.doc"`)
 
-	var content strings.Builder
+	var raw strings.Builder
 	if qType == "ESSAY" {
-		content.WriteString("TEMPLATE SOAL URAIAN\n")
-		content.WriteString("Petunjuk: satu blok [SOAL] untuk satu soal. Isi 25 soal berikut.\n\n")
+		raw.WriteString("TEMPLATE SOAL URAIAN\n")
+		raw.WriteString("Petunjuk: satu blok [SOAL] untuk satu soal. Isi 25 soal berikut.\n\n")
 		for i := 1; i <= 25; i++ {
-			content.WriteString("[SOAL]\n")
-			content.WriteString(fmt.Sprintf("NOMOR: %d\n", i))
-			content.WriteString("TIPE: ESSAY\n")
-			content.WriteString(fmt.Sprintf("PERTANYAAN: Tulis soal uraian nomor %d di sini.\n", i))
-			content.WriteString("RUBRIK: Skor 0-100 berdasarkan ketepatan konsep, kelengkapan jawaban, dan kejelasan penjelasan.\n")
-			content.WriteString("[/SOAL]\n\n")
+			raw.WriteString("[SOAL]\n")
+			raw.WriteString(fmt.Sprintf("NOMOR: %d\n", i))
+			raw.WriteString("TIPE: ESSAY\n")
+			raw.WriteString(fmt.Sprintf("PERTANYAAN: Tulis soal uraian nomor %d di sini.\n", i))
+			raw.WriteString("RUBRIK: Skor 0-100 berdasarkan ketepatan konsep, kelengkapan jawaban, dan kejelasan penjelasan.\n")
+			raw.WriteString("[/SOAL]\n\n")
 		}
 	} else {
-		content.WriteString("TEMPLATE SOAL PILIHAN GANDA\n")
-		content.WriteString("Petunjuk: JAWABAN diisi A/B/C/D/E. Isi 25 soal berikut.\n\n")
+		raw.WriteString("TEMPLATE SOAL PILIHAN GANDA\n")
+		raw.WriteString("Petunjuk: JAWABAN diisi A/B/C/D/E. Isi 25 soal berikut.\n\n")
 		for i := 1; i <= 25; i++ {
-			content.WriteString("[SOAL]\n")
-			content.WriteString(fmt.Sprintf("NOMOR: %d\n", i))
-			content.WriteString("TIPE: MCQ\n")
-			content.WriteString(fmt.Sprintf("PERTANYAAN: Tulis soal pilihan ganda nomor %d di sini.\n", i))
-			content.WriteString("A: Opsi A\n")
-			content.WriteString("B: Opsi B\n")
-			content.WriteString("C: Opsi C\n")
-			content.WriteString("D: Opsi D\n")
-			content.WriteString("E: Opsi E\n")
-			content.WriteString("JAWABAN: A\n")
-			content.WriteString("[/SOAL]\n\n")
+			raw.WriteString("[SOAL]\n")
+			raw.WriteString(fmt.Sprintf("NOMOR: %d\n", i))
+			raw.WriteString("TIPE: MCQ\n")
+			raw.WriteString(fmt.Sprintf("PERTANYAAN: Tulis soal pilihan ganda nomor %d di sini.\n", i))
+			raw.WriteString("A: Opsi A\n")
+			raw.WriteString("B: Opsi B\n")
+			raw.WriteString("C: Opsi C\n")
+			raw.WriteString("D: Opsi D\n")
+			raw.WriteString("E: Opsi E\n")
+			raw.WriteString("JAWABAN: A\n")
+			raw.WriteString("[/SOAL]\n\n")
 		}
 	}
+
+	escaped := strings.ReplaceAll(raw.String(), "&", "&amp;")
+	escaped = strings.ReplaceAll(escaped, "<", "&lt;")
+	escaped = strings.ReplaceAll(escaped, ">", "&gt;")
+	escaped = strings.ReplaceAll(escaped, "\n", "<br>")
+
+	var content strings.Builder
+	content.WriteString("<html><head><meta charset=\"utf-8\"></head>")
+	content.WriteString("<body style=\"font-family: Arial, sans-serif; font-size: 12pt;\">")
+	content.WriteString(escaped)
+	content.WriteString("</body></html>")
 	return c.SendString(content.String())
 }
 
