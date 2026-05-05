@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"math"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -503,13 +505,280 @@ func (a *AppContext) GetAssignmentSubmissionsForTeacher(c *fiber.Ctx) error {
 
 	var rows []map[string]interface{}
 	a.DB.Raw(`
-		SELECT s.*, u.username, u.parent_email, u.phone_number
+		SELECT s.*, u.username, u.parent_email, u.phone_number,
+		       la.assignment_type,
+		       COALESCE(la.quiz_payload::text, '[]') AS quiz_payload,
+		       COALESCE(s.answer_payload::text, '[]') AS answer_payload
 		FROM learning_submissions s
+		INNER JOIN learning_assignments la ON la.id = s.assignment_id
 		LEFT JOIN users u ON u.id=s.student_id
 		WHERE s.assignment_id=?
 		ORDER BY u.username ASC, s.id ASC
 	`, assignmentID).Scan(&rows)
+
+	a.syncAutoGradedMcqScores(rows)
+
+	for idx := range rows {
+		submissionID := utils.ToInt(fmt.Sprint(rows[idx]["id"]), 0)
+		if submissionID <= 0 {
+			rows[idx]["violation_count"] = 0
+			rows[idx]["violation_logs"] = []map[string]interface{}{}
+			continue
+		}
+
+		var violationCount int
+		a.DB.Raw(`
+			SELECT COUNT(*)::int
+			FROM learning_quiz_violation_logs
+			WHERE submission_id = ?
+		`, submissionID).Scan(&violationCount)
+
+		var violationLogs []map[string]interface{}
+		a.DB.Raw(`
+			SELECT id, submission_id, assignment_id, student_id, violation_type, violation_message, created_at
+			FROM learning_quiz_violation_logs
+			WHERE submission_id = ?
+			ORDER BY created_at DESC, id DESC
+		`, submissionID).Scan(&violationLogs)
+
+		rows[idx]["violation_count"] = violationCount
+		rows[idx]["violation_logs"] = violationLogs
+	}
+
 	return utils.Success(c, 200, "Success Get Assignment Submissions", rows)
+}
+
+func parseAnswerPayloadText(raw string) ([]map[string]interface{}, error) {
+	var payload []map[string]interface{}
+	if strings.TrimSpace(raw) == "" {
+		return []map[string]interface{}{}, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func boolFromAny(value interface{}) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		normalized := strings.ToLower(strings.TrimSpace(typed))
+		return normalized == "true" || normalized == "t" || normalized == "1"
+	default:
+		return false
+	}
+}
+
+func floatFromAny(value interface{}) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		if err == nil {
+			return parsed
+		}
+	}
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(fmt.Sprint(value)), 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func (a *AppContext) syncAutoGradedMcqScores(rows []map[string]interface{}) {
+	for idx := range rows {
+		if strings.ToUpper(strings.TrimSpace(fmt.Sprint(rows[idx]["assignment_type"]))) != "MCQ" {
+			continue
+		}
+		if !boolFromAny(rows[idx]["auto_graded"]) {
+			continue
+		}
+
+		quizPayload, err := parseQuizPayloadText(fmt.Sprint(rows[idx]["quiz_payload"]))
+		if err != nil || len(quizPayload) == 0 {
+			continue
+		}
+		answerPayload, err := parseAnswerPayloadText(fmt.Sprint(rows[idx]["answer_payload"]))
+		if err != nil || len(answerPayload) != len(quizPayload) {
+			continue
+		}
+
+		recalculatedScore := calculateMcqScore(quizPayload, answerPayload)
+		currentScore := floatFromAny(rows[idx]["score"])
+		if math.Abs(currentScore-recalculatedScore) < 0.0001 {
+			rows[idx]["score"] = recalculatedScore
+			continue
+		}
+
+		rows[idx]["score"] = recalculatedScore
+		submissionID := utils.ToInt(fmt.Sprint(rows[idx]["id"]), 0)
+		if submissionID > 0 {
+			a.DB.Exec(`UPDATE learning_submissions SET score = ? WHERE id = ?`, recalculatedScore, submissionID)
+		}
+	}
+}
+
+func (a *AppContext) GetSubjectGradebookForTeacher(c *fiber.Ctx) error {
+	subjectID := c.Params("subjectId")
+	page := utils.ToInt(c.Query("page", "1"), 1)
+	limit := utils.ToInt(c.Query("limit", "20"), 20)
+	if page < 1 {
+		page = 1
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := (page - 1) * limit
+	assignmentID := strings.TrimSpace(c.Query("assignment_id"))
+	gradeStatus := strings.TrimSpace(c.Query("grade_status"))
+	assignmentType := strings.ToUpper(strings.TrimSpace(c.Query("assignment_type")))
+	keyword := strings.TrimSpace(c.Query("keyword"))
+
+	var subject struct {
+		ID        int    `gorm:"column:id"`
+		Name      string `gorm:"column:name"`
+		ClassID   int    `gorm:"column:class_id"`
+		ClassName string `gorm:"column:class_name"`
+	}
+	a.DB.Raw(`
+		SELECT ls.id, ls.name, ls.class_id, cls.class_name AS class_name
+		FROM learning_subjects ls
+		LEFT JOIN class cls ON cls.id = ls.class_id
+		WHERE ls.id = ?
+		LIMIT 1
+	`, subjectID).Scan(&subject)
+	if subject.ID == 0 {
+		return utils.Error(c, 404, "Subject not found")
+	}
+
+	a.DB.Exec(`
+		INSERT INTO learning_submissions (assignment_id, student_id, started_at, is_submitted, submitted_at)
+		SELECT la.id, u.id, NOW(), false, NULL
+		FROM learning_assignments la
+		INNER JOIN users u ON u.class_id = ? AND u.role = 'SISWA'
+		WHERE la.subject_id = ? AND la.assignment_type = 'MANUAL'
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM learning_submissions s
+		    WHERE s.assignment_id = la.id AND s.student_id = u.id
+		  )
+	`, subject.ClassID, subject.ID)
+
+	var assignments []map[string]interface{}
+	a.DB.Raw(`
+		SELECT id, title, due_date, assignment_type, is_exam
+		FROM learning_assignments
+		WHERE subject_id = ?
+		ORDER BY created_at DESC, id DESC
+	`, subject.ID).Scan(&assignments)
+
+	baseQuery := a.DB.Table("learning_submissions s").
+		Joins("INNER JOIN learning_assignments la ON la.id = s.assignment_id").
+		Joins("LEFT JOIN users u ON u.id = s.student_id").
+		Where("la.subject_id = ?", subject.ID)
+
+	if assignmentID != "" {
+		baseQuery = baseQuery.Where("la.id = ?", assignmentID)
+	}
+	if gradeStatus == "graded" {
+		baseQuery = baseQuery.Where("s.score IS NOT NULL")
+	} else if gradeStatus == "ungraded" {
+		baseQuery = baseQuery.Where("s.score IS NULL")
+	}
+	if assignmentType != "" {
+		baseQuery = baseQuery.Where("la.assignment_type = ?", assignmentType)
+	}
+	if keyword != "" {
+		baseQuery = baseQuery.Where("u.username ILIKE ?", "%"+keyword+"%")
+	}
+
+	var total int64
+	baseQuery.Count(&total)
+
+	var rows []map[string]interface{}
+	baseQuery.
+		Select(`
+			s.*,
+			u.username AS student_name,
+			u.parent_email,
+			u.phone_number,
+			la.id AS assignment_id,
+			la.title AS assignment_title,
+			la.due_date,
+			la.assignment_type,
+			COALESCE(la.quiz_payload::text, '[]') AS quiz_payload,
+			COALESCE(s.answer_payload::text, '[]') AS answer_payload,
+			? AS subject_name,
+			? AS class_name
+		`, subject.Name, subject.ClassName).
+		Order("u.username ASC NULLS LAST, la.created_at DESC, s.id ASC").
+		Limit(limit).
+		Offset(offset).
+		Scan(&rows)
+
+	a.syncAutoGradedMcqScores(rows)
+
+	submissionIDs := make([]int, 0, len(rows))
+	for idx := range rows {
+		rows[idx]["violation_count"] = 0
+		rows[idx]["violation_logs"] = []map[string]interface{}{}
+		submissionID := utils.ToInt(fmt.Sprint(rows[idx]["id"]), 0)
+		if submissionID > 0 {
+			submissionIDs = append(submissionIDs, submissionID)
+		}
+	}
+
+	if len(submissionIDs) > 0 {
+		var violationLogs []map[string]interface{}
+		a.DB.Raw(`
+			SELECT id, submission_id, assignment_id, student_id, violation_type, violation_message, created_at
+			FROM learning_quiz_violation_logs
+			WHERE submission_id IN ?
+			ORDER BY created_at DESC, id DESC
+		`, submissionIDs).Scan(&violationLogs)
+
+		logsBySubmission := map[int][]map[string]interface{}{}
+		for _, log := range violationLogs {
+			submissionID := utils.ToInt(fmt.Sprint(log["submission_id"]), 0)
+			if submissionID <= 0 {
+				continue
+			}
+			logsBySubmission[submissionID] = append(logsBySubmission[submissionID], log)
+		}
+
+		for idx := range rows {
+			submissionID := utils.ToInt(fmt.Sprint(rows[idx]["id"]), 0)
+			if submissionID <= 0 {
+				continue
+			}
+			logs := logsBySubmission[submissionID]
+			if len(logs) == 0 {
+				continue
+			}
+			rows[idx]["violation_count"] = len(logs)
+			rows[idx]["violation_logs"] = logs
+		}
+	}
+
+	return utils.Success(c, 200, "Success Get Subject Gradebook", fiber.Map{
+		"assignments": assignments,
+		"rows":        rows,
+		"total":       total,
+		"page":        page,
+		"limit":       limit,
+	})
 }
 
 func (a *AppContext) GradeLearningSubmission(c *fiber.Ctx) error {
@@ -875,9 +1144,51 @@ func (a *AppContext) GetQuizAssignmentOverviewForTeacher(c *fiber.Ctx) error {
 		)
 		ORDER BY u.username ASC
 	`, assignmentID).Scan(&pending)
+
+	submittedCount := len(submitted)
+	pendingCount := len(pending)
+	totalStudents := submittedCount + pendingCount
+
+	totalViolations := 0
+	flaggedStudentsCount := 0
+	totalScore := 0.0
+	scoredCount := 0
+
+	for _, item := range submitted {
+		violationCount := utils.ToInt(fmt.Sprint(item["violation_count"]), 0)
+		totalViolations += violationCount
+		if violationCount > 0 {
+			flaggedStudentsCount++
+		}
+
+		if item["score"] != nil {
+			scoreValue := strings.TrimSpace(fmt.Sprint(item["score"]))
+			if scoreValue != "" && scoreValue != "<nil>" {
+				if parsedScore, err := strconv.ParseFloat(scoreValue, 64); err == nil {
+					totalScore += parsedScore
+					scoredCount++
+				}
+			}
+		}
+	}
+
+	var averageScore interface{} = nil
+	if scoredCount > 0 {
+		averageScore = float64(int((totalScore/float64(scoredCount))*100)) / 100
+	}
+
+	analytics := fiber.Map{
+		"total_students":         totalStudents,
+		"submitted_count":        submittedCount,
+		"pending_count":          pendingCount,
+		"average_score":          averageScore,
+		"total_violations":       totalViolations,
+		"flagged_students_count": flaggedStudentsCount,
+	}
 	return utils.Success(c, 200, "Success Get Quiz Assignment Overview", fiber.Map{
 		"submitted_students": submitted,
 		"pending_students":   pending,
+		"analytics":          analytics,
 	})
 }
 

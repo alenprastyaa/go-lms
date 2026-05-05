@@ -93,6 +93,7 @@ func registerGuru(api fiber.Router, ctx *controllers.AppContext) {
 	l.Put("/assignments/:assignmentId", middlewares.RoleAllowed("GURU"), ctx.UpdateLearningAssignmentByTeacher)
 	l.Delete("/assignments/:assignmentId", middlewares.RoleAllowed("GURU"), ctx.DeleteLearningAssignmentByTeacher)
 	l.Get("/assignments/:assignmentId/submissions", middlewares.RoleAllowed("GURU"), ctx.GetAssignmentSubmissionsForTeacher)
+	l.Get("/subjects/:subjectId/gradebook", middlewares.RoleAllowed("GURU"), ctx.GetSubjectGradebookForTeacher)
 	l.Post("/submissions/:submissionId/grade", middlewares.RoleAllowed("GURU"), ctx.GradeLearningSubmission)
 	l.Post("/question-bank", middlewares.RoleAllowed("GURU"), ctx.CreateLearningQuestionBankItem)
 	l.Put("/question-bank/:id", middlewares.RoleAllowed("GURU"), ctx.UpdateLearningQuestionBankItem)
