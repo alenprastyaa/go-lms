@@ -253,13 +253,44 @@ func (a *AppContext) DeleteLearningMaterial(c *fiber.Ctx) error {
 
 func (a *AppContext) GetAssignmentSubmissionsForTeacher(c *fiber.Ctx) error {
 	assignmentID := c.Params("assignmentId")
+
+	var assignment struct {
+		ID             int    `gorm:"column:id"`
+		AssignmentType string `gorm:"column:assignment_type"`
+		ClassID        int    `gorm:"column:class_id"`
+	}
+	a.DB.Raw(`
+		SELECT la.id, la.assignment_type, ls.class_id
+		FROM learning_assignments la
+		INNER JOIN learning_subjects ls ON ls.id = la.subject_id
+		WHERE la.id = ?
+		LIMIT 1
+	`, assignmentID).Scan(&assignment)
+	if assignment.ID == 0 {
+		return utils.Error(c, 404, "Assignment not found")
+	}
+
+	if strings.ToUpper(strings.TrimSpace(assignment.AssignmentType)) == "MANUAL" {
+		a.DB.Exec(`
+			INSERT INTO learning_submissions (assignment_id, student_id, started_at, is_submitted, submitted_at)
+			SELECT ?, u.id, NOW(), false, NULL
+			FROM users u
+			WHERE u.class_id = ? AND u.role = 'SISWA'
+			  AND NOT EXISTS (
+			    SELECT 1
+			    FROM learning_submissions s
+			    WHERE s.assignment_id = ? AND s.student_id = u.id
+			  )
+		`, assignment.ID, assignment.ClassID, assignment.ID)
+	}
+
 	var rows []map[string]interface{}
 	a.DB.Raw(`
 		SELECT s.*, u.username, u.parent_email, u.phone_number
 		FROM learning_submissions s
 		LEFT JOIN users u ON u.id=s.student_id
 		WHERE s.assignment_id=?
-		ORDER BY s.submitted_at DESC NULLS LAST, s.id DESC
+		ORDER BY u.username ASC, s.id ASC
 	`, assignmentID).Scan(&rows)
 	return utils.Success(c, 200, "Success Get Assignment Submissions", rows)
 }
