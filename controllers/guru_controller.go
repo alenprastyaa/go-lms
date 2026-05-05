@@ -927,10 +927,24 @@ func (a *AppContext) DownloadLearningQuestionBankTemplate(c *fiber.Ctx) error {
 	records := [][]string{}
 	if qType == "ESSAY" {
 		records = append(records, []string{"question_text", "rubric"})
-		records = append(records, []string{"Jelaskan ...", "Rubrik penilaian..."})
+		records = append(records, []string{
+			"Jelaskan perbedaan antara simbiosis mutualisme dan parasitisme.",
+			"Skor 0-100: ketepatan konsep, contoh yang relevan, dan kejelasan penjelasan.",
+		})
+		records = append(records, []string{
+			"Mengapa menjaga kebersihan lingkungan sekolah itu penting?",
+			"Skor 0-100: alasan logis, dampak, dan solusi yang disampaikan.",
+		})
 	} else {
 		records = append(records, []string{"question_text", "option_a", "option_b", "option_c", "option_d", "correct_option_index"})
-		records = append(records, []string{"Contoh soal", "A", "B", "C", "D", "0"})
+		records = append(records, []string{
+			"Hasil dari 12 + 8 adalah ...",
+			"18", "20", "22", "24", "1",
+		})
+		records = append(records, []string{
+			"Ibu kota Indonesia adalah ...",
+			"Bandung", "Surabaya", "Jakarta", "Medan", "2",
+		})
 	}
 	var b strings.Builder
 	w := csv.NewWriter(&b)
@@ -946,15 +960,119 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 	if err != nil || f == nil {
 		return utils.Error(c, 400, "document is required")
 	}
-	_ = f
-	// Placeholder parser: create 1 draft item for compatibility flow.
-	var row map[string]interface{}
-	a.DB.Raw(`
-		INSERT INTO learning_question_bank (subject_id, question_type, question_text, options, correct_option, created_by, created_at)
-		VALUES (?, 'MCQ', 'Soal hasil import dokumen', '["A","B","C","D"]'::jsonb, 0, ?, NOW())
-		RETURNING *
-	`, subjectID, userID).Scan(&row)
-	return utils.Success(c, 201, "Success Import Question Bank From Document", fiber.Map{"imported": 1, "items": []map[string]interface{}{row}})
+	fileReader, openErr := f.Open()
+	if openErr != nil {
+		return utils.Error(c, 400, "failed to read uploaded document")
+	}
+	defer fileReader.Close()
+
+	reader := csv.NewReader(fileReader)
+	reader.TrimLeadingSpace = true
+	rows, readErr := reader.ReadAll()
+	if readErr != nil {
+		return utils.Error(c, 400, "format file tidak valid, gunakan template CSV yang diunduh")
+	}
+	if len(rows) < 2 {
+		return utils.Error(c, 400, "file tidak berisi data soal")
+	}
+
+	normalizeHeader := func(value string) string {
+		next := strings.TrimSpace(strings.ToLower(value))
+		next = strings.ReplaceAll(next, " ", "_")
+		next = strings.ReplaceAll(next, "-", "_")
+		return next
+	}
+
+	headers := make([]string, 0, len(rows[0]))
+	for _, item := range rows[0] {
+		headers = append(headers, normalizeHeader(item))
+	}
+	headerIndex := map[string]int{}
+	for index, key := range headers {
+		headerIndex[key] = index
+	}
+
+	getValue := func(record []string, key string) string {
+		idx, ok := headerIndex[key]
+		if !ok || idx < 0 || idx >= len(record) {
+			return ""
+		}
+		return strings.TrimSpace(record[idx])
+	}
+
+	isEssayTemplate := headerIndex["rubric"] >= 0
+	isMcqTemplate := headerIndex["option_a"] >= 0 && headerIndex["option_b"] >= 0 && headerIndex["option_c"] >= 0 && headerIndex["option_d"] >= 0
+
+	if !isEssayTemplate && !isMcqTemplate {
+		return utils.Error(c, 400, "header template tidak dikenali, unduh ulang template terbaru")
+	}
+
+	importedItems := make([]map[string]interface{}, 0)
+	mcqCount := 0
+	essayCount := 0
+
+	for rowIndex := 1; rowIndex < len(rows); rowIndex++ {
+		record := rows[rowIndex]
+		questionText := getValue(record, "question_text")
+		if questionText == "" {
+			continue
+		}
+
+		if isEssayTemplate && !isMcqTemplate {
+			rubric := getValue(record, "rubric")
+			var inserted map[string]interface{}
+			a.DB.Raw(`
+				INSERT INTO learning_question_bank (subject_id, question_type, question_text, rubric, created_by, created_at)
+				VALUES (?, 'ESSAY', ?, ?, ?, NOW())
+				RETURNING *
+			`, subjectID, questionText, nullIfEmpty(rubric), userID).Scan(&inserted)
+			if len(inserted) > 0 {
+				importedItems = append(importedItems, inserted)
+				essayCount++
+			}
+			continue
+		}
+
+		optionA := getValue(record, "option_a")
+		optionB := getValue(record, "option_b")
+		optionC := getValue(record, "option_c")
+		optionD := getValue(record, "option_d")
+		correctRaw := getValue(record, "correct_option_index")
+		if optionA == "" || optionB == "" || optionC == "" || optionD == "" {
+			continue
+		}
+
+		correct := 0
+		if correctRaw == "1" || strings.EqualFold(correctRaw, "b") {
+			correct = 1
+		} else if correctRaw == "2" || strings.EqualFold(correctRaw, "c") {
+			correct = 2
+		} else if correctRaw == "3" || strings.EqualFold(correctRaw, "d") {
+			correct = 3
+		}
+
+		var inserted map[string]interface{}
+		a.DB.Raw(`
+			INSERT INTO learning_question_bank (subject_id, question_type, question_text, options, correct_option, created_by, created_at)
+			VALUES (?, 'MCQ', ?, ?::jsonb, ?, ?, NOW())
+			RETURNING *
+		`, subjectID, questionText, toJSONRaw([]string{optionA, optionB, optionC, optionD}), correct, userID).Scan(&inserted)
+		if len(inserted) > 0 {
+			importedItems = append(importedItems, inserted)
+			mcqCount++
+		}
+	}
+
+	if len(importedItems) == 0 {
+		return utils.Error(c, 400, "tidak ada baris valid untuk diimpor, periksa isi template")
+	}
+
+	return utils.Success(c, 201, "Success Import Question Bank From Document", fiber.Map{
+		"total": len(importedItems),
+		"mcq":   mcqCount,
+		"essay": essayCount,
+		"items": importedItems,
+	})
 }
 
 func (a *AppContext) GenerateLearningMaterialPptWithAI(c *fiber.Ctx) error {
