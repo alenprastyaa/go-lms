@@ -283,58 +283,60 @@ func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 	academicYearID, semesterID := a.resolveActiveAcademicPeriod(int(schoolID))
 	quizPayload := []map[string]interface{}{}
 	if assignmentType == "MCQ" || assignmentType == "ESSAY" {
-		if len(questionBankIDs) == 0 {
+		if isExam && len(questionBankIDs) == 0 {
+			quizPayload = []map[string]interface{}{}
+		} else if len(questionBankIDs) == 0 {
 			return utils.Error(c, 400, "question_bank_ids wajib diisi untuk quiz")
-		}
-
-		query := `
-			SELECT id, question_type, question_text, options, correct_option, rubric
-			FROM learning_question_bank
-			WHERE subject_id = ? AND id IN ?
-		`
-		if assignmentType == "MCQ" || assignmentType == "ESSAY" {
-			query += " AND question_type = ?"
-		}
-
-		var selectedRows []map[string]interface{}
-		a.DB.Raw(query, subjectID, questionBankIDs, assignmentType).Scan(&selectedRows)
-		if len(selectedRows) == 0 {
-			return utils.Error(c, 400, "soal yang dipilih tidak valid untuk assignment ini")
-		}
-
-		rowByID := map[int]map[string]interface{}{}
-		for _, row := range selectedRows {
-			if idFloat, ok := row["id"].(float64); ok {
-				rowByID[int(idFloat)] = row
-				continue
+		} else {
+			query := `
+				SELECT id, question_type, question_text, options, correct_option, rubric
+				FROM learning_question_bank
+				WHERE subject_id = ? AND id IN ?
+			`
+			if assignmentType == "MCQ" || assignmentType == "ESSAY" {
+				query += " AND question_type = ?"
 			}
-			idInt := utils.ToInt(fmt.Sprint(row["id"]), 0)
-			if idInt > 0 {
-				rowByID[idInt] = row
-			}
-		}
 
-		for _, qid := range questionBankIDs {
-			row, ok := rowByID[qid]
-			if !ok {
-				continue
+			var selectedRows []map[string]interface{}
+			a.DB.Raw(query, subjectID, questionBankIDs, assignmentType).Scan(&selectedRows)
+			if len(selectedRows) == 0 {
+				return utils.Error(c, 400, "soal yang dipilih tidak valid untuk assignment ini")
 			}
-			item := map[string]interface{}{
-				"question_id":   row["id"],
-				"question_type": row["question_type"],
-				"question":      row["question_text"],
-			}
-			if assignmentType == "MCQ" {
-				item["options"] = row["options"]
-				item["correct_option"] = row["correct_option"]
-			} else {
-				item["rubric"] = row["rubric"]
-			}
-			quizPayload = append(quizPayload, item)
-		}
 
-		if len(quizPayload) == 0 {
-			return utils.Error(c, 400, "tidak ada soal valid yang bisa dipakai untuk quiz")
+			rowByID := map[int]map[string]interface{}{}
+			for _, row := range selectedRows {
+				if idFloat, ok := row["id"].(float64); ok {
+					rowByID[int(idFloat)] = row
+					continue
+				}
+				idInt := utils.ToInt(fmt.Sprint(row["id"]), 0)
+				if idInt > 0 {
+					rowByID[idInt] = row
+				}
+			}
+
+			for _, qid := range questionBankIDs {
+				row, ok := rowByID[qid]
+				if !ok {
+					continue
+				}
+				item := map[string]interface{}{
+					"question_id":   row["id"],
+					"question_type": row["question_type"],
+					"question":      row["question_text"],
+				}
+				if assignmentType == "MCQ" {
+					item["options"] = row["options"]
+					item["correct_option"] = row["correct_option"]
+				} else {
+					item["rubric"] = row["rubric"]
+				}
+				quizPayload = append(quizPayload, item)
+			}
+
+			if len(quizPayload) == 0 {
+				return utils.Error(c, 400, "tidak ada soal valid yang bisa dipakai untuk quiz")
+			}
 		}
 	}
 

@@ -142,6 +142,7 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	a.Get("/summary", ctx.GetAdminSettingsSummary)
 	a.Get("/public-registration-link", ctx.GetPublicStudentRegistrationLink)
 	a.Post("/load-test", ctx.RunAdminLoadTest)
+	a.Post("/load-test-login", ctx.RunAdminLoginLoadTest)
 	a.Post("/reset", ctx.ResetAdminScope)
 
 	at := api.Group("/attendance", middlewares.Auth(), middlewares.ExtractClaims())
