@@ -126,6 +126,7 @@ func registerSiswa(api fiber.Router, ctx *controllers.AppContext) {
 
 	l := api.Group("/learning", middlewares.Auth(), middlewares.ExtractClaims())
 	l.Get("/subjects/student", middlewares.RoleAllowed("SISWA"), ctx.GetStudentSubjects)
+	l.Get("/grades/student", middlewares.RoleAllowed("SISWA"), ctx.GetStudentGrades)
 	l.Post("/assignments/:assignmentId/start", middlewares.RoleAllowed("SISWA"), ctx.StartLearningQuizAttempt)
 	l.Post("/assignments/:assignmentId/submit", middlewares.RoleAllowed("SISWA"), ctx.SubmitLearningAssignment)
 	l.Post("/assignments/:assignmentId/violations", middlewares.RoleAllowed("SISWA"), ctx.RecordQuizViolation)

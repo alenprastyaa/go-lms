@@ -101,6 +101,99 @@ func (a *AppContext) GetStudentSubjects(c *fiber.Ctx) error {
 	return utils.Success(c, 200, "Success Get Student Subjects", rows)
 }
 
+func (a *AppContext) GetStudentGrades(c *fiber.Ctx) error {
+	studentID := c.Locals("userID").(uint)
+	schoolID := c.Locals("schoolID").(uint)
+
+	var rows []map[string]interface{}
+	a.DB.Raw(`
+		SELECT
+			la.id AS assignment_id,
+			la.title,
+			la.description,
+			la.assignment_type,
+			la.due_date,
+			la.created_at AS assignment_created_at,
+			ls.id AS subject_id,
+			ls.name AS subject_name,
+			COALESCE(cls.class_name, '') AS class_name,
+			sub.id AS submission_id,
+			sub.submitted_at,
+			sub.score,
+			sub.feedback,
+			sub.is_submitted
+		FROM users stu
+		INNER JOIN learning_subjects ls ON ls.class_id = stu.class_id
+		LEFT JOIN class cls ON cls.id = ls.class_id
+		INNER JOIN learning_assignments la ON la.subject_id = ls.id
+		LEFT JOIN learning_submissions sub
+			ON sub.assignment_id = la.id
+			AND sub.student_id = stu.id
+		WHERE stu.id = ?
+			AND stu.school_id = ?
+			AND ls.school_id = ?
+			AND la.assignment_type IN ('FILE', 'MANUAL', 'MCQ', 'ESSAY')
+		ORDER BY ls.name ASC, la.due_date DESC NULLS LAST, la.created_at DESC
+	`, studentID, schoolID, schoolID).Scan(&rows)
+
+	gradedCount := 0
+	submittedCount := 0
+	pendingCount := 0
+	var totalScore float64
+
+	for _, row := range rows {
+		if row["submission_id"] != nil {
+			submittedCount++
+		} else {
+			pendingCount++
+		}
+
+		scoreValue, ok := row["score"]
+		if !ok || scoreValue == nil {
+			continue
+		}
+
+		scoreNumber := 0.0
+		switch value := scoreValue.(type) {
+		case float64:
+			scoreNumber = value
+		case float32:
+			scoreNumber = float64(value)
+		case int:
+			scoreNumber = float64(value)
+		case int64:
+			scoreNumber = float64(value)
+		case string:
+			parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if err != nil {
+				continue
+			}
+			scoreNumber = parsed
+		default:
+			continue
+		}
+
+		gradedCount++
+		totalScore += scoreNumber
+	}
+
+	averageScore := interface{}(nil)
+	if gradedCount > 0 {
+		averageScore = float64(int((totalScore/float64(gradedCount))*100)) / 100
+	}
+
+	return utils.Success(c, 200, "Success Get Student Grades", fiber.Map{
+		"summary": fiber.Map{
+			"total_assignments": len(rows),
+			"submitted_count":   submittedCount,
+			"pending_count":     pendingCount,
+			"graded_count":      gradedCount,
+			"average_score":     averageScore,
+		},
+		"data": rows,
+	})
+}
+
 func (a *AppContext) StartLearningQuizAttempt(c *fiber.Ctx) error {
 	assignmentID := c.Params("assignmentId")
 	studentID := c.Locals("userID").(uint)
