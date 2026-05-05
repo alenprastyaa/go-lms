@@ -178,6 +178,8 @@ func (a *AppContext) GetSubjectAssignments(c *fiber.Ctx) error {
 			  sub.id AS submission_id,
 			  sub.score,
 			  sub.feedback,
+			  sub.submission_text,
+			  sub.attachment_url AS submission_attachment_url,
 			  sub.started_at AS attempt_started_at,
 			  sub.submitted_at,
 			  sub.is_submitted
