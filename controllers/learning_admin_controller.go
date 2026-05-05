@@ -218,7 +218,7 @@ func (a *AppContext) GetSubjectAssignments(c *fiber.Ctx) error {
 func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 	userID := c.Locals("userID").(uint)
 	schoolID := c.Locals("schoolID").(uint)
-	role := strings.ToUpper(strings.TrimSpace(fmt.Sprint(c.Locals("role"))))
+	role := strings.ToUpper(strings.TrimSpace(fmt.Sprint(c.Locals("userRole"))))
 
 	subjectID := c.FormValue("subject_id")
 	title := c.FormValue("title")

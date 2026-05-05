@@ -2,7 +2,14 @@ package controllers
 
 import (
 	"fmt"
+	"io"
+	"math"
+	"net/http"
+	"os"
+	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -253,6 +260,124 @@ func (a *AppContext) GetPublicStudentRegistrationLink(c *fiber.Ctx) error {
 	return utils.Success(c, 200, "Success Generate Public Registration Link", fiber.Map{
 		"token": token,
 		"path":  "/student-registration?token=" + token,
+	})
+}
+
+func (a *AppContext) RunAdminLoadTest(c *fiber.Ctx) error {
+	var body struct {
+		HitCount int `json:"hit_count"`
+	}
+	_ = c.BodyParser(&body)
+
+	if body.HitCount <= 0 {
+		body.HitCount = 100
+	}
+	if body.HitCount > 2000 {
+		return utils.Error(c, 400, "hit_count maksimal 2000 per eksekusi")
+	}
+
+	authHeader := strings.TrimSpace(c.Get("Authorization"))
+	if authHeader == "" {
+		return utils.Error(c, 401, "Authorization header is required")
+	}
+
+	port := strings.TrimSpace(os.Getenv("PORT"))
+	if port == "" {
+		port = "9900"
+	}
+	targetURL := fmt.Sprintf("http://127.0.0.1:%s/api/admin-settings/summary", port)
+	client := &http.Client{Timeout: 60 * time.Second}
+
+	type testResult struct {
+		DurationMs float64 `json:"duration_ms"`
+		StatusCode int     `json:"status_code"`
+		Error      string  `json:"error,omitempty"`
+	}
+
+	results := make(chan testResult, body.HitCount)
+	var successCount int64
+	var failureCount int64
+	startedAt := time.Now()
+	var wg sync.WaitGroup
+
+	for i := 0; i < body.HitCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			start := time.Now()
+			req, err := http.NewRequest(http.MethodGet, targetURL, nil)
+			if err != nil {
+				atomic.AddInt64(&failureCount, 1)
+				results <- testResult{DurationMs: 0, StatusCode: 0, Error: err.Error()}
+				return
+			}
+			req.Header.Set("Authorization", authHeader)
+
+			resp, err := client.Do(req)
+			durationMs := float64(time.Since(start).Milliseconds())
+			if err != nil {
+				atomic.AddInt64(&failureCount, 1)
+				results <- testResult{DurationMs: durationMs, StatusCode: 0, Error: err.Error()}
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				atomic.AddInt64(&successCount, 1)
+			} else {
+				atomic.AddInt64(&failureCount, 1)
+			}
+			results <- testResult{DurationMs: durationMs, StatusCode: resp.StatusCode}
+		}()
+	}
+
+	wg.Wait()
+	close(results)
+
+	durations := make([]float64, 0, body.HitCount)
+	errorSamples := make([]string, 0, 5)
+	var totalDurationMs float64
+	var maxDurationMs float64
+
+	for result := range results {
+		durations = append(durations, result.DurationMs)
+		totalDurationMs += result.DurationMs
+		if result.DurationMs > maxDurationMs {
+			maxDurationMs = result.DurationMs
+		}
+		if result.Error != "" && len(errorSamples) < 5 {
+			errorSamples = append(errorSamples, result.Error)
+		}
+	}
+
+	sort.Float64s(durations)
+	averageDurationMs := 0.0
+	p95DurationMs := 0.0
+	if len(durations) > 0 {
+		averageDurationMs = totalDurationMs / float64(len(durations))
+		p95Index := int(math.Ceil(float64(len(durations))*0.95)) - 1
+		if p95Index < 0 {
+			p95Index = 0
+		}
+		if p95Index >= len(durations) {
+			p95Index = len(durations) - 1
+		}
+		p95DurationMs = durations[p95Index]
+	}
+
+	return utils.Success(c, 200, "Success Run Admin Load Test", fiber.Map{
+		"target":               "/api/admin-settings/summary",
+		"hit_count":            body.HitCount,
+		"success_count":        successCount,
+		"failure_count":        failureCount,
+		"total_elapsed_ms":     time.Since(startedAt).Milliseconds(),
+		"average_duration_ms":  math.Round(averageDurationMs*100) / 100,
+		"max_duration_ms":      math.Round(maxDurationMs*100) / 100,
+		"p95_duration_ms":      math.Round(p95DurationMs*100) / 100,
+		"error_samples":        errorSamples,
+		"executed_at":          time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
