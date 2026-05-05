@@ -1107,18 +1107,87 @@ func (a *AppContext) UpdateLearningSubjectChatIconByTeacher(c *fiber.Ctx) error 
 
 func (a *AppContext) SubmitExamPackageByTeacher(c *fiber.Ctx) error {
 	id := c.Params("assignmentId")
+	teacherID := c.Locals("userID").(uint)
 	var body struct {
-		QuestionBankIDs         interface{} `json:"question_bank_ids"`
+		QuestionBankIDs         []int       `json:"question_bank_ids"`
 		ShuffleQuestions        bool        `json:"shuffle_questions"`
 		QuestionDurationSeconds int         `json:"question_duration_seconds"`
 	}
 	_ = c.BodyParser(&body)
+
+	if len(body.QuestionBankIDs) == 0 {
+		return utils.Error(c, 400, "question_bank_ids wajib diisi untuk paket ujian")
+	}
+
+	var assignment struct {
+		ID             int    `gorm:"column:id"`
+		SubjectID      int    `gorm:"column:subject_id"`
+		AssignmentType string `gorm:"column:assignment_type"`
+		TeacherID      int    `gorm:"column:teacher_id"`
+	}
+	a.DB.Raw(`
+		SELECT la.id, la.subject_id, la.assignment_type, ls.teacher_id
+		FROM learning_assignments la
+		INNER JOIN learning_subjects ls ON ls.id = la.subject_id
+		WHERE la.id = ? AND la.is_exam = true
+		LIMIT 1
+	`, id).Scan(&assignment)
+	if assignment.ID == 0 {
+		return utils.Error(c, 404, "Assignment not found")
+	}
+	if assignment.TeacherID != int(teacherID) {
+		return utils.Error(c, 403, "Forbidden assignment access")
+	}
+
+	var selectedRows []map[string]interface{}
+	a.DB.Raw(`
+		SELECT id, question_type, question_text, options, correct_option, rubric
+		FROM learning_question_bank
+		WHERE subject_id = ? AND id IN ? AND question_type = ?
+	`, assignment.SubjectID, body.QuestionBankIDs, assignment.AssignmentType).Scan(&selectedRows)
+	if len(selectedRows) == 0 {
+		return utils.Error(c, 400, "soal yang dipilih tidak valid untuk paket ujian ini")
+	}
+
+	rowByID := map[int]map[string]interface{}{}
+	for _, row := range selectedRows {
+		questionID := utils.ToInt(fmt.Sprint(row["id"]), 0)
+		if questionID > 0 {
+			rowByID[questionID] = row
+		}
+	}
+
+	quizPayload := make([]map[string]interface{}, 0, len(body.QuestionBankIDs))
+	for _, questionID := range body.QuestionBankIDs {
+		row, ok := rowByID[questionID]
+		if !ok {
+			continue
+		}
+		item := map[string]interface{}{
+			"question_id":       row["id"],
+			"bank_question_id":  row["id"],
+			"question_type":     row["question_type"],
+			"question":          row["question_text"],
+			"question_text":     row["question_text"],
+		}
+		if strings.ToUpper(strings.TrimSpace(assignment.AssignmentType)) == "MCQ" {
+			item["options"] = row["options"]
+			item["correct_option"] = row["correct_option"]
+		} else {
+			item["rubric"] = row["rubric"]
+		}
+		quizPayload = append(quizPayload, item)
+	}
+	if len(quizPayload) == 0 {
+		return utils.Error(c, 400, "tidak ada soal valid yang bisa dipakai untuk paket ujian")
+	}
+
 	var row map[string]interface{}
 	a.DB.Raw(`
 		UPDATE learning_assignments
-		SET exam_status='SUBMITTED', question_bank_ids=?, shuffle_questions=?, question_duration_seconds=?, exam_submitted_at=NOW(), updated_at=NOW()
+		SET exam_status='SUBMITTED', question_bank_ids=?::jsonb, quiz_payload=?::jsonb, shuffle_questions=?, question_duration_seconds=?, exam_submitted_at=NOW(), updated_at=NOW()
 		WHERE id=? RETURNING *
-	`, body.QuestionBankIDs, body.ShuffleQuestions, body.QuestionDurationSeconds, id).Scan(&row)
+	`, toJSONRaw(body.QuestionBankIDs), toJSONRaw(quizPayload), body.ShuffleQuestions, body.QuestionDurationSeconds, id).Scan(&row)
 	return utils.Success(c, 200, "Success Submit Exam Package", row)
 }
 

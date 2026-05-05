@@ -403,6 +403,28 @@ func (a *AppContext) DeleteExamRequestByAdmin(c *fiber.Ctx) error {
 
 func (a *AppContext) PublishExamByAdmin(c *fiber.Ctx) error {
 	id := c.Params("assignmentId")
+	var current struct {
+		ID             int    `gorm:"column:id"`
+		ExamStatus     string `gorm:"column:exam_status"`
+		QuizPayloadRaw string `gorm:"column:quiz_payload_raw"`
+	}
+	a.DB.Raw(`
+		SELECT id, COALESCE(exam_status, '') AS exam_status, COALESCE(quiz_payload::text, '[]') AS quiz_payload_raw
+		FROM learning_assignments
+		WHERE id = ? AND is_exam = true
+		LIMIT 1
+	`, id).Scan(&current)
+	if current.ID == 0 {
+		return utils.Error(c, 404, "Assignment not found")
+	}
+	var quizPayload []map[string]interface{}
+	_ = json.Unmarshal([]byte(current.QuizPayloadRaw), &quizPayload)
+	if len(quizPayload) == 0 {
+		return utils.Error(c, 400, "Paket soal dari guru belum tersedia")
+	}
+	if strings.ToUpper(strings.TrimSpace(current.ExamStatus)) != "SUBMITTED" {
+		return utils.Error(c, 400, "Ujian belum siap diterbitkan")
+	}
 	var row map[string]interface{}
 	a.DB.Raw(`
 		UPDATE learning_assignments
