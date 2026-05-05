@@ -929,38 +929,31 @@ func (a *AppContext) DownloadLearningQuestionBankTemplate(c *fiber.Ctx) error {
 	var content strings.Builder
 	if qType == "ESSAY" {
 		content.WriteString("TEMPLATE SOAL URAIAN\n")
-		content.WriteString("Petunjuk: satu blok [SOAL] untuk satu soal.\n\n")
-		content.WriteString("[SOAL]\n")
-		content.WriteString("TIPE: ESSAY\n")
-		content.WriteString("PERTANYAAN: Jelaskan perbedaan antara simbiosis mutualisme dan parasitisme.\n")
-		content.WriteString("RUBRIK: Skor 0-100 berdasarkan ketepatan konsep, contoh relevan, dan kejelasan penjelasan.\n")
-		content.WriteString("[/SOAL]\n\n")
-		content.WriteString("[SOAL]\n")
-		content.WriteString("TIPE: ESSAY\n")
-		content.WriteString("PERTANYAAN: Mengapa menjaga kebersihan lingkungan sekolah itu penting?\n")
-		content.WriteString("RUBRIK: Skor 0-100 berdasarkan alasan logis, dampak, dan solusi.\n")
-		content.WriteString("[/SOAL]\n")
+		content.WriteString("Petunjuk: satu blok [SOAL] untuk satu soal. Isi 25 soal berikut.\n\n")
+		for i := 1; i <= 25; i++ {
+			content.WriteString("[SOAL]\n")
+			content.WriteString(fmt.Sprintf("NOMOR: %d\n", i))
+			content.WriteString("TIPE: ESSAY\n")
+			content.WriteString(fmt.Sprintf("PERTANYAAN: Tulis soal uraian nomor %d di sini.\n", i))
+			content.WriteString("RUBRIK: Skor 0-100 berdasarkan ketepatan konsep, kelengkapan jawaban, dan kejelasan penjelasan.\n")
+			content.WriteString("[/SOAL]\n\n")
+		}
 	} else {
 		content.WriteString("TEMPLATE SOAL PILIHAN GANDA\n")
-		content.WriteString("Petunjuk: JAWABAN diisi A/B/C/D.\n\n")
-		content.WriteString("[SOAL]\n")
-		content.WriteString("TIPE: MCQ\n")
-		content.WriteString("PERTANYAAN: Hasil dari 12 + 8 adalah ...\n")
-		content.WriteString("A: 18\n")
-		content.WriteString("B: 20\n")
-		content.WriteString("C: 22\n")
-		content.WriteString("D: 24\n")
-		content.WriteString("JAWABAN: B\n")
-		content.WriteString("[/SOAL]\n\n")
-		content.WriteString("[SOAL]\n")
-		content.WriteString("TIPE: MCQ\n")
-		content.WriteString("PERTANYAAN: Ibu kota Indonesia adalah ...\n")
-		content.WriteString("A: Bandung\n")
-		content.WriteString("B: Surabaya\n")
-		content.WriteString("C: Jakarta\n")
-		content.WriteString("D: Medan\n")
-		content.WriteString("JAWABAN: C\n")
-		content.WriteString("[/SOAL]\n")
+		content.WriteString("Petunjuk: JAWABAN diisi A/B/C/D/E. Isi 25 soal berikut.\n\n")
+		for i := 1; i <= 25; i++ {
+			content.WriteString("[SOAL]\n")
+			content.WriteString(fmt.Sprintf("NOMOR: %d\n", i))
+			content.WriteString("TIPE: MCQ\n")
+			content.WriteString(fmt.Sprintf("PERTANYAAN: Tulis soal pilihan ganda nomor %d di sini.\n", i))
+			content.WriteString("A: Opsi A\n")
+			content.WriteString("B: Opsi B\n")
+			content.WriteString("C: Opsi C\n")
+			content.WriteString("D: Opsi D\n")
+			content.WriteString("E: Opsi E\n")
+			content.WriteString("JAWABAN: A\n")
+			content.WriteString("[/SOAL]\n\n")
+		}
 	}
 	return c.SendString(content.String())
 }
@@ -1045,8 +1038,9 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 				strings.TrimSpace(fields["B"]),
 				strings.TrimSpace(fields["C"]),
 				strings.TrimSpace(fields["D"]),
+				strings.TrimSpace(fields["E"]),
 			}
-			if options[0] == "" || options[1] == "" || options[2] == "" || options[3] == "" {
+			if options[0] == "" || options[1] == "" || options[2] == "" || options[3] == "" || options[4] == "" {
 				continue
 			}
 			answer := strings.ToUpper(strings.TrimSpace(fields["JAWABAN"]))
@@ -1057,6 +1051,8 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 				correct = 2
 			} else if answer == "D" {
 				correct = 3
+			} else if answer == "E" {
+				correct = 4
 			}
 
 			var inserted map[string]interface{}
@@ -1099,7 +1095,7 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 		}
 
 		isEssayTemplate := headerIndex["rubric"] >= 0
-		isMcqTemplate := headerIndex["option_a"] >= 0 && headerIndex["option_b"] >= 0 && headerIndex["option_c"] >= 0 && headerIndex["option_d"] >= 0
+		isMcqTemplate := headerIndex["option_a"] >= 0 && headerIndex["option_b"] >= 0 && headerIndex["option_c"] >= 0 && headerIndex["option_d"] >= 0 && headerIndex["option_e"] >= 0
 
 		if !isEssayTemplate && !isMcqTemplate {
 			return utils.Error(c, 400, "header template tidak dikenali, unduh ulang template terbaru")
@@ -1131,8 +1127,9 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 			optionB := getValue(record, "option_b")
 			optionC := getValue(record, "option_c")
 			optionD := getValue(record, "option_d")
+			optionE := getValue(record, "option_e")
 			correctRaw := getValue(record, "correct_option_index")
-			if optionA == "" || optionB == "" || optionC == "" || optionD == "" {
+			if optionA == "" || optionB == "" || optionC == "" || optionD == "" || optionE == "" {
 				continue
 			}
 
@@ -1143,6 +1140,8 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 				correct = 2
 			} else if correctRaw == "3" || strings.EqualFold(correctRaw, "d") {
 				correct = 3
+			} else if correctRaw == "4" || strings.EqualFold(correctRaw, "e") {
+				correct = 4
 			}
 
 			var inserted map[string]interface{}
@@ -1150,7 +1149,7 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 				INSERT INTO learning_question_bank (subject_id, question_type, question_text, options, correct_option, created_by, created_at)
 				VALUES (?, 'MCQ', ?, ?::jsonb, ?, ?, NOW())
 				RETURNING *
-			`, subjectID, questionText, toJSONRaw([]string{optionA, optionB, optionC, optionD}), correct, userID).Scan(&inserted)
+			`, subjectID, questionText, toJSONRaw([]string{optionA, optionB, optionC, optionD, optionE}), correct, userID).Scan(&inserted)
 			if len(inserted) > 0 {
 				importedItems = append(importedItems, inserted)
 				mcqCount++
