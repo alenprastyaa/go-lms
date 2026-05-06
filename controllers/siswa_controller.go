@@ -112,26 +112,40 @@ func (a *AppContext) GetStudentGrades(c *fiber.Ctx) error {
 			la.title,
 			la.description,
 			la.assignment_type,
+			COALESCE(la.is_exam, false) AS is_exam,
 			la.due_date,
 			la.created_at AS assignment_created_at,
 			ls.id AS subject_id,
 			ls.name AS subject_name,
 			COALESCE(cls.class_name, '') AS class_name,
 			sub.id AS submission_id,
+			sub.started_at,
 			sub.submitted_at,
 			sub.score,
 			sub.feedback,
-			sub.is_submitted
+			COALESCE(sub.is_submitted, false) AS is_submitted
 		FROM users stu
 		INNER JOIN learning_subjects ls ON ls.class_id = stu.class_id
 		LEFT JOIN class cls ON cls.id = ls.class_id
 		INNER JOIN learning_assignments la ON la.subject_id = ls.id
-		LEFT JOIN learning_submissions sub
-			ON sub.assignment_id = la.id
-			AND sub.student_id = stu.id
+		LEFT JOIN LATERAL (
+			SELECT s.id, s.started_at, s.submitted_at, s.score, s.feedback, s.is_submitted
+			FROM learning_submissions s
+			WHERE s.assignment_id = la.id
+			  AND s.student_id = stu.id
+			ORDER BY COALESCE(s.is_submitted, false) DESC,
+			         s.submitted_at DESC NULLS LAST,
+			         s.started_at DESC NULLS LAST,
+			         s.id DESC
+			LIMIT 1
+		) sub ON true
 		WHERE stu.id = ?
 			AND stu.school_id = ?
 			AND ls.school_id = ?
+			AND (
+				COALESCE(la.is_exam, false) = false
+				OR COALESCE(la.exam_status, '') = 'PUBLISHED'
+			)
 			AND la.assignment_type IN ('FILE', 'MANUAL', 'MCQ', 'ESSAY')
 		ORDER BY ls.name ASC, la.due_date DESC NULLS LAST, la.created_at DESC
 	`, studentID, schoolID, schoolID).Scan(&rows)
@@ -142,7 +156,8 @@ func (a *AppContext) GetStudentGrades(c *fiber.Ctx) error {
 	var totalScore float64
 
 	for _, row := range rows {
-		if row["submission_id"] != nil {
+		submitted := isSubmitted(row)
+		if submitted {
 			submittedCount++
 		} else {
 			pendingCount++
@@ -153,26 +168,12 @@ func (a *AppContext) GetStudentGrades(c *fiber.Ctx) error {
 			continue
 		}
 
-		scoreNumber := 0.0
-		switch value := scoreValue.(type) {
-		case float64:
-			scoreNumber = value
-		case float32:
-			scoreNumber = float64(value)
-		case int:
-			scoreNumber = float64(value)
-		case int64:
-			scoreNumber = float64(value)
-		case string:
-			parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
-			if err != nil {
-				continue
-			}
-			scoreNumber = parsed
-		default:
+		scoreText := strings.TrimSpace(fmt.Sprint(scoreValue))
+		if scoreText == "" || scoreText == "<nil>" {
 			continue
 		}
 
+		scoreNumber := floatFromAny(scoreValue)
 		gradedCount++
 		totalScore += scoreNumber
 	}
@@ -203,20 +204,23 @@ func (a *AppContext) StartLearningQuizAttempt(c *fiber.Ctx) error {
 	_ = c.BodyParser(&body)
 
 	var assignment struct {
-		ID                      int        `gorm:"column:id"`
-		SchoolID                int        `gorm:"column:school_id"`
-		ClassID                 int        `gorm:"column:class_id"`
-		AssignmentType          string     `gorm:"column:assignment_type"`
-		IsExam                  bool       `gorm:"column:is_exam"`
-		ExamStatus              *string    `gorm:"column:exam_status"`
-		ExamCode                *string    `gorm:"column:exam_code"`
-		StartAt                 *time.Time `gorm:"column:start_at"`
-		DueDate                 *time.Time `gorm:"column:due_date"`
-		QuestionDurationSeconds *int       `gorm:"column:question_duration_seconds"`
-		QuizPayloadText         string     `gorm:"column:quiz_payload_text"`
+		ID                      int     `gorm:"column:id"`
+		SchoolID                int     `gorm:"column:school_id"`
+		ClassID                 int     `gorm:"column:class_id"`
+		AssignmentType          string  `gorm:"column:assignment_type"`
+		IsExam                  bool    `gorm:"column:is_exam"`
+		ExamStatus              *string `gorm:"column:exam_status"`
+		ExamCode                *string `gorm:"column:exam_code"`
+		StartAtRaw              string  `gorm:"column:start_at_raw"`
+		DueDateRaw              string  `gorm:"column:due_date_raw"`
+		QuestionDurationSeconds *int    `gorm:"column:question_duration_seconds"`
+		QuizPayloadText         string  `gorm:"column:quiz_payload_text"`
 	}
 	a.DB.Raw(`
-		SELECT la.id, ls.school_id, ls.class_id, la.assignment_type, la.is_exam, la.exam_status, la.exam_code, la.start_at, la.due_date, la.question_duration_seconds,
+		SELECT la.id, ls.school_id, ls.class_id, la.assignment_type, la.is_exam, la.exam_status, la.exam_code,
+		       TO_CHAR(la.start_at, 'YYYY-MM-DD HH24:MI:SS') AS start_at_raw,
+		       TO_CHAR(la.due_date, 'YYYY-MM-DD HH24:MI:SS') AS due_date_raw,
+		       la.question_duration_seconds,
 		       COALESCE(la.quiz_payload::text, '[]') AS quiz_payload_text
 		FROM learning_assignments la
 		INNER JOIN learning_subjects ls ON ls.id = la.subject_id
@@ -237,19 +241,18 @@ func (a *AppContext) StartLearningQuizAttempt(c *fiber.Ctx) error {
 	if student.ID == 0 || student.ClassID != assignment.ClassID || student.School != assignment.SchoolID {
 		return utils.Error(c, 403, "Forbidden assignment access")
 	}
-	now := time.Now()
+	now := jakartaNow()
+	startAt := parseJakartaTimestamp(assignment.StartAtRaw)
+	dueDate := parseJakartaTimestamp(assignment.DueDateRaw)
 	if assignment.IsExam {
 		if assignment.ExamStatus == nil || strings.ToUpper(strings.TrimSpace(*assignment.ExamStatus)) != "PUBLISHED" {
 			return utils.Error(c, 400, "Exam is not published yet")
 		}
-		if assignment.StartAt == nil || assignment.StartAt.After(now) {
+		if startAt == nil || startAt.After(now) {
 			return utils.Error(c, 400, "Exam has not started yet")
 		}
-		if strings.TrimSpace(body.ExamCode) == "" || !strings.EqualFold(strings.TrimSpace(body.ExamCode), strings.TrimSpace(valueOrEmpty(assignment.ExamCode))) {
-			return utils.Error(c, 400, "Exam code is invalid")
-		}
 	}
-	if assignment.DueDate != nil && assignment.DueDate.Before(now) {
+	if dueDate != nil && dueDate.Before(now) {
 		return utils.Error(c, 400, "Quiz deadline has passed")
 	}
 
@@ -257,6 +260,33 @@ func (a *AppContext) StartLearningQuizAttempt(c *fiber.Ctx) error {
 	a.DB.Raw(`SELECT * FROM learning_submissions WHERE assignment_id = ? AND student_id = ? LIMIT 1`, assignmentID, studentID).Scan(&existing)
 	if isSubmitted(existing) {
 		return utils.Error(c, 400, "Quiz has already been submitted")
+	}
+	if assignment.IsExam {
+		accessBlocked := boolFromAny(existing["access_blocked"])
+		accessCode := strings.TrimSpace(fmt.Sprint(existing["access_code"]))
+		inputCode := strings.TrimSpace(body.ExamCode)
+
+		if accessBlocked {
+			if accessCode == "" {
+				return utils.Error(c, 400, "Exam access is blocked. Ask admin for a new code")
+			}
+			if inputCode == "" || !strings.EqualFold(inputCode, accessCode) {
+				return utils.Error(c, 400, "Special exam code is invalid")
+			}
+			a.DB.Exec(`
+				UPDATE learning_submissions
+				SET access_blocked = false,
+				    access_code = NULL,
+				    access_code_generated_at = NULL,
+				    access_block_reason = NULL
+				WHERE id = ?
+			`, existing["id"])
+			existing["access_blocked"] = false
+			existing["access_code"] = nil
+			existing["access_block_reason"] = nil
+		} else if inputCode == "" || !strings.EqualFold(inputCode, strings.TrimSpace(valueOrEmpty(assignment.ExamCode))) {
+			return utils.Error(c, 400, "Exam code is invalid")
+		}
 	}
 
 	var row map[string]interface{}
@@ -398,17 +428,21 @@ func (a *AppContext) RecordQuizViolation(c *fiber.Ctx) error {
 		SubmissionID     interface{} `json:"submission_id"`
 		ViolationType    string      `json:"violation_type"`
 		ViolationMessage string      `json:"violation_message"`
+		Answers          string      `json:"answers"`
 	}
 	_ = c.BodyParser(&body)
 
 	var assignment struct {
-		ID             int    `gorm:"column:id"`
-		AssignmentType string `gorm:"column:assignment_type"`
-		SchoolID       int    `gorm:"column:school_id"`
-		ClassID        int    `gorm:"column:class_id"`
+		ID              int    `gorm:"column:id"`
+		AssignmentType  string `gorm:"column:assignment_type"`
+		IsExam          bool   `gorm:"column:is_exam"`
+		SchoolID        int    `gorm:"column:school_id"`
+		ClassID         int    `gorm:"column:class_id"`
+		QuizPayloadText string `gorm:"column:quiz_payload_text"`
 	}
 	a.DB.Raw(`
-		SELECT la.id, la.assignment_type, ls.school_id, ls.class_id
+		SELECT la.id, la.assignment_type, la.is_exam, ls.school_id, ls.class_id,
+		       COALESCE(la.quiz_payload::text, '[]') AS quiz_payload_text
 		FROM learning_assignments la
 		INNER JOIN learning_subjects ls ON ls.id = la.subject_id
 		WHERE la.id = ?
@@ -447,19 +481,62 @@ func (a *AppContext) RecordQuizViolation(c *fiber.Ctx) error {
 	a.DB.Raw(`SELECT COUNT(*)::int FROM learning_quiz_violation_logs WHERE submission_id = ?`, submissionID).Scan(&violationCount)
 	autoSubmitted := false
 	if maxViolations > 0 && violationCount >= maxViolations {
-		a.DB.Exec(`
-			UPDATE learning_submissions
-			SET submitted_at = COALESCE(submitted_at, NOW()),
-			    is_submitted = true
-			WHERE id = ? AND COALESCE(is_submitted, false) = false
-		`, submissionID)
-		autoSubmitted = true
+		if assignment.IsExam {
+			a.DB.Exec(`
+				UPDATE learning_submissions
+				SET access_blocked = true,
+				    access_code = NULL,
+				    access_code_generated_at = NULL,
+				    access_block_reason = 'MAX_VIOLATIONS'
+				WHERE id = ? AND COALESCE(is_submitted, false) = false
+			`, submissionID)
+		} else {
+			score := interface{}(nil)
+			autoGraded := false
+			answerPayload := interface{}(nil)
+
+			if strings.TrimSpace(body.Answers) != "" && (assignment.AssignmentType == "MCQ" || assignment.AssignmentType == "ESSAY") {
+				quizPayload, err := parseQuizPayloadText(assignment.QuizPayloadText)
+				if err == nil && len(quizPayload) > 0 {
+					if normalizedAnswers, parseErr := parseStudentAnswers(assignment.AssignmentType, body.Answers, quizPayload); parseErr == nil {
+						raw, _ := json.Marshal(normalizedAnswers)
+						answerPayload = string(raw)
+						if assignment.AssignmentType == "MCQ" {
+							score = calculateMcqScore(quizPayload, normalizedAnswers)
+							autoGraded = true
+						}
+					}
+				}
+			}
+
+			if answerPayload != nil {
+				a.DB.Exec(`
+					UPDATE learning_submissions
+					SET answer_payload = ?::jsonb,
+					    submitted_at = COALESCE(submitted_at, NOW()),
+					    is_submitted = true,
+					    score = ?,
+					    auto_graded = ?
+					WHERE id = ? AND COALESCE(is_submitted, false) = false
+				`, answerPayload, score, autoGraded, submissionID)
+			} else {
+				a.DB.Exec(`
+					UPDATE learning_submissions
+					SET submitted_at = COALESCE(submitted_at, NOW()),
+					    is_submitted = true
+					WHERE id = ? AND COALESCE(is_submitted, false) = false
+				`, submissionID)
+			}
+			autoSubmitted = true
+		}
 	}
 	return utils.Success(c, 201, "Success Record Quiz Violation", fiber.Map{
-		"recorded":        true,
-		"violation_count": violationCount,
-		"auto_submitted":  autoSubmitted,
-		"max_violations":  maxViolations,
+		"recorded":          true,
+		"violation_count":   violationCount,
+		"auto_submitted":    autoSubmitted,
+		"max_violations":    maxViolations,
+		"access_blocked":    assignment.IsExam && maxViolations > 0 && violationCount >= maxViolations,
+		"access_code_ready": false,
 	})
 }
 
@@ -656,14 +733,42 @@ func calculateMcqScore(quizPayload []map[string]interface{}, answers []map[strin
 	}
 	correct := 0
 	for i := range quizPayload {
-		sel, _ := toInt(answers[i]["selected_option"])
+		sel, answered := selectedOptionFromAnswer(answers[i])
+		if !answered {
+			continue
+		}
 		correctOption, _ := toInt(quizPayload[i]["correct_option"])
-		if sel >= 0 && sel == correctOption {
+		if sel == correctOption {
 			correct++
 		}
 	}
 	value := (float64(correct) / float64(len(quizPayload))) * 100
 	return float64(int(value*100)) / 100
+}
+
+func selectedOptionFromAnswer(answer map[string]interface{}) (int, bool) {
+	if len(answer) == 0 {
+		return 0, false
+	}
+
+	selected, exists := answer["selected_option"]
+	if !exists || selected == nil {
+		return 0, false
+	}
+
+	switch typed := selected.(type) {
+	case string:
+		if strings.TrimSpace(typed) == "" || strings.EqualFold(strings.TrimSpace(typed), "null") {
+			return 0, false
+		}
+	}
+
+	index, err := toInt(selected)
+	if err != nil || index < 0 {
+		return 0, false
+	}
+
+	return index, true
 }
 
 func toInt(v interface{}) (int, error) {
@@ -690,6 +795,51 @@ func toInt(v interface{}) (int, error) {
 		}
 		return i, nil
 	}
+}
+
+func jakartaLocation() *time.Location {
+	location, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		return time.FixedZone("WIB", 7*60*60)
+	}
+	return location
+}
+
+func jakartaNow() time.Time {
+	return time.Now().In(jakartaLocation())
+}
+
+func parseJakartaTimestamp(value string) *time.Time {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return nil
+	}
+
+	location := jakartaLocation()
+	for _, layout := range []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
+		time.RFC3339,
+	} {
+		var parsed time.Time
+		var err error
+		if layout == time.RFC3339 {
+			parsed, err = time.Parse(layout, raw)
+			if err == nil {
+				converted := parsed.In(location)
+				return &converted
+			}
+			continue
+		}
+
+		parsed, err = time.ParseInLocation(layout, raw, location)
+		if err == nil {
+			return &parsed
+		}
+	}
+
+	return nil
 }
 
 func envInt(key string, fallback int) int {

@@ -1,8 +1,13 @@
 package controllers
 
 import (
+	archivezip "archive/zip"
+	"bytes"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -71,6 +76,157 @@ func (a *AppContext) RegisterUserSchool(c *fiber.Ctx) error {
 	return a.registerScopedUser(c, false)
 }
 
+func (a *AppContext) ImportUserSchoolTeachers(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	file, err := c.FormFile("file")
+	if err != nil {
+		return utils.Error(c, 400, "File wajib diunggah")
+	}
+
+	ext := strings.ToLower(filepath.Ext(file.Filename))
+	if ext != ".xlsx" {
+		return utils.Error(c, 400, "Format file harus .xlsx sesuai template")
+	}
+
+	handle, err := file.Open()
+	if err != nil {
+		return utils.Error(c, 500, "Gagal membuka file", err.Error())
+	}
+	defer handle.Close()
+
+	payload, err := io.ReadAll(handle)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal membaca file", err.Error())
+	}
+
+	rows, err := parseTeacherImportXLSXRows(payload)
+	if err != nil {
+		return utils.Error(c, 400, err.Error())
+	}
+
+	headerIndex := -1
+	columnIndex := map[string]int{}
+	for rowIndex, row := range rows {
+		columnIndex = map[string]int{}
+		for cellIndex, cellValue := range row {
+			normalized := normalizeExcelHeader(cellValue)
+			switch {
+			case strings.Contains(normalized, "username"):
+				columnIndex["username"] = cellIndex
+			case strings.Contains(normalized, "password"):
+				columnIndex["password"] = cellIndex
+			case strings.Contains(normalized, "nama lengkap") || strings.Contains(normalized, "full name") || strings.EqualFold(normalized, "nama") || strings.EqualFold(normalized, "name"):
+				columnIndex["full_name"] = cellIndex
+			case strings.Contains(normalized, "email"):
+				columnIndex["parent_email"] = cellIndex
+			case strings.Contains(normalized, "hp") || strings.Contains(normalized, "phone") || strings.Contains(normalized, "telepon"):
+				columnIndex["phone_number"] = cellIndex
+			}
+		}
+
+		if hasRequiredGuruHeaders(columnIndex) {
+			headerIndex = rowIndex
+			break
+		}
+	}
+	if headerIndex < 0 {
+		return utils.Error(c, 400, "Header template tidak dikenali, unduh ulang template terbaru")
+	}
+
+	requiredColumns := []string{"username", "password"}
+	for _, column := range requiredColumns {
+		if _, ok := columnIndex[column]; !ok {
+			return utils.Error(c, 400, "Header template tidak lengkap")
+		}
+	}
+
+	tx := a.DB.Begin()
+	if tx.Error != nil {
+		return utils.Error(c, 500, "Gagal memulai transaksi")
+	}
+
+	imported := 0
+	failedRows := make([]fiber.Map, 0)
+	for rowIndex := headerIndex + 1; rowIndex < len(rows); rowIndex++ {
+		row := rows[rowIndex]
+		if isExcelRowEmpty(row) {
+			continue
+		}
+
+		record := map[string]string{
+			"full_name":     cellValue(row, columnIndex["full_name"]),
+			"username":      strings.TrimSpace(cellValue(row, columnIndex["username"])),
+			"password":      strings.TrimSpace(cellValue(row, columnIndex["password"])),
+			"parent_email":  strings.TrimSpace(cellValue(row, columnIndex["parent_email"])),
+			"phone_number":  strings.TrimSpace(cellValue(row, columnIndex["phone_number"])),
+		}
+
+		if record["username"] == "" || record["password"] == "" {
+			failedRows = append(failedRows, fiber.Map{
+				"row":     rowIndex + 1,
+				"message": "username dan password wajib diisi",
+			})
+			continue
+		}
+
+		var existingCount int64
+		if err := tx.Table("users").
+			Where("school_id = ? AND username = ?", schoolID, record["username"]).
+			Count(&existingCount).Error; err != nil {
+			tx.Rollback()
+			return utils.Error(c, 500, "Gagal memeriksa data user", err.Error())
+		}
+		if existingCount > 0 {
+			failedRows = append(failedRows, fiber.Map{
+				"row":     rowIndex + 1,
+				"message": fmt.Sprintf("username %s sudah ada", record["username"]),
+			})
+			continue
+		}
+
+		hash, _ := bcrypt.GenerateFromPassword([]byte(record["password"]), 8)
+		user := models.User{
+			FullName:    utils.StringPtr(record["full_name"]),
+			Username:    record["username"],
+			Password:    string(hash),
+			Role:        "GURU",
+			SchoolID:    &schoolID,
+			ParentEmail: utils.StringPtr(record["parent_email"]),
+			PhoneNumber: utils.StringPtr(record["phone_number"]),
+		}
+
+		if err := tx.Create(&user).Error; err != nil {
+			failedRows = append(failedRows, fiber.Map{
+				"row":     rowIndex + 1,
+				"message": err.Error(),
+			})
+			continue
+		}
+		imported += 1
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return utils.Error(c, 500, "Gagal menyimpan hasil import", err.Error())
+	}
+
+	return utils.Success(c, 200, "Import guru selesai", fiber.Map{
+		"imported": imported,
+		"failed":   len(failedRows),
+		"errors":   failedRows,
+	})
+}
+
+func (a *AppContext) DownloadUserSchoolTeacherTemplate(c *fiber.Ctx) error {
+	xlsxBytes, err := buildTeacherTemplateXLSX()
+	if err != nil {
+		return utils.Error(c, 500, "Gagal membuat template", err.Error())
+	}
+
+	c.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Set("Content-Disposition", `attachment; filename="template-guru.xlsx"`)
+	return c.Send(xlsxBytes)
+}
+
 func (a *AppContext) registerScopedUser(c *fiber.Ctx, asStudent bool) error {
 	var body map[string]interface{}
 	_ = c.BodyParser(&body)
@@ -100,6 +256,407 @@ func (a *AppContext) registerScopedUser(c *fiber.Ctx, asStudent bool) error {
 		return utils.Error(c, 500, "Registration failed", err.Error())
 	}
 	return utils.Success(c, 201, "User registered successfully", user)
+}
+
+func buildTeacherTemplateXLSX() ([]byte, error) {
+	var buffer bytes.Buffer
+	zipWriter := archivezip.NewWriter(&buffer)
+
+	files := map[string]string{
+		"[Content_Types].xml":              xlsxContentTypesXML(),
+		"_rels/.rels":                      xlsxRootRelsXML(),
+		"xl/workbook.xml":                  xlsxWorkbookXML(),
+		"xl/_rels/workbook.xml.rels":       xlsxWorkbookRelsXML(),
+		"xl/worksheets/sheet1.xml":         xlsxTeacherTemplateSheetXML(),
+	}
+
+	for name, content := range files {
+		writer, err := zipWriter.Create(name)
+		if err != nil {
+			_ = zipWriter.Close()
+			return nil, err
+		}
+		if _, err := writer.Write([]byte(content)); err != nil {
+			_ = zipWriter.Close()
+			return nil, err
+		}
+	}
+
+	if err := zipWriter.Close(); err != nil {
+		return nil, err
+	}
+
+	return buffer.Bytes(), nil
+}
+
+func xlsxContentTypesXML() string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>`
+}
+
+func xlsxRootRelsXML() string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`
+}
+
+func xlsxWorkbookXML() string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Template Guru" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`
+}
+
+func xlsxWorkbookRelsXML() string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>`
+}
+
+func xlsxTeacherTemplateSheetXML() string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t xml:space="preserve">Template Import Guru</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t xml:space="preserve">Role akan otomatis diisi sebagai GURU.</t></is></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="inlineStr"><is><t xml:space="preserve">Isi 1 baris per guru lalu upload kembali file ini.</t></is></c>
+    </row>
+    <row r="5">
+      <c r="A5" t="inlineStr"><is><t xml:space="preserve">Nama Lengkap</t></is></c>
+      <c r="B5" t="inlineStr"><is><t xml:space="preserve">Username</t></is></c>
+      <c r="C5" t="inlineStr"><is><t xml:space="preserve">Password</t></is></c>
+      <c r="D5" t="inlineStr"><is><t xml:space="preserve">Email</t></is></c>
+      <c r="E5" t="inlineStr"><is><t xml:space="preserve">No. HP</t></is></c>
+    </row>
+  </sheetData>
+</worksheet>`
+}
+
+func parseTeacherImportXLSXRows(payload []byte) ([][]string, error) {
+	reader, err := archivezip.NewReader(bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		return nil, fmt.Errorf("file bukan xlsx yang valid")
+	}
+
+	sheetData, err := readZipFile(reader, "xl/worksheets/sheet1.xml")
+	if err != nil {
+		return nil, fmt.Errorf("sheet template tidak ditemukan")
+	}
+
+	sharedStrings := make([]string, 0)
+	if sharedXML, err := readZipFile(reader, "xl/sharedStrings.xml"); err == nil {
+		sharedStrings, err = parseSharedStringsXML(sharedXML)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return parseWorksheetRowsXML(sheetData, sharedStrings)
+}
+
+func readZipFile(reader *archivezip.Reader, target string) ([]byte, error) {
+	for _, file := range reader.File {
+		if file.Name != target {
+			continue
+		}
+		handle, err := file.Open()
+		if err != nil {
+			return nil, err
+		}
+		defer handle.Close()
+		return io.ReadAll(handle)
+	}
+	return nil, fmt.Errorf("file %s tidak ditemukan", target)
+}
+
+func parseSharedStringsXML(payload []byte) ([]string, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(payload))
+	values := make([]string, 0)
+	inSi := false
+	inText := false
+	var current strings.Builder
+
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("gagal membaca shared string: %w", err)
+		}
+
+		switch value := token.(type) {
+		case xml.StartElement:
+			switch value.Name.Local {
+			case "si":
+				inSi = true
+				current.Reset()
+			case "t":
+				if inSi {
+					inText = true
+				}
+			}
+		case xml.CharData:
+			if inSi && inText {
+				current.WriteString(string(value))
+			}
+		case xml.EndElement:
+			switch value.Name.Local {
+			case "t":
+				inText = false
+			case "si":
+				values = append(values, current.String())
+				inSi = false
+			}
+		}
+	}
+
+	return values, nil
+}
+
+func parseWorksheetRowsXML(payload []byte, sharedStrings []string) ([][]string, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(payload))
+	rows := make([][]string, 0)
+
+	inRow := false
+	inCell := false
+	inValue := false
+	inInlineText := false
+	currentRow := map[int]string{}
+	currentRef := ""
+	currentType := ""
+	var currentValue strings.Builder
+
+	flushRow := func() {
+		if len(currentRow) == 0 {
+			return
+		}
+		maxIndex := -1
+		for index := range currentRow {
+			if index > maxIndex {
+				maxIndex = index
+			}
+		}
+		row := make([]string, maxIndex+1)
+		for index, value := range currentRow {
+			row[index] = value
+		}
+		rows = append(rows, row)
+		currentRow = map[int]string{}
+	}
+
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("gagal membaca isi worksheet: %w", err)
+		}
+
+		switch value := token.(type) {
+		case xml.StartElement:
+			switch value.Name.Local {
+			case "row":
+				inRow = true
+				currentRow = map[int]string{}
+			case "c":
+				if inRow {
+					inCell = true
+					currentRef = ""
+					currentType = ""
+					currentValue.Reset()
+					for _, attr := range value.Attr {
+						switch attr.Name.Local {
+						case "r":
+							currentRef = attr.Value
+						case "t":
+							currentType = attr.Value
+						}
+					}
+				}
+			case "v":
+				if inCell {
+					inValue = true
+				}
+			case "is":
+				if inCell {
+					inInlineText = true
+				}
+			case "t":
+				if inCell && inInlineText {
+					inValue = true
+				}
+			}
+		case xml.CharData:
+			if inCell && (inValue || inInlineText) {
+				currentValue.WriteString(string(value))
+			}
+		case xml.EndElement:
+			switch value.Name.Local {
+			case "v":
+				inValue = false
+			case "t":
+				if inInlineText {
+					inValue = false
+				}
+			case "is":
+				inInlineText = false
+			case "c":
+				columnIndex := excelColumnIndex(currentRef)
+				cellText := currentValue.String()
+				if currentType == "s" && cellText != "" {
+					if sharedIndex := utils.ToInt(cellText, -1); sharedIndex >= 0 && sharedIndex < len(sharedStrings) {
+						cellText = sharedStrings[sharedIndex]
+					}
+				}
+				if columnIndex >= 0 {
+					currentRow[columnIndex] = strings.TrimSpace(cellText)
+				}
+				inCell = false
+			case "row":
+				flushRow()
+				inRow = false
+			}
+		}
+	}
+
+	return rows, nil
+}
+
+func excelColumnIndex(ref string) int {
+	col := ""
+	for _, char := range ref {
+		if char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' {
+			col += strings.ToUpper(string(char))
+		} else {
+			break
+		}
+	}
+	if col == "" {
+		return -1
+	}
+	index := 0
+	for _, char := range col {
+		index = index*26 + int(char-'A'+1)
+	}
+	return index - 1
+}
+
+func xlsxEscape(value string) string {
+	var buffer bytes.Buffer
+	_ = xml.EscapeText(&buffer, []byte(value))
+	return buffer.String()
+}
+
+func xlsxCell(reference, value string) string {
+	return fmt.Sprintf(`<c r="%s" t="inlineStr"><is><t xml:space="preserve">%s</t></is></c>`, reference, xlsxEscape(value))
+}
+
+func parseSpreadsheetMLRows(payload []byte) ([][]string, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(payload))
+	rows := make([][]string, 0)
+	var currentRow []string
+	var currentCell strings.Builder
+	inRow := false
+	inCell := false
+	inData := false
+	rowHasCell := false
+
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("gagal membaca struktur file excel: %w", err)
+		}
+
+		switch value := token.(type) {
+		case xml.StartElement:
+			switch value.Name.Local {
+			case "Row":
+				inRow = true
+				rowHasCell = false
+				currentRow = []string{}
+			case "Cell":
+				if inRow {
+					inCell = true
+					currentCell.Reset()
+				}
+			case "Data":
+				if inRow && inCell {
+					inData = true
+				}
+			}
+		case xml.CharData:
+			if inData {
+				currentCell.WriteString(string(value))
+			}
+		case xml.EndElement:
+			switch value.Name.Local {
+			case "Data":
+				inData = false
+			case "Cell":
+				if inRow && inCell {
+					currentRow = append(currentRow, strings.TrimSpace(currentCell.String()))
+					rowHasCell = true
+				}
+				inCell = false
+			case "Row":
+				if inRow && rowHasCell {
+					rows = append(rows, currentRow)
+				}
+				inRow = false
+			}
+		}
+	}
+
+	return rows, nil
+}
+
+func normalizeExcelHeader(value string) string {
+	lowered := strings.ToLower(strings.TrimSpace(value))
+	lowered = strings.ReplaceAll(lowered, "_", " ")
+	lowered = strings.ReplaceAll(lowered, ".", " ")
+	lowered = strings.Join(strings.Fields(lowered), " ")
+	return lowered
+}
+
+func hasRequiredGuruHeaders(columnIndex map[string]int) bool {
+	_, hasUsername := columnIndex["username"]
+	_, hasPassword := columnIndex["password"]
+	return hasUsername && hasPassword
+}
+
+func isExcelRowEmpty(row []string) bool {
+	for _, cell := range row {
+		if strings.TrimSpace(cell) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func cellValue(row []string, index int) string {
+	if index < 0 || index >= len(row) {
+		return ""
+	}
+	return strings.TrimSpace(row[index])
 }
 
 func (a *AppContext) GetUserSchoolList(c *fiber.Ctx) error {

@@ -32,6 +32,30 @@ func (a *AppContext) GetSuperAdminDashboard(c *fiber.Ctx) error {
 		SELECT 'teachers' AS key, COUNT(*)::int AS value FROM users WHERE role = 'GURU'
 		UNION ALL
 		SELECT 'students' AS key, COUNT(*)::int AS value FROM users WHERE role = 'SISWA'
+		UNION ALL
+		SELECT 'schools_with_admin' AS key, COUNT(*)::int
+		FROM (
+			SELECT s.id
+			FROM schools s
+			INNER JOIN users u ON u.school_id = s.id AND u.role = 'ADMIN'
+			GROUP BY s.id
+		) x
+		UNION ALL
+		SELECT 'schools_without_admin' AS key, COUNT(*)::int
+		FROM schools s
+		WHERE NOT EXISTS (
+			SELECT 1 FROM users u WHERE u.school_id = s.id AND u.role = 'ADMIN'
+		)
+		UNION ALL
+		SELECT 'schools_with_classes' AS key, COUNT(*)::int
+		FROM (
+			SELECT school_id FROM class GROUP BY school_id
+		) x
+		UNION ALL
+		SELECT 'schools_with_curriculum' AS key, COUNT(*)::int
+		FROM (
+			SELECT school_id FROM curriculum_subjects GROUP BY school_id
+		) x
 	`).Scan(&overviewRows)
 	overview := map[string]int{}
 	for _, row := range overviewRows {
@@ -44,16 +68,71 @@ func (a *AppContext) GetSuperAdminDashboard(c *fiber.Ctx) error {
 		  s.id,
 		  s.name,
 		  COUNT(DISTINCT u.id)::int AS total_users,
+		  COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END)::int AS total_admins,
 		  COUNT(DISTINCT CASE WHEN u.role = 'GURU' THEN u.id END)::int AS total_teachers,
 		  COUNT(DISTINCT CASE WHEN u.role = 'SISWA' THEN u.id END)::int AS total_students,
-		  COUNT(DISTINCT c.id)::int AS total_classes
+		  COUNT(DISTINCT c.id)::int AS total_classes,
+		  COUNT(DISTINCT CASE WHEN ay.is_active = true THEN ay.id END)::int AS active_academic_years,
+		  COUNT(DISTINCT CASE WHEN cs.id IS NOT NULL THEN cs.id END)::int AS curriculum_subjects,
+		  COUNT(DISTINCT CASE WHEN a.attendance_date = CURRENT_DATE THEN a.id END)::int AS attendance_today,
+		  COUNT(DISTINCT CASE WHEN DATE_TRUNC('month', pr.created_at) = DATE_TRUNC('month', CURRENT_DATE) THEN pr.id END)::int AS receipts_this_month
 		FROM schools s
 		LEFT JOIN users u ON u.school_id = s.id
 		LEFT JOIN class c ON c.school_id = s.id
+		LEFT JOIN academic_years ay ON ay.school_id = s.id
+		LEFT JOIN curriculum_subjects cs ON cs.school_id = s.id
+		LEFT JOIN attendance a ON a.user_id = u.id
+		LEFT JOIN payment_receipt pr ON pr.user_id = u.id
 		GROUP BY s.id, s.name
 		ORDER BY total_students DESC, s.name ASC
-		LIMIT 8
+		LIMIT 12
 	`).Scan(&schools)
+
+	var schoolAlerts []map[string]interface{}
+	a.DB.Raw(`
+		SELECT
+		  s.id,
+		  s.name,
+		  CASE
+			WHEN COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END) = 0 THEN 'Belum punya admin sekolah'
+			WHEN COUNT(DISTINCT c.id) = 0 THEN 'Belum punya kelas'
+			WHEN COUNT(DISTINCT CASE WHEN u.role = 'SISWA' THEN u.id END) = 0 THEN 'Belum punya siswa'
+			WHEN COUNT(DISTINCT cs.id) = 0 THEN 'Modul kurikulum belum diisi'
+			ELSE 'Perlu pemantauan'
+		  END AS issue,
+		  COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END)::int AS total_admins,
+		  COUNT(DISTINCT c.id)::int AS total_classes,
+		  COUNT(DISTINCT CASE WHEN u.role = 'SISWA' THEN u.id END)::int AS total_students,
+		  COUNT(DISTINCT cs.id)::int AS curriculum_subjects
+		FROM schools s
+		LEFT JOIN users u ON u.school_id = s.id
+		LEFT JOIN class c ON c.school_id = s.id
+		LEFT JOIN curriculum_subjects cs ON cs.school_id = s.id
+		GROUP BY s.id, s.name
+		HAVING
+		  COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END) = 0
+		  OR COUNT(DISTINCT c.id) = 0
+		  OR COUNT(DISTINCT CASE WHEN u.role = 'SISWA' THEN u.id END) = 0
+		  OR COUNT(DISTINCT cs.id) = 0
+		ORDER BY total_students ASC, s.name ASC
+		LIMIT 8
+	`).Scan(&schoolAlerts)
+
+	var recentAdmins []map[string]interface{}
+	a.DB.Raw(`
+		SELECT
+		  u.id,
+		  COALESCE(u.full_name, u.username) AS admin_name,
+		  u.username,
+		  COALESCE(s.name, '-') AS school_name,
+		  COALESCE(u.parent_email, '-') AS email,
+		  COALESCE(u.phone_number, '-') AS phone_number
+		FROM users u
+		LEFT JOIN schools s ON s.id = u.school_id
+		WHERE u.role = 'ADMIN'
+		ORDER BY u.id DESC
+		LIMIT 8
+	`).Scan(&recentAdmins)
 
 	var recentAttendance []map[string]interface{}
 	a.DB.Raw(`
@@ -79,6 +158,8 @@ func (a *AppContext) GetSuperAdminDashboard(c *fiber.Ctx) error {
 		"generatedAt":      time.Now().UTC().Format(time.RFC3339),
 		"overview":         overview,
 		"schools":          schools,
+		"schoolAlerts":     recentOrEmpty(schoolAlerts),
+		"recentAdmins":     recentOrEmpty(recentAdmins),
 		"recentAttendance": recentAttendance,
 		"recentReceipts":   recentReceipts,
 	})
@@ -211,36 +292,70 @@ func (a *AppContext) SendHomeroomAttendanceReport(c *fiber.Ctx) error {
 func (a *AppContext) GetAdminSettingsSummary(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 	var summary struct {
-		Teachers      int `json:"teachers"`
-		Students      int `json:"students"`
-		Classes       int `json:"classes"`
-		Subjects      int `json:"subjects"`
-		QuestionBank  int `json:"question_bank"`
-		Quizzes       int `json:"quizzes"`
-		OfficialExams int `json:"official_exams"`
-		Attendance    int `json:"attendance"`
-		Receipts      int `json:"receipts"`
+		Teachers                 int `json:"teachers"`
+		Students                 int `json:"students"`
+		Classes                  int `json:"classes"`
+		AcademicYears            int `json:"academic_years"`
+		Semesters                int `json:"semesters"`
+		CurriculumSubjects       int `json:"curriculum_subjects"`
+		CurriculumTeacherLoads   int `json:"curriculum_teacher_loads"`
+		CurriculumDistributions  int `json:"curriculum_class_distributions"`
+		CurriculumScheduleSlots  int `json:"curriculum_schedule_slots"`
+		CurriculumScheduleResult int `json:"curriculum_schedule_entries"`
+		Subjects                 int `json:"subjects"`
+		Materials                int `json:"materials"`
+		Chats                    int `json:"chats"`
+		QuestionBank             int `json:"question_bank"`
+		FileTasks                int `json:"file_tasks"`
+		ManualAssess             int `json:"manual_assessments"`
+		Quizzes                  int `json:"quizzes"`
+		OfficialExams            int `json:"official_exams"`
+		Attendance               int `json:"attendance"`
+		Receipts                 int `json:"receipts"`
 	}
-	_ = a.DB.Raw(`
+	if err := a.DB.Raw(`
 		WITH subject_scope AS (SELECT id FROM learning_subjects WHERE school_id = ?)
 		SELECT
 		  (SELECT COUNT(*)::int FROM users WHERE school_id = ? AND role = 'GURU') AS teachers,
 		  (SELECT COUNT(*)::int FROM users WHERE school_id = ? AND role = 'SISWA') AS students,
 		  (SELECT COUNT(*)::int FROM class WHERE school_id = ?) AS classes,
+		  (SELECT COUNT(*)::int FROM academic_years WHERE school_id = ?) AS academic_years,
+		  (SELECT COUNT(*)::int FROM academic_semesters WHERE academic_year_id IN (SELECT id FROM academic_years WHERE school_id = ?)) AS semesters,
+		  (SELECT COUNT(*)::int FROM curriculum_subjects WHERE school_id = ?) AS curriculum_subjects,
+		  (SELECT COUNT(*)::int FROM curriculum_teacher_loads WHERE school_id = ?) AS curriculum_teacher_loads,
+		  (SELECT COUNT(*)::int FROM curriculum_class_distributions WHERE school_id = ?) AS curriculum_class_distributions,
+		  (SELECT COUNT(*)::int FROM curriculum_schedule_slots WHERE school_id = ?) AS curriculum_schedule_slots,
+		  (SELECT COUNT(*)::int FROM curriculum_schedule_entries WHERE school_id = ?) AS curriculum_schedule_entries,
 		  (SELECT COUNT(*)::int FROM learning_subjects WHERE school_id = ?) AS subjects,
+		  (SELECT COUNT(*)::int FROM learning_materials WHERE subject_id IN (SELECT id FROM subject_scope)) AS materials,
+		  (SELECT COUNT(*)::int FROM learning_chat_messages WHERE subject_id IN (SELECT id FROM subject_scope)) AS chats,
 		  (SELECT COUNT(*)::int FROM learning_question_bank WHERE subject_id IN (SELECT id FROM subject_scope)) AS question_bank,
+		  (SELECT COUNT(*)::int FROM learning_assignments WHERE subject_id IN (SELECT id FROM subject_scope) AND assignment_type = 'FILE' AND COALESCE(is_exam, false) = false) AS file_tasks,
+		  (SELECT COUNT(*)::int FROM learning_assignments WHERE subject_id IN (SELECT id FROM subject_scope) AND assignment_type = 'MANUAL' AND COALESCE(is_exam, false) = false) AS manual_assessments,
 		  (SELECT COUNT(*)::int FROM learning_assignments WHERE subject_id IN (SELECT id FROM subject_scope) AND COALESCE(is_exam, false) = false AND assignment_type IN ('MCQ', 'ESSAY')) AS quizzes,
 		  (SELECT COUNT(*)::int FROM learning_assignments WHERE subject_id IN (SELECT id FROM subject_scope) AND COALESCE(is_exam, false) = true) AS official_exams,
 		  (SELECT COUNT(*)::int FROM attendance WHERE user_id IN (SELECT id FROM users WHERE school_id = ? AND role = 'SISWA')) AS attendance,
 		  (SELECT COUNT(*)::int FROM payment_receipt WHERE user_id IN (SELECT id FROM users WHERE school_id = ? AND role = 'SISWA')) AS receipts
-	`, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID).Scan(&summary).Error
+	`, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID).Scan(&summary).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memuat ringkasan setting admin", err.Error())
+	}
 
 	items := []map[string]interface{}{
 		{"key": "teachers", "label": "Guru", "description": "Menghapus semua akun guru pada sekolah ini.", "count": summary.Teachers},
 		{"key": "students", "label": "Siswa", "description": "Menghapus semua akun siswa pada sekolah ini beserta data terkait siswa.", "count": summary.Students},
 		{"key": "classes", "label": "Kelas", "description": "Menghapus semua kelas pada sekolah ini.", "count": summary.Classes},
-		{"key": "subjects", "label": "Mapel Pembelajaran", "description": "Menghapus semua mapel pembelajaran beserta materi, chat, quiz, ujian, dan bank soal yang terkait.", "count": summary.Subjects},
+		{"key": "academic_periods", "label": "Periode Akademik", "description": "Menghapus tahun ajaran dan semester pada sekolah ini.", "count": summary.AcademicYears + summary.Semesters},
+		{"key": "curriculum_subjects", "label": "Kurikulum Mapel", "description": "Menghapus master mata pelajaran kurikulum beserta data generate terkait.", "count": summary.CurriculumSubjects},
+		{"key": "curriculum_teacher_loads", "label": "Kurikulum Beban Guru", "description": "Menghapus seluruh beban guru pada modul kurikulum.", "count": summary.CurriculumTeacherLoads},
+		{"key": "curriculum_class_distributions", "label": "Kurikulum Distribusi Kelas", "description": "Menghapus pembagian guru ke kelas pada modul kurikulum.", "count": summary.CurriculumDistributions},
+		{"key": "curriculum_schedule_slots", "label": "Kurikulum Slot Jadwal", "description": "Menghapus template slot jadwal pada modul kurikulum.", "count": summary.CurriculumScheduleSlots},
+		{"key": "curriculum_schedule_entries", "label": "Kurikulum Hasil Generate", "description": "Menghapus hasil generate jadwal dan subject LMS otomatis dari modul kurikulum.", "count": summary.CurriculumScheduleResult},
+		{"key": "subjects", "label": "Mapel LMS", "description": "Menghapus semua mapel pembelajaran LMS beserta materi, chat, quiz, ujian, dan bank soal yang terkait.", "count": summary.Subjects},
+		{"key": "materials", "label": "Materi Pembelajaran", "description": "Menghapus seluruh materi pembelajaran pada semua mapel sekolah ini.", "count": summary.Materials},
+		{"key": "learning_chat", "label": "Chat Pembelajaran", "description": "Menghapus pesan chat pembelajaran dan status baca pada semua mapel.", "count": summary.Chats},
 		{"key": "question_bank", "label": "Bank Soal", "description": "Menghapus seluruh bank soal pada sekolah ini.", "count": summary.QuestionBank},
+		{"key": "file_tasks", "label": "Tugas File", "description": "Menghapus semua tugas file beserta submission siswa.", "count": summary.FileTasks},
+		{"key": "manual_assessments", "label": "Penilaian Manual", "description": "Menghapus semua penilaian manual atau ujian luar LMS beserta submission siswa.", "count": summary.ManualAssess},
 		{"key": "quizzes", "label": "Quiz", "description": "Menghapus semua quiz biasa beserta submission siswa.", "count": summary.Quizzes},
 		{"key": "official_exams", "label": "Ujian Resmi", "description": "Menghapus semua ujian resmi beserta submission siswa.", "count": summary.OfficialExams},
 		{"key": "attendance", "label": "Absensi", "description": "Menghapus seluruh riwayat absensi siswa pada sekolah ini.", "count": summary.Attendance},
@@ -368,16 +483,16 @@ func (a *AppContext) RunAdminLoadTest(c *fiber.Ctx) error {
 	}
 
 	return utils.Success(c, 200, "Success Run Admin Load Test", fiber.Map{
-		"target":               "/api/admin-settings/summary",
-		"hit_count":            body.HitCount,
-		"success_count":        successCount,
-		"failure_count":        failureCount,
-		"total_elapsed_ms":     time.Since(startedAt).Milliseconds(),
-		"average_duration_ms":  math.Round(averageDurationMs*100) / 100,
-		"max_duration_ms":      math.Round(maxDurationMs*100) / 100,
-		"p95_duration_ms":      math.Round(p95DurationMs*100) / 100,
-		"error_samples":        errorSamples,
-		"executed_at":          time.Now().UTC().Format(time.RFC3339),
+		"target":              "/api/admin-settings/summary",
+		"hit_count":           body.HitCount,
+		"success_count":       successCount,
+		"failure_count":       failureCount,
+		"total_elapsed_ms":    time.Since(startedAt).Milliseconds(),
+		"average_duration_ms": math.Round(averageDurationMs*100) / 100,
+		"max_duration_ms":     math.Round(maxDurationMs*100) / 100,
+		"p95_duration_ms":     math.Round(p95DurationMs*100) / 100,
+		"error_samples":       errorSamples,
+		"executed_at":         time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -487,17 +602,17 @@ func (a *AppContext) RunAdminLoginLoadTest(c *fiber.Ctx) error {
 	}
 
 	return utils.Success(c, 200, "Success Run Admin Login Load Test", fiber.Map{
-		"target":               "/api/auth/login",
-		"username":             body.Username,
-		"hit_count":            body.HitCount,
-		"success_count":        successCount,
-		"failure_count":        failureCount,
-		"total_elapsed_ms":     time.Since(startedAt).Milliseconds(),
-		"average_duration_ms":  math.Round(averageDurationMs*100) / 100,
-		"max_duration_ms":      math.Round(maxDurationMs*100) / 100,
-		"p95_duration_ms":      math.Round(p95DurationMs*100) / 100,
-		"error_samples":        errorSamples,
-		"executed_at":          time.Now().UTC().Format(time.RFC3339),
+		"target":              "/api/auth/login",
+		"username":            body.Username,
+		"hit_count":           body.HitCount,
+		"success_count":       successCount,
+		"failure_count":       failureCount,
+		"total_elapsed_ms":    time.Since(startedAt).Milliseconds(),
+		"average_duration_ms": math.Round(averageDurationMs*100) / 100,
+		"max_duration_ms":     math.Round(maxDurationMs*100) / 100,
+		"p95_duration_ms":     math.Round(p95DurationMs*100) / 100,
+		"error_samples":       errorSamples,
+		"executed_at":         time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -524,10 +639,44 @@ func (a *AppContext) ResetAdminScope(c *fiber.Ctx) error {
 			tx.Exec(`UPDATE users SET class_id = NULL WHERE school_id = ? AND role = 'SISWA'`, schoolID)
 			tx.Exec(`UPDATE class SET wali_guru_id = NULL WHERE school_id = ?`, schoolID)
 			tx.Exec(`DELETE FROM class WHERE school_id = ?`, schoolID)
+		case "academic_periods":
+			tx.Exec(`DELETE FROM academic_semesters WHERE academic_year_id IN (SELECT id FROM academic_years WHERE school_id = ?)`, schoolID)
+			tx.Exec(`DELETE FROM academic_years WHERE school_id = ?`, schoolID)
+		case "curriculum_subjects":
+			tx.Exec(`DELETE FROM curriculum_schedule_entries WHERE school_id = ?`, schoolID)
+			tx.Exec(`DELETE FROM curriculum_class_distributions WHERE school_id = ?`, schoolID)
+			tx.Exec(`DELETE FROM curriculum_teacher_loads WHERE school_id = ?`, schoolID)
+			tx.Exec(`DELETE FROM curriculum_subjects WHERE school_id = ?`, schoolID)
+			tx.Exec(`DELETE FROM learning_subjects WHERE school_id = ? AND COALESCE(curriculum_auto_generated, false) = true`, schoolID)
+		case "curriculum_teacher_loads":
+			tx.Exec(`DELETE FROM curriculum_schedule_entries WHERE school_id = ?`, schoolID)
+			tx.Exec(`DELETE FROM curriculum_class_distributions WHERE school_id = ?`, schoolID)
+			tx.Exec(`DELETE FROM curriculum_teacher_loads WHERE school_id = ?`, schoolID)
+			tx.Exec(`DELETE FROM learning_subjects WHERE school_id = ? AND COALESCE(curriculum_auto_generated, false) = true`, schoolID)
+		case "curriculum_class_distributions":
+			tx.Exec(`DELETE FROM curriculum_schedule_entries WHERE school_id = ?`, schoolID)
+			tx.Exec(`DELETE FROM curriculum_class_distributions WHERE school_id = ?`, schoolID)
+			tx.Exec(`DELETE FROM learning_subjects WHERE school_id = ? AND COALESCE(curriculum_auto_generated, false) = true`, schoolID)
+		case "curriculum_schedule_slots":
+			tx.Exec(`DELETE FROM curriculum_schedule_entries WHERE school_id = ?`, schoolID)
+			tx.Exec(`DELETE FROM curriculum_schedule_slots WHERE school_id = ?`, schoolID)
+			tx.Exec(`DELETE FROM learning_subjects WHERE school_id = ? AND COALESCE(curriculum_auto_generated, false) = true`, schoolID)
+		case "curriculum_schedule_entries":
+			tx.Exec(`DELETE FROM curriculum_schedule_entries WHERE school_id = ?`, schoolID)
+			tx.Exec(`DELETE FROM learning_subjects WHERE school_id = ? AND COALESCE(curriculum_auto_generated, false) = true`, schoolID)
 		case "subjects":
 			tx.Exec(`DELETE FROM learning_subjects WHERE school_id = ?`, schoolID)
+		case "materials":
+			tx.Exec(`DELETE FROM learning_materials WHERE subject_id IN (SELECT id FROM learning_subjects WHERE school_id = ?)`, schoolID)
+		case "learning_chat":
+			tx.Exec(`DELETE FROM learning_chat_reads WHERE subject_id IN (SELECT id FROM learning_subjects WHERE school_id = ?)`, schoolID)
+			tx.Exec(`DELETE FROM learning_chat_messages WHERE subject_id IN (SELECT id FROM learning_subjects WHERE school_id = ?)`, schoolID)
 		case "question_bank":
 			tx.Exec(`DELETE FROM learning_question_bank WHERE subject_id IN (SELECT id FROM learning_subjects WHERE school_id = ?)`, schoolID)
+		case "file_tasks":
+			tx.Exec(`DELETE FROM learning_assignments WHERE subject_id IN (SELECT id FROM learning_subjects WHERE school_id = ?) AND assignment_type = 'FILE' AND COALESCE(is_exam, false) = false`, schoolID)
+		case "manual_assessments":
+			tx.Exec(`DELETE FROM learning_assignments WHERE subject_id IN (SELECT id FROM learning_subjects WHERE school_id = ?) AND assignment_type = 'MANUAL' AND COALESCE(is_exam, false) = false`, schoolID)
 		case "quizzes":
 			tx.Exec(`DELETE FROM learning_assignments WHERE subject_id IN (SELECT id FROM learning_subjects WHERE school_id = ?) AND COALESCE(is_exam, false) = false AND assignment_type IN ('MCQ','ESSAY')`, schoolID)
 		case "official_exams":

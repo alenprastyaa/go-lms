@@ -32,16 +32,22 @@ func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
 
 	p := r.Use(middlewares.Auth(), middlewares.ExtractClaims())
 	p.Post("/register/student", ctx.RegisterStudent)
-	p.Post("/register/user-school", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.RegisterUserSchool)
-	p.Get("/user-school", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.GetUserSchoolList)
-	p.Put("/user-school/:id", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.UpdateUserSchool)
-	p.Delete("/user-school/:id", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.DeleteUserSchool)
+	p.Post("/register/user-school", middlewares.RoleAllowed("ADMIN"), ctx.RegisterUserSchool)
+	p.Get("/user-school/template", middlewares.RoleAllowed("ADMIN"), ctx.DownloadUserSchoolTeacherTemplate)
+	p.Post("/register/user-school/import", middlewares.RoleAllowed("ADMIN"), ctx.ImportUserSchoolTeachers)
+	p.Get("/user-school", middlewares.RoleAllowed("ADMIN"), ctx.GetUserSchoolList)
+	p.Put("/user-school/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateUserSchool)
+	p.Delete("/user-school/:id", middlewares.RoleAllowed("ADMIN"), ctx.DeleteUserSchool)
 	p.Get("/profile", ctx.GetMyProfile)
 	p.Put("/profile", ctx.UpdateMyProfile)
 }
 
 func registerSchool(api fiber.Router, ctx *controllers.AppContext) {
-	api.Post("/school", ctx.CreateSchool)
+	r := api.Group("/school", middlewares.Auth(), middlewares.ExtractClaims(), middlewares.RoleAllowed("SUPER_ADMIN"))
+	r.Post("/", ctx.CreateSchool)
+	r.Get("/", ctx.GetSchools)
+	r.Put("/:id", ctx.UpdateSchool)
+	r.Delete("/:id", ctx.DeleteSchool)
 }
 
 func registerClass(api fiber.Router, ctx *controllers.AppContext) {
@@ -92,7 +98,7 @@ func registerGuru(api fiber.Router, ctx *controllers.AppContext) {
 	l.Post("/subjects/:subjectId/materials/publish-ai-pptx", middlewares.RoleAllowed("GURU"), ctx.PublishLearningMaterialPptWithAI)
 	l.Put("/assignments/:assignmentId", middlewares.RoleAllowed("GURU"), ctx.UpdateLearningAssignmentByTeacher)
 	l.Delete("/assignments/:assignmentId", middlewares.RoleAllowed("GURU"), ctx.DeleteLearningAssignmentByTeacher)
-	l.Get("/assignments/:assignmentId/submissions", middlewares.RoleAllowed("GURU"), ctx.GetAssignmentSubmissionsForTeacher)
+	l.Get("/assignments/:assignmentId/submissions", middlewares.RoleAllowed("GURU", "ADMIN"), ctx.GetAssignmentSubmissionsForTeacher)
 	l.Get("/subjects/:subjectId/gradebook", middlewares.RoleAllowed("GURU"), ctx.GetSubjectGradebookForTeacher)
 	l.Post("/submissions/:submissionId/grade", middlewares.RoleAllowed("GURU"), ctx.GradeLearningSubmission)
 	l.Post("/question-bank", middlewares.RoleAllowed("GURU"), ctx.CreateLearningQuestionBankItem)
@@ -112,7 +118,7 @@ func registerGuru(api fiber.Router, ctx *controllers.AppContext) {
 	l.Post("/subjects/:subjectId/chat/typing", middlewares.RoleAllowed("GURU", "SISWA"), ctx.BroadcastSubjectTyping)
 	l.Put("/subjects/:subjectId/chat-icon", middlewares.RoleAllowed("GURU"), ctx.UpdateLearningSubjectChatIconByTeacher)
 	l.Post("/assignments/:assignmentId/exam-package", middlewares.RoleAllowed("GURU"), ctx.SubmitExamPackageByTeacher)
-	l.Get("/assignments/:assignmentId/overview", middlewares.RoleAllowed("GURU"), ctx.GetQuizAssignmentOverviewForTeacher)
+	l.Get("/assignments/:assignmentId/overview", middlewares.RoleAllowed("GURU", "ADMIN"), ctx.GetQuizAssignmentOverviewForTeacher)
 	l.Get("/subjects/:subjectId/final-report", middlewares.RoleAllowed("GURU"), ctx.GetFinalGradeReportForTeacher)
 }
 
@@ -162,6 +168,22 @@ func registerAcademic(api fiber.Router, ctx *controllers.AppContext) {
 
 func registerLearningAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/learning", middlewares.Auth(), middlewares.ExtractClaims())
+	r.Get("/curriculum/overview", middlewares.RoleAllowed("ADMIN"), ctx.GetCurriculumOverview)
+	r.Post("/curriculum/subjects", middlewares.RoleAllowed("ADMIN"), ctx.CreateCurriculumSubject)
+	r.Put("/curriculum/subjects/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateCurriculumSubject)
+	r.Delete("/curriculum/subjects/:id", middlewares.RoleAllowed("ADMIN"), ctx.DeleteCurriculumSubject)
+	r.Post("/curriculum/teacher-loads", middlewares.RoleAllowed("ADMIN"), ctx.CreateCurriculumTeacherLoad)
+	r.Put("/curriculum/teacher-loads/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateCurriculumTeacherLoad)
+	r.Delete("/curriculum/teacher-loads/:id", middlewares.RoleAllowed("ADMIN"), ctx.DeleteCurriculumTeacherLoad)
+	r.Post("/curriculum/class-distributions", middlewares.RoleAllowed("ADMIN"), ctx.CreateCurriculumClassDistribution)
+	r.Put("/curriculum/class-distributions/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateCurriculumClassDistribution)
+	r.Delete("/curriculum/class-distributions/:id", middlewares.RoleAllowed("ADMIN"), ctx.DeleteCurriculumClassDistribution)
+	r.Post("/curriculum/schedule-slots", middlewares.RoleAllowed("ADMIN"), ctx.CreateCurriculumScheduleSlot)
+	r.Post("/curriculum/schedule-slots/bulk", middlewares.RoleAllowed("ADMIN"), ctx.BulkCreateCurriculumScheduleSlots)
+	r.Delete("/curriculum/schedule-slots/bulk", middlewares.RoleAllowed("ADMIN"), ctx.BulkDeleteCurriculumScheduleSlots)
+	r.Put("/curriculum/schedule-slots/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateCurriculumScheduleSlot)
+	r.Delete("/curriculum/schedule-slots/:id", middlewares.RoleAllowed("ADMIN"), ctx.DeleteCurriculumScheduleSlot)
+	r.Post("/curriculum/generate", middlewares.RoleAllowed("ADMIN"), ctx.GenerateCurriculumSchedule)
 	r.Get("/subjects/admin", middlewares.RoleAllowed("ADMIN"), ctx.GetAdminSubjects)
 	r.Post("/subjects", middlewares.RoleAllowed("ADMIN"), ctx.CreateLearningSubject)
 	r.Put("/subjects/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateLearningSubject)
@@ -171,4 +193,5 @@ func registerLearningAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	r.Put("/assignments/:assignmentId/exam-admin", middlewares.RoleAllowed("ADMIN"), ctx.UpdateExamRequestByAdmin)
 	r.Delete("/assignments/:assignmentId/exam-admin", middlewares.RoleAllowed("ADMIN"), ctx.DeleteExamRequestByAdmin)
 	r.Post("/assignments/:assignmentId/publish", middlewares.RoleAllowed("ADMIN"), ctx.PublishExamByAdmin)
+	r.Post("/submissions/:submissionId/exam-access-code", middlewares.RoleAllowed("ADMIN"), ctx.GenerateStudentExamAccessCodeByAdmin)
 }

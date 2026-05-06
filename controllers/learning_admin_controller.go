@@ -3,7 +3,9 @@ package controllers
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"lms/utils"
@@ -173,14 +175,29 @@ func (a *AppContext) GetSubjectAssignments(c *fiber.Ctx) error {
 		a.DB.Raw(`
 			SELECT
 			  la.*,
+			  TO_CHAR(la.start_at, 'YYYY-MM-DD"T"HH24:MI:SS') AS start_at,
+			  TO_CHAR(la.due_date, 'YYYY-MM-DD"T"HH24:MI:SS') AS due_date,
+			  COALESCE(la.question_bank_ids::text, '[]') AS question_bank_ids,
+			  COALESCE(la.quiz_payload::text, '[]') AS quiz_payload,
+			  CASE
+			    WHEN COALESCE(la.exam_status, '') IN ('SUBMITTED', 'PUBLISHED') THEN la.exam_status
+			    WHEN la.exam_submitted_at IS NOT NULL OR jsonb_array_length(COALESCE(la.quiz_payload, '[]'::jsonb)) > 0 THEN 'SUBMITTED'
+			    ELSE COALESCE(la.exam_status, 'REQUESTED')
+			  END AS effective_exam_status,
 			  ls.name AS subject_name,
 			  c.class_name,
 			  t.username AS teacher_name,
 			  sub.id AS submission_id,
 			  sub.score,
+			  sub.auto_graded,
+			  sub.graded_by,
+			  sub.graded_at,
 			  sub.feedback,
 			  sub.submission_text,
 			  sub.attachment_url AS submission_attachment_url,
+			  COALESCE(sub.answer_payload::text, '[]') AS answer_payload,
+			  COALESCE(sub.access_blocked, false) AS access_blocked,
+			  sub.access_block_reason,
 			  sub.started_at AS attempt_started_at,
 			  sub.submitted_at,
 			  sub.is_submitted
@@ -188,9 +205,31 @@ func (a *AppContext) GetSubjectAssignments(c *fiber.Ctx) error {
 			INNER JOIN learning_subjects ls ON ls.id = la.subject_id
 			LEFT JOIN class c ON c.id = ls.class_id
 			LEFT JOIN users t ON t.id = ls.teacher_id
-			LEFT JOIN learning_submissions sub
-			  ON sub.assignment_id = la.id
-			 AND sub.student_id = ?
+			LEFT JOIN LATERAL (
+			  SELECT
+			    s.id,
+			    s.score,
+			    s.auto_graded,
+			    s.graded_by,
+			    s.graded_at,
+			    s.feedback,
+			    s.submission_text,
+			    s.attachment_url,
+			    s.answer_payload,
+			    s.access_blocked,
+			    s.access_block_reason,
+			    s.started_at,
+			    s.submitted_at,
+			    s.is_submitted
+			  FROM learning_submissions s
+			  WHERE s.assignment_id = la.id
+			    AND s.student_id = ?
+			  ORDER BY COALESCE(s.is_submitted, false) DESC,
+			           s.submitted_at DESC NULLS LAST,
+			           s.started_at DESC NULLS LAST,
+			           s.id DESC
+			  LIMIT 1
+			) sub ON true
 			WHERE la.subject_id = ?
 			  AND ls.school_id = ?
 			  AND (
@@ -199,12 +238,28 @@ func (a *AppContext) GetSubjectAssignments(c *fiber.Ctx) error {
 			  )
 			ORDER BY la.created_at DESC
 		`, userID, subjectID, schoolID).Scan(&rows)
+		a.syncAutoGradedMcqScores(rows)
 		return utils.Success(c, 200, "Success Get Assignments", rows)
 	}
 
 	var rows []map[string]interface{}
 	a.DB.Raw(`
-		SELECT la.*, ls.name AS subject_name, c.class_name, t.username AS teacher_name
+		SELECT
+		  la.*,
+		  TO_CHAR(la.start_at, 'YYYY-MM-DD"T"HH24:MI:SS') AS start_at,
+		  TO_CHAR(la.due_date, 'YYYY-MM-DD"T"HH24:MI:SS') AS due_date,
+		  TO_CHAR(la.exam_submitted_at, 'YYYY-MM-DD"T"HH24:MI:SS') AS exam_submitted_at,
+		  TO_CHAR(la.exam_published_at, 'YYYY-MM-DD"T"HH24:MI:SS') AS exam_published_at,
+		  COALESCE(la.question_bank_ids::text, '[]') AS question_bank_ids,
+		  COALESCE(la.quiz_payload::text, '[]') AS quiz_payload,
+		  CASE
+		    WHEN COALESCE(la.exam_status, '') IN ('SUBMITTED', 'PUBLISHED') THEN la.exam_status
+		    WHEN la.exam_submitted_at IS NOT NULL OR jsonb_array_length(COALESCE(la.quiz_payload, '[]'::jsonb)) > 0 THEN 'SUBMITTED'
+		    ELSE COALESCE(la.exam_status, 'REQUESTED')
+		  END AS effective_exam_status,
+		  ls.name AS subject_name,
+		  c.class_name,
+		  t.username AS teacher_name
 		FROM learning_assignments la
 		INNER JOIN learning_subjects ls ON ls.id = la.subject_id
 		LEFT JOIN class c ON c.id = ls.class_id
@@ -352,9 +407,9 @@ func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 	`,
 		subjectID, title, description, assignmentType, isExam, nullIfEmpty(examCategory), nullIfEmpty(examCode),
 		ternaryString(isExam, "REQUESTED", ""), toJSONRaw(questionBankIDs), shuffleQuestions, toJSONRaw(quizPayload),
-		nullIfEmpty(startAt), true, nullIfEmpty(examCount),
+		normalizeDateTimeLocalToWIB(startAt), true, nullIfEmpty(examCount),
 		nullIfZero(academicYearID), nullIfZero(semesterID), nullIfEmpty(qDur), nullIfEmpty(attachmentURL),
-		nullIfEmpty(dueDate), userID,
+		normalizeDateTimeLocalToWIB(dueDate), userID,
 	).Scan(&row)
 
 	return utils.Success(c, 201, "Success Create Assignment", row)
@@ -380,11 +435,11 @@ func (a *AppContext) UpdateExamRequestByAdmin(c *fiber.Ctx) error {
 		UPDATE learning_assignments
 		SET subject_id = ?, title = ?, description = ?, due_date = ?, assignment_type = ?,
 		    exam_category = ?, exam_code = ?, start_at = ?, question_duration_seconds = ?,
-		    exam_target_question_count = ?, updated_at = NOW()
+		    exam_target_question_count = ?
 		WHERE id = ? AND is_exam = true
 		RETURNING *
-	`, subjectID, title, description, nullIfEmpty(dueDate), assignmentType, nullIfEmpty(examCategory),
-		nullIfEmpty(examCode), nullIfEmpty(startAt), nullIfEmpty(qDur), nullIfEmpty(examCount), id).Scan(&row)
+	`, subjectID, title, description, normalizeDateTimeLocalToWIB(dueDate), assignmentType, nullIfEmpty(examCategory),
+		nullIfEmpty(examCode), normalizeDateTimeLocalToWIB(startAt), nullIfEmpty(qDur), nullIfEmpty(examCount), id).Scan(&row)
 	if len(row) == 0 {
 		return utils.Error(c, 404, "Assignment not found")
 	}
@@ -422,13 +477,10 @@ func (a *AppContext) PublishExamByAdmin(c *fiber.Ctx) error {
 	if len(quizPayload) == 0 {
 		return utils.Error(c, 400, "Paket soal dari guru belum tersedia")
 	}
-	if strings.ToUpper(strings.TrimSpace(current.ExamStatus)) != "SUBMITTED" {
-		return utils.Error(c, 400, "Ujian belum siap diterbitkan")
-	}
 	var row map[string]interface{}
 	a.DB.Raw(`
 		UPDATE learning_assignments
-		SET exam_status = 'PUBLISHED', exam_published_at = NOW(), updated_at = NOW()
+		SET exam_status = 'PUBLISHED', exam_published_at = NOW()
 		WHERE id = ? AND is_exam = true
 		RETURNING *
 	`, id).Scan(&row)
@@ -436,6 +488,52 @@ func (a *AppContext) PublishExamByAdmin(c *fiber.Ctx) error {
 		return utils.Error(c, 404, "Assignment not found")
 	}
 	return utils.Success(c, 200, "Success Publish Exam", row)
+}
+
+func generateExamAccessCode() string {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
+	code := make([]byte, 8)
+	for i := range code {
+		code[i] = alphabet[rnd.Intn(len(alphabet))]
+	}
+	return string(code)
+}
+
+func (a *AppContext) GenerateStudentExamAccessCodeByAdmin(c *fiber.Ctx) error {
+	submissionID := c.Params("submissionId")
+	schoolID := c.Locals("schoolID").(uint)
+
+	var row map[string]interface{}
+	a.DB.Raw(`
+		SELECT s.*, la.id AS assignment_id, la.title AS assignment_title, la.exam_category, la.is_exam,
+		       u.username AS student_name
+		FROM learning_submissions s
+		INNER JOIN learning_assignments la ON la.id = s.assignment_id
+		INNER JOIN learning_subjects ls ON ls.id = la.subject_id
+		INNER JOIN users u ON u.id = s.student_id
+		WHERE s.id = ? AND ls.school_id = ? AND COALESCE(la.is_exam, false) = true
+		LIMIT 1
+	`, submissionID, schoolID).Scan(&row)
+	if len(row) == 0 {
+		return utils.Error(c, 404, "Official exam submission not found")
+	}
+	if boolFromAny(row["is_submitted"]) {
+		return utils.Error(c, 400, "Submission has already been submitted")
+	}
+
+	code := generateExamAccessCode()
+	var updated map[string]interface{}
+	a.DB.Raw(`
+		UPDATE learning_submissions
+		SET access_blocked = true,
+		    access_code = ?,
+		    access_code_generated_at = NOW(),
+		    access_block_reason = COALESCE(NULLIF(access_block_reason, ''), 'MAX_VIOLATIONS')
+		WHERE id = ?
+		RETURNING id, assignment_id, student_id, access_blocked, access_code, access_code_generated_at, access_block_reason
+	`, code, submissionID).Scan(&updated)
+	return utils.Success(c, 200, "Success Generate Student Exam Access Code", updated)
 }
 
 func (a *AppContext) resolveActiveAcademicPeriod(schoolID int) (int, int) {
@@ -458,6 +556,40 @@ func nullIfEmpty(v string) interface{} {
 		return nil
 	}
 	return v
+}
+
+func normalizeDateTimeLocalToWIB(value string) interface{} {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return nil
+	}
+
+	location, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		location = time.FixedZone("WIB", 7*60*60)
+	}
+
+	for _, layout := range []string{
+		"2006-01-02T15:04",
+		"2006-01-02T15:04:05",
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+	} {
+		if layout == time.RFC3339 {
+			parsed, parseErr := time.Parse(layout, raw)
+			if parseErr == nil {
+				return parsed.In(location).Format("2006-01-02 15:04:05")
+			}
+			continue
+		}
+
+		parsed, parseErr := time.ParseInLocation(layout, raw, location)
+		if parseErr == nil {
+			return parsed.Format("2006-01-02 15:04:05")
+		}
+	}
+
+	return raw
 }
 
 func nullIfZero(v int) interface{} {

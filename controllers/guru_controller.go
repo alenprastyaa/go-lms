@@ -268,7 +268,7 @@ func (a *AppContext) GetGuruDashboard(c *fiber.Ctx) error {
 
 	var students []map[string]interface{}
 	a.DB.Raw(`
-		SELECT u.id,u.username,u.parent_email,u.phone_number,
+		SELECT u.id,u.username,COALESCE(NULLIF(u.full_name, ''), u.username, '-') AS full_name,u.parent_email,u.phone_number,
 		       CASE WHEN a.user_id IS NULL THEN false ELSE true END AS checked_in_today
 		FROM users u
 		INNER JOIN class c ON c.id=u.class_id
@@ -317,7 +317,7 @@ func (a *AppContext) GetMyClassStudents(c *fiber.Ctx) error {
 
 	var rows []map[string]interface{}
 	a.DB.Raw(`
-		SELECT u.id,u.username,u.class_id,u.parent_email,u.phone_number,cn.class_name,
+		SELECT u.id,u.username,COALESCE(NULLIF(u.full_name, ''), u.username, '-') AS full_name,u.class_id,u.parent_email,u.phone_number,cn.class_name,
 		       CASE WHEN a.user_id IS NULL THEN false ELSE true END AS checked_in_today,
 		       a.clock_in,a.clock_out,a.status AS attendance_status
 		FROM users u
@@ -594,12 +594,33 @@ func floatFromAny(value interface{}) float64 {
 	return parsed
 }
 
+func classifyAssignmentForFinalReport(assignmentType string, isExam bool) string {
+	normalizedType := strings.ToUpper(strings.TrimSpace(assignmentType))
+	if isExam || normalizedType == "MANUAL" {
+		return "exam"
+	}
+	if normalizedType == "MCQ" || normalizedType == "ESSAY" || normalizedType == "QUIZ" {
+		return "quiz"
+	}
+	return "task"
+}
+
+func averageScore(sum float64, count int) interface{} {
+	if count <= 0 {
+		return nil
+	}
+	return float64(int((sum/float64(count))*100)) / 100
+}
+
 func (a *AppContext) syncAutoGradedMcqScores(rows []map[string]interface{}) {
 	for idx := range rows {
 		if strings.ToUpper(strings.TrimSpace(fmt.Sprint(rows[idx]["assignment_type"]))) != "MCQ" {
 			continue
 		}
 		if !boolFromAny(rows[idx]["auto_graded"]) {
+			continue
+		}
+		if rows[idx]["graded_by"] != nil || rows[idx]["graded_at"] != nil {
 			continue
 		}
 
@@ -620,7 +641,10 @@ func (a *AppContext) syncAutoGradedMcqScores(rows []map[string]interface{}) {
 		}
 
 		rows[idx]["score"] = recalculatedScore
-		submissionID := utils.ToInt(fmt.Sprint(rows[idx]["id"]), 0)
+		submissionID := utils.ToInt(fmt.Sprint(rows[idx]["submission_id"]), 0)
+		if submissionID <= 0 {
+			submissionID = utils.ToInt(fmt.Sprint(rows[idx]["id"]), 0)
+		}
 		if submissionID > 0 {
 			a.DB.Exec(`UPDATE learning_submissions SET score = ? WHERE id = ?`, recalculatedScore, submissionID)
 		}
@@ -678,7 +702,7 @@ func (a *AppContext) GetSubjectGradebookForTeacher(c *fiber.Ctx) error {
 
 	var assignments []map[string]interface{}
 	a.DB.Raw(`
-		SELECT id, title, due_date, assignment_type, is_exam
+		SELECT id, title, due_date, assignment_type, is_exam, exam_category
 		FROM learning_assignments
 		WHERE subject_id = ?
 		ORDER BY created_at DESC, id DESC
@@ -718,6 +742,8 @@ func (a *AppContext) GetSubjectGradebookForTeacher(c *fiber.Ctx) error {
 			la.title AS assignment_title,
 			la.due_date,
 			la.assignment_type,
+			COALESCE(la.is_exam, false) AS is_exam,
+			la.exam_category,
 			COALESCE(la.quiz_payload::text, '[]') AS quiz_payload,
 			COALESCE(s.answer_payload::text, '[]') AS answer_payload,
 			? AS subject_name,
@@ -792,7 +818,7 @@ func (a *AppContext) GradeLearningSubmission(c *fiber.Ctx) error {
 	var row map[string]interface{}
 	a.DB.Raw(`
 		UPDATE learning_submissions
-		SET score=?, feedback=?, graded_at=NOW(), graded_by=?
+		SET score=?, feedback=?, graded_at=NOW(), graded_by=?, auto_graded=false
 		WHERE id=?
 		RETURNING *
 	`, body.Score, body.Feedback, teacherID, id).Scan(&row)
@@ -1109,13 +1135,16 @@ func (a *AppContext) SubmitExamPackageByTeacher(c *fiber.Ctx) error {
 	id := c.Params("assignmentId")
 	teacherID := c.Locals("userID").(uint)
 	var body struct {
-		QuestionBankIDs         []int       `json:"question_bank_ids"`
+		QuestionBankIDs         interface{} `json:"question_bank_ids"`
 		ShuffleQuestions        bool        `json:"shuffle_questions"`
 		QuestionDurationSeconds int         `json:"question_duration_seconds"`
 	}
-	_ = c.BodyParser(&body)
+	if err := c.BodyParser(&body); err != nil {
+		return utils.Error(c, 400, "Payload paket ujian tidak valid")
+	}
 
-	if len(body.QuestionBankIDs) == 0 {
+	questionBankIDs := normalizeIntSlice(body.QuestionBankIDs)
+	if len(questionBankIDs) == 0 {
 		return utils.Error(c, 400, "question_bank_ids wajib diisi untuk paket ujian")
 	}
 
@@ -1144,7 +1173,7 @@ func (a *AppContext) SubmitExamPackageByTeacher(c *fiber.Ctx) error {
 		SELECT id, question_type, question_text, options, correct_option, rubric
 		FROM learning_question_bank
 		WHERE subject_id = ? AND id IN ? AND question_type = ?
-	`, assignment.SubjectID, body.QuestionBankIDs, assignment.AssignmentType).Scan(&selectedRows)
+	`, assignment.SubjectID, questionBankIDs, assignment.AssignmentType).Scan(&selectedRows)
 	if len(selectedRows) == 0 {
 		return utils.Error(c, 400, "soal yang dipilih tidak valid untuk paket ujian ini")
 	}
@@ -1157,18 +1186,18 @@ func (a *AppContext) SubmitExamPackageByTeacher(c *fiber.Ctx) error {
 		}
 	}
 
-	quizPayload := make([]map[string]interface{}, 0, len(body.QuestionBankIDs))
-	for _, questionID := range body.QuestionBankIDs {
+	quizPayload := make([]map[string]interface{}, 0, len(questionBankIDs))
+	for _, questionID := range questionBankIDs {
 		row, ok := rowByID[questionID]
 		if !ok {
 			continue
 		}
 		item := map[string]interface{}{
-			"question_id":       row["id"],
-			"bank_question_id":  row["id"],
-			"question_type":     row["question_type"],
-			"question":          row["question_text"],
-			"question_text":     row["question_text"],
+			"question_id":      row["id"],
+			"bank_question_id": row["id"],
+			"question_type":    row["question_type"],
+			"question":         row["question_text"],
+			"question_text":    row["question_text"],
 		}
 		if strings.ToUpper(strings.TrimSpace(assignment.AssignmentType)) == "MCQ" {
 			item["options"] = row["options"]
@@ -1185,10 +1214,37 @@ func (a *AppContext) SubmitExamPackageByTeacher(c *fiber.Ctx) error {
 	var row map[string]interface{}
 	a.DB.Raw(`
 		UPDATE learning_assignments
-		SET exam_status='SUBMITTED', question_bank_ids=?::jsonb, quiz_payload=?::jsonb, shuffle_questions=?, question_duration_seconds=?, exam_submitted_at=NOW(), updated_at=NOW()
+		SET exam_status='SUBMITTED', question_bank_ids=?::jsonb, quiz_payload=?::jsonb, shuffle_questions=?, question_duration_seconds=?, exam_submitted_at=NOW()
 		WHERE id=? RETURNING *
-	`, toJSONRaw(body.QuestionBankIDs), toJSONRaw(quizPayload), body.ShuffleQuestions, body.QuestionDurationSeconds, id).Scan(&row)
+	`, toJSONRaw(questionBankIDs), toJSONRaw(quizPayload), body.ShuffleQuestions, body.QuestionDurationSeconds, id).Scan(&row)
 	return utils.Success(c, 200, "Success Submit Exam Package", row)
+}
+
+func normalizeIntSlice(value interface{}) []int {
+	switch typed := value.(type) {
+	case []int:
+		return typed
+	case []interface{}:
+		result := make([]int, 0, len(typed))
+		for _, item := range typed {
+			number := utils.ToInt(fmt.Sprint(item), 0)
+			if number > 0 {
+				result = append(result, number)
+			}
+		}
+		return result
+	case []string:
+		result := make([]int, 0, len(typed))
+		for _, item := range typed {
+			number := utils.ToInt(item, 0)
+			if number > 0 {
+				result = append(result, number)
+			}
+		}
+		return result
+	default:
+		return []int{}
+	}
 }
 
 func (a *AppContext) GetQuizAssignmentOverviewForTeacher(c *fiber.Ctx) error {
@@ -1197,12 +1253,19 @@ func (a *AppContext) GetQuizAssignmentOverviewForTeacher(c *fiber.Ctx) error {
 	var pending []map[string]interface{}
 	a.DB.Raw(`
 		SELECT s.id, s.student_id, u.username, u.parent_email, s.submitted_at,
+		       s.score, s.auto_graded, s.graded_by, s.graded_at,
+		       la.assignment_type,
+		       COALESCE(la.quiz_payload::text, '[]') AS quiz_payload,
+		       COALESCE(s.answer_payload::text, '[]') AS answer_payload,
 		       COALESCE((SELECT COUNT(*) FROM learning_quiz_violation_logs v WHERE v.submission_id=s.id),0)::int AS violation_count
 		FROM learning_submissions s
+		INNER JOIN learning_assignments la ON la.id = s.assignment_id
 		INNER JOIN users u ON u.id=s.student_id
 		WHERE s.assignment_id=? AND s.is_submitted=true
 		ORDER BY s.submitted_at DESC NULLS LAST
 	`, assignmentID).Scan(&submitted)
+
+	a.syncAutoGradedMcqScores(submitted)
 	a.DB.Raw(`
 		SELECT u.id AS student_id, u.username, u.parent_email
 		FROM learning_assignments a
@@ -1264,60 +1327,205 @@ func (a *AppContext) GetQuizAssignmentOverviewForTeacher(c *fiber.Ctx) error {
 func (a *AppContext) GetFinalGradeReportForTeacher(c *fiber.Ctx) error {
 	subjectID := c.Params("subjectId")
 	semesterID := c.Query("semester_id")
-	_ = semesterID
-	var assignments []map[string]interface{}
+	keyword := strings.TrimSpace(c.Query("keyword"))
+	page := utils.ToInt(c.Query("page", "1"), 1)
+	limit := utils.ToInt(c.Query("limit", "20"), 20)
+	schoolID := c.Locals("schoolID").(uint)
+	if page < 1 {
+		page = 1
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := (page - 1) * limit
+
+	var activePeriod map[string]interface{}
 	a.DB.Raw(`
+		SELECT ay.id AS academic_year_id, ay.name AS academic_year_name, ay.start_date AS academic_year_start_date, ay.end_date AS academic_year_end_date,
+		       sem.id AS semester_id, sem.name AS semester_name, sem.code AS semester_code, sem.start_date AS semester_start_date, sem.end_date AS semester_end_date,
+		       COALESCE(sem.is_active, false) AS is_active
+		FROM academic_years ay
+		LEFT JOIN academic_semesters sem ON sem.academic_year_id = ay.id AND sem.is_active = true
+		WHERE ay.school_id = ? AND ay.is_active = true
+		LIMIT 1
+	`, schoolID).Scan(&activePeriod)
+
+	effectiveSemesterID := strings.TrimSpace(semesterID)
+	if effectiveSemesterID == "" {
+		activeSemesterID := strings.TrimSpace(fmt.Sprint(activePeriod["semester_id"]))
+		if activeSemesterID != "" && activeSemesterID != "<nil>" {
+			effectiveSemesterID = activeSemesterID
+		}
+	}
+
+	var selectedPeriod map[string]interface{}
+	if effectiveSemesterID != "" {
+		a.DB.Raw(`
+			SELECT ay.id AS academic_year_id, ay.name AS academic_year_name, ay.start_date AS academic_year_start_date, ay.end_date AS academic_year_end_date,
+			       sem.id AS semester_id, sem.name AS semester_name, sem.code AS semester_code, sem.start_date AS semester_start_date, sem.end_date AS semester_end_date,
+			       COALESCE(sem.is_active, false) AS is_active
+			FROM academic_semesters sem
+			INNER JOIN academic_years ay ON ay.id = sem.academic_year_id
+			WHERE sem.id = ? AND ay.school_id = ?
+			LIMIT 1
+		`, effectiveSemesterID, schoolID).Scan(&selectedPeriod)
+		if len(selectedPeriod) == 0 {
+			effectiveSemesterID = ""
+		}
+	}
+
+	var assignments []map[string]interface{}
+	assignmentQuery := `
 		SELECT id,title,assignment_type,is_exam,semester_id
 		FROM learning_assignments
 		WHERE subject_id=?
-		ORDER BY created_at ASC
-	`, subjectID).Scan(&assignments)
+	`
+	assignmentArgs := []interface{}{subjectID}
+	if effectiveSemesterID != "" {
+		assignmentQuery += ` AND (semester_id = ? OR semester_id IS NULL)`
+		assignmentArgs = append(assignmentArgs, effectiveSemesterID)
+	}
+	assignmentQuery += ` ORDER BY created_at ASC`
+	a.DB.Raw(assignmentQuery, assignmentArgs...).Scan(&assignments)
 
-	var students []map[string]interface{}
-	a.DB.Raw(`
-		SELECT u.id, u.username, u.class_id
+	studentsBaseQuery := `
 		FROM learning_subjects ls
 		INNER JOIN users u ON u.class_id=ls.class_id AND u.role='SISWA'
 		WHERE ls.id=?
+	`
+	studentsArgs := []interface{}{subjectID}
+	if keyword != "" {
+		studentsBaseQuery += ` AND u.username ILIKE ?`
+		studentsArgs = append(studentsArgs, "%"+keyword+"%")
+	}
+
+	var totalStudents int64
+	a.DB.Raw(`SELECT COUNT(*) `+studentsBaseQuery, studentsArgs...).Scan(&totalStudents)
+
+	var students []map[string]interface{}
+	studentsQuery := `
+		SELECT u.id, u.username, u.class_id
+	` + studentsBaseQuery + `
 		ORDER BY u.username ASC
-	`, subjectID).Scan(&students)
+		LIMIT ? OFFSET ?
+	`
+	studentsArgs = append(studentsArgs, limit, offset)
+	a.DB.Raw(studentsQuery, studentsArgs...).Scan(&students)
+
+	scoreByStudentAssignment := map[string]float64{}
+	if len(assignments) > 0 && len(students) > 0 {
+		assignmentIDs := make([]int, 0, len(assignments))
+		studentIDs := make([]int, 0, len(students))
+		for _, assignment := range assignments {
+			assignmentID := utils.ToInt(fmt.Sprint(assignment["id"]), 0)
+			if assignmentID > 0 {
+				assignmentIDs = append(assignmentIDs, assignmentID)
+			}
+		}
+		for _, student := range students {
+			studentID := utils.ToInt(fmt.Sprint(student["id"]), 0)
+			if studentID > 0 {
+				studentIDs = append(studentIDs, studentID)
+			}
+		}
+
+		if len(assignmentIDs) > 0 && len(studentIDs) > 0 {
+			var latestScores []map[string]interface{}
+			a.DB.Raw(`
+				SELECT DISTINCT ON (s.student_id, s.assignment_id)
+					s.student_id,
+					s.assignment_id,
+					s.score
+				FROM learning_submissions s
+				WHERE s.assignment_id IN ?
+				  AND s.student_id IN ?
+				ORDER BY s.student_id, s.assignment_id,
+				         COALESCE(s.is_submitted, false) DESC,
+				         s.submitted_at DESC NULLS LAST,
+				         s.started_at DESC NULLS LAST,
+				         s.id DESC
+			`, assignmentIDs, studentIDs).Scan(&latestScores)
+
+			for _, item := range latestScores {
+				if item["score"] == nil {
+					continue
+				}
+				scoreText := strings.TrimSpace(fmt.Sprint(item["score"]))
+				if scoreText == "" || scoreText == "<nil>" {
+					continue
+				}
+				key := fmt.Sprintf("%v:%v", item["student_id"], item["assignment_id"])
+				scoreByStudentAssignment[key] = floatFromAny(item["score"])
+			}
+		}
+	}
 
 	var rows []map[string]interface{}
 	for _, s := range students {
 		studentID := fmt.Sprint(s["id"])
 		scoreMap := map[string]interface{}{}
 		var scoredCount int
-		var avg float64
-		var n int
+		var taskSum float64
+		var taskCount int
+		var quizSum float64
+		var quizCount int
+		var examSum float64
+		var examCount int
+		var finalSum float64
+		var finalCount int
+
 		for _, aItem := range assignments {
 			aid := fmt.Sprint(aItem["id"])
-			var sc struct{ Score *float64 }
-			a.DB.Raw(`SELECT score FROM learning_submissions WHERE assignment_id=? AND student_id=? LIMIT 1`, aid, studentID).Scan(&sc)
-			if sc.Score != nil {
-				scoreMap[aid] = *sc.Score
-				scoredCount++
-				avg += *sc.Score
-				n++
-			} else {
+			scoreKey := fmt.Sprintf("%s:%s", studentID, aid)
+			scoreValue, exists := scoreByStudentAssignment[scoreKey]
+			if !exists {
 				scoreMap[aid] = nil
+				continue
+			}
+
+			scoreMap[aid] = scoreValue
+			scoredCount++
+			finalSum += scoreValue
+			finalCount++
+
+			switch classifyAssignmentForFinalReport(fmt.Sprint(aItem["assignment_type"]), boolFromAny(aItem["is_exam"])) {
+			case "exam":
+				examSum += scoreValue
+				examCount++
+			case "quiz":
+				quizSum += scoreValue
+				quizCount++
+			default:
+				taskSum += scoreValue
+				taskCount++
 			}
 		}
-		finalAvg := interface{}(nil)
-		if n > 0 {
-			finalAvg = float64(int((avg/float64(n))*100)) / 100
-		}
+
 		rows = append(rows, map[string]interface{}{
-			"student_id":    s["id"],
-			"student_name":  s["username"],
-			"class_id":      s["class_id"],
-			"scores":        scoreMap,
-			"scored_count":  scoredCount,
-			"final_average": finalAvg,
+			"student_id":     s["id"],
+			"student_name":   s["username"],
+			"class_id":       s["class_id"],
+			"scores":         scoreMap,
+			"scored_count":   scoredCount,
+			"avg_task_score": averageScore(taskSum, taskCount),
+			"avg_quiz_score": averageScore(quizSum, quizCount),
+			"avg_exam_score": averageScore(examSum, examCount),
+			"final_score":    averageScore(finalSum, finalCount),
+			"final_average":  averageScore(finalSum, finalCount),
 		})
 	}
 	return utils.Success(c, 200, "Success Get Final Grade Report", fiber.Map{
-		"assignments": assignments,
-		"students":    rows,
+		"assignments":     assignments,
+		"students":        rows,
+		"page":            page,
+		"limit":           limit,
+		"total":           totalStudents,
+		"total_pages":     int(math.Ceil(float64(totalStudents) / float64(limit))),
+		"selected_period": nilIfEmptyMap(selectedPeriod),
+		"active_period":   nilIfEmptyMap(activePeriod),
 	})
 }
 
@@ -1466,7 +1674,7 @@ func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
 		return utils.Error(c, code, message)
 	}
 
-	items, err := services.GenerateQuestionBankItemsWithOpenRouter(services.QuestionBankAIInput{
+	items, err := services.GenerateQuestionBankItemsWithHuggingFace(services.QuestionBankAIInput{
 		SubjectName:            subject.Name,
 		ClassName:              subject.ClassName,
 		GradeLabel:             strings.TrimSpace(body.GradeLabel),
@@ -1482,7 +1690,7 @@ func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Failed Generate Question Bank With AI", err.Error())
 	}
 	if len(items) == 0 {
-		return utils.Error(c, 500, "Failed Generate Question Bank With AI", "Hasil OpenRouter tidak valid untuk dijadikan bank soal")
+		return utils.Error(c, 500, "Failed Generate Question Bank With AI", "Hasil Hugging Face tidak valid untuk dijadikan bank soal")
 	}
 
 	return utils.Success(c, 200, "Success Generate Question Bank Preview", fiber.Map{
@@ -1787,7 +1995,7 @@ func (a *AppContext) GenerateLearningMaterialPptWithAI(c *fiber.Ctx) error {
 		return utils.Error(c, 400, "slide_count must be between 3 and 15")
 	}
 
-	outline, err := services.GeneratePowerPointOutlineWithOpenRouter(services.PowerPointAIInput{
+	outline, err := services.GeneratePowerPointOutlineWithHuggingFace(services.PowerPointAIInput{
 		SubjectName:            subject.Name,
 		ClassName:              subject.ClassName,
 		Topic:                  topic,
