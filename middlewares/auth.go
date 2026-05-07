@@ -27,9 +27,18 @@ func Auth(db *gorm.DB) fiber.Handler {
 			}
 
 			userID, _ := claims["id"].(float64)
-			sessionVersion, _ := claims["sessionVersion"].(float64)
 			if userID <= 0 {
 				return utils.Error(c, 401, "Unauthorized")
+			}
+
+			rawSessionVersion, hasSessionVersion := claims["sessionVersion"]
+			if !hasSessionVersion {
+				return c.Next()
+			}
+
+			sessionVersion, ok := rawSessionVersion.(float64)
+			if !ok {
+				return c.Next()
 			}
 
 			var current struct {
@@ -82,12 +91,13 @@ func ExtractClaims() fiber.Handler {
 
 		userID, _ := claims["id"].(float64)
 		schoolID, _ := claims["schoolId"].(float64)
-		sessionVersion, _ := claims["sessionVersion"].(float64)
 
 		c.Locals("userID", uint(userID))
 		c.Locals("schoolID", uint(schoolID))
 		c.Locals("userRole", fmt.Sprint(claims["role"]))
-		c.Locals("sessionVersion", int64(sessionVersion))
+		if sessionVersion, ok := claims["sessionVersion"].(float64); ok {
+			c.Locals("sessionVersion", int64(sessionVersion))
+		}
 		return c.Next()
 	}
 }
