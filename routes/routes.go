@@ -48,15 +48,15 @@ func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
 }
 
 func registerSchool(api fiber.Router, ctx *controllers.AppContext) {
+	current := api.Group("/school/current", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN"))
+	current.Put("/", ctx.UpdateCurrentSchool)
+	current.Put("/branding", ctx.UpdateCurrentSchoolBranding)
+
 	r := api.Group("/school", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("SUPER_ADMIN"))
 	r.Post("/", ctx.CreateSchool)
 	r.Get("/", ctx.GetSchools)
 	r.Put("/:id", ctx.UpdateSchool)
 	r.Delete("/:id", ctx.DeleteSchool)
-
-	current := api.Group("/school/current", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN"))
-	current.Put("/", ctx.UpdateCurrentSchool)
-	current.Put("/branding", ctx.UpdateCurrentSchoolBranding)
 }
 
 func registerClass(api fiber.Router, ctx *controllers.AppContext) {
