@@ -129,6 +129,51 @@ func (a *AppContext) UpdateCurrentSchoolBranding(c *fiber.Ctx) error {
 	return utils.Success(c, 200, "Logo sekolah berhasil diperbarui", row)
 }
 
+func (a *AppContext) UpdateCurrentSchool(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+
+	var school models.School
+	if err := a.DB.Where("id = ?", schoolID).First(&school).Error; err != nil {
+		return utils.Error(c, 404, "Sekolah tidak ditemukan")
+	}
+
+	name := strings.TrimSpace(c.FormValue("name"))
+	if name == "" {
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return utils.Error(c, 400, "Invalid request body")
+		}
+		name = strings.TrimSpace(body.Name)
+	}
+	if name == "" {
+		return utils.Error(c, 400, "Nama sekolah wajib diisi")
+	}
+
+	updates := map[string]interface{}{
+		"name": name,
+	}
+	if strings.EqualFold(strings.TrimSpace(c.FormValue("remove_logo")), "true") {
+		updates["logo_url"] = nil
+	}
+	if file, err := c.FormFile("logo"); err == nil && file != nil {
+		logoURL, upErr := utils.SaveUploadedFile(c, file)
+		if upErr != nil {
+			return utils.Error(c, 500, "Gagal upload logo sekolah", upErr.Error())
+		}
+		updates["logo_url"] = logoURL
+	}
+
+	if err := a.DB.Model(&school).Updates(updates).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memperbarui sekolah", err.Error())
+	}
+
+	var row map[string]interface{}
+	a.DB.Raw(`SELECT id, name, logo_url FROM schools WHERE id = ?`, schoolID).Scan(&row)
+	return utils.Success(c, 200, "Data sekolah berhasil diperbarui", row)
+}
+
 func (a *AppContext) DeleteSchool(c *fiber.Ctx) error {
 	id := c.Params("id")
 

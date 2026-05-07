@@ -55,6 +55,7 @@ func registerSchool(api fiber.Router, ctx *controllers.AppContext) {
 	r.Delete("/:id", ctx.DeleteSchool)
 
 	current := api.Group("/school/current", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN"))
+	current.Put("/", ctx.UpdateCurrentSchool)
 	current.Put("/branding", ctx.UpdateCurrentSchoolBranding)
 }
 
