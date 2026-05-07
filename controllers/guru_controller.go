@@ -298,6 +298,128 @@ func (a *AppContext) GetGuruDashboard(c *fiber.Ctx) error {
 		ORDER BY pr.created_at DESC LIMIT 8
 	`, schoolID, teacherID).Scan(&recentReceipts)
 
+	var scheduleEntries []map[string]interface{}
+	a.DB.Raw(`
+		SELECT
+			cse.id,
+			cse.learning_subject_id,
+			cse.class_id,
+			cse.curriculum_subject_id,
+			cse.schedule_slot_id,
+			COALESCE(cls.class_name, '-') AS class_name,
+			COALESCE(cs.name, '-') AS subject_name,
+			COALESCE(cs.code, '') AS subject_code,
+			slot.day_name,
+			slot.day_order,
+			slot.session_order,
+			slot.start_time,
+			slot.end_time,
+			COALESCE(slot.label, '') AS slot_label
+		FROM curriculum_schedule_entries cse
+		LEFT JOIN class cls ON cls.id = cse.class_id
+		LEFT JOIN curriculum_subjects cs ON cs.id = cse.curriculum_subject_id
+		LEFT JOIN curriculum_schedule_slots slot ON slot.id = cse.schedule_slot_id
+		WHERE cse.school_id = ? AND cse.teacher_id = ?
+		ORDER BY slot.day_order ASC, slot.session_order ASC, cls.class_name ASC, subject_name ASC
+	`, schoolID, teacherID).Scan(&scheduleEntries)
+
+	var teachingAssignments []map[string]interface{}
+	a.DB.Raw(`
+		SELECT
+			ccd.id,
+			ccd.weekly_hours,
+			COALESCE(cls.class_name, '-') AS class_name,
+			COALESCE(cs.name, '-') AS subject_name,
+			COALESCE(cs.code, '') AS subject_code,
+			COALESCE(ccd.notes, '') AS notes,
+			COALESCE(ctl.max_weekly_hours, 0) AS load_capacity
+		FROM curriculum_class_distributions ccd
+		LEFT JOIN curriculum_teacher_loads ctl ON ctl.id = ccd.curriculum_teacher_load_id
+		LEFT JOIN class cls ON cls.id = ccd.class_id
+		LEFT JOIN curriculum_subjects cs ON cs.id = ctl.curriculum_subject_id
+		WHERE ccd.school_id = ? AND ctl.teacher_id = ?
+		ORDER BY cls.class_name ASC, cs.name ASC
+	`, schoolID, teacherID).Scan(&teachingAssignments)
+
+	if len(teachingAssignments) == 0 {
+		a.DB.Raw(`
+			SELECT
+				ls.id,
+				0 AS weekly_hours,
+				COALESCE(cls.class_name, '-') AS class_name,
+				COALESCE(ls.name, '-') AS subject_name,
+				'' AS subject_code,
+				COALESCE(ls.description, '') AS notes,
+				0 AS load_capacity
+			FROM learning_subjects ls
+			LEFT JOIN class cls ON cls.id = ls.class_id
+			WHERE ls.school_id = ? AND ls.teacher_id = ?
+			ORDER BY cls.class_name ASC, ls.name ASC
+		`, schoolID, teacherID).Scan(&teachingAssignments)
+	}
+
+	parseClockToMinute := func(value string) int {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return -1
+		}
+		for _, layout := range []string{"15:04:05", "15:04"} {
+			parsed, err := time.Parse(layout, value)
+			if err == nil {
+				return parsed.Hour()*60 + parsed.Minute()
+			}
+		}
+		return -1
+	}
+
+	weekdayToOrder := func(day time.Weekday) int {
+		if day == time.Sunday {
+			return 7
+		}
+		return int(day)
+	}
+
+	location, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		location = time.FixedZone("WIB", 7*60*60)
+	}
+	nowJakarta := time.Now().In(location)
+	todayOrder := weekdayToOrder(nowJakarta.Weekday())
+	nowMinute := nowJakarta.Hour()*60 + nowJakarta.Minute()
+
+	var scheduleToday []map[string]interface{}
+	var activeTeaching map[string]interface{}
+	for _, item := range scheduleEntries {
+		dayOrder := utils.ToInt(asString(item["day_order"]), 0)
+		if dayOrder != todayOrder {
+			continue
+		}
+
+		scheduleToday = append(scheduleToday, item)
+
+		startMinute := parseClockToMinute(asString(item["start_time"]))
+		endMinute := parseClockToMinute(asString(item["end_time"]))
+		if startMinute < 0 || endMinute < 0 {
+			continue
+		}
+
+		if nowMinute >= startMinute && nowMinute <= endMinute {
+			if len(activeTeaching) == 0 {
+				activeTeaching = item
+			}
+			continue
+		}
+	}
+
+	overview["weekly_teaching_sessions"] = len(scheduleEntries)
+	overview["teaching_today"] = len(scheduleToday)
+	overview["teaching_assignments"] = len(teachingAssignments)
+	if len(activeTeaching) > 0 {
+		overview["active_teaching_now"] = 1
+	} else {
+		overview["active_teaching_now"] = 0
+	}
+
 	return utils.Success(c, 200, "Success Get Guru Dashboard", fiber.Map{
 		"generatedAt":      time.Now().UTC().Format(time.RFC3339),
 		"homeroom":         homeroom,
@@ -305,6 +427,14 @@ func (a *AppContext) GetGuruDashboard(c *fiber.Ctx) error {
 		"students":         students,
 		"recentAttendance": recentAttendance,
 		"recentReceipts":   recentReceipts,
+		"teachingSchedule": fiber.Map{
+			"entries":             scheduleEntries,
+			"today":               scheduleToday,
+			"active_now":          activeTeaching,
+			"today_day_order":     todayOrder,
+			"today_name":          nowJakarta.Weekday().String(),
+			"teaching_assignments": teachingAssignments,
+		},
 	})
 }
 

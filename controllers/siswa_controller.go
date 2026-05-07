@@ -546,6 +546,11 @@ func (a *AppContext) CheckIn(c *fiber.Ctx) error {
 	if err != nil || file == nil {
 		return utils.Error(c, 400, "Image is required")
 	}
+	var faceReferenceImage string
+	a.DB.Raw(`SELECT COALESCE(face_reference_image, '') FROM users WHERE id = ? LIMIT 1`, userID).Scan(&faceReferenceImage)
+	if strings.TrimSpace(faceReferenceImage) == "" {
+		return utils.Error(c, 400, "Foto referensi wajah belum tersedia. Lakukan enrol wajah terlebih dahulu sebelum absensi.")
+	}
 	var exists int64
 	a.DB.Raw(`SELECT COUNT(*) FROM attendance WHERE user_id=? AND attendance_date=CURRENT_DATE`, userID).Scan(&exists)
 	if exists > 0 {

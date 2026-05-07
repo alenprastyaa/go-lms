@@ -67,7 +67,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 	}
 
 	return utils.Success(c, 200, "Login successful", fiber.Map{
-		"role": user.Role, "username": user.Username, "school_id": user.SchoolID, "school_name": schoolName, "profile_image": user.ProfileImage, "token": token,
+		"role": user.Role, "username": user.Username, "school_id": user.SchoolID, "school_name": schoolName, "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
 	})
 }
 
@@ -760,18 +760,20 @@ func (a *AppContext) DeleteUserSchool(c *fiber.Ctx) error {
 func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 	userID := c.Locals("userID").(uint)
 	var profile struct {
-		ID           uint    `json:"id"`
-		FullName     *string `json:"full_name"`
-		Username     string  `json:"username"`
-		Role         string  `json:"role"`
-		SchoolID     *uint   `json:"school_id"`
-		ParentEmail  *string `json:"parent_email"`
-		PhoneNumber  *string `json:"phone_number"`
-		ProfileImage *string `json:"profile_image"`
-		SchoolName   *string `json:"school_name"`
+		ID                      uint    `json:"id"`
+		FullName                *string `json:"full_name"`
+		Username                string  `json:"username"`
+		Role                    string  `json:"role"`
+		SchoolID                *uint   `json:"school_id"`
+		ParentEmail             *string `json:"parent_email"`
+		PhoneNumber             *string `json:"phone_number"`
+		ProfileImage            *string `json:"profile_image"`
+		FaceReferenceImage      *string `json:"face_reference_image"`
+		FaceReferenceDescriptor *string `json:"face_reference_descriptor"`
+		SchoolName              *string `json:"school_name"`
 	}
 	err := a.DB.Table("users u").
-		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, s.name as school_name").
+		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name").
 		Joins("left join schools s on s.id = u.school_id").
 		Where("u.id = ?", userID).
 		Scan(&profile).Error
@@ -840,6 +842,21 @@ func (a *AppContext) UpdateMyProfile(c *fiber.Ctx) error {
 			return utils.Error(c, 500, "Gagal upload foto profil", upErr.Error())
 		}
 		updates["profile_image"] = saved
+	}
+	if strings.EqualFold(strings.TrimSpace(c.FormValue("remove_face_reference")), "true") {
+		updates["face_reference_image"] = nil
+		updates["face_reference_descriptor"] = nil
+	}
+	faceReferenceDescriptor := strings.TrimSpace(c.FormValue("face_reference_descriptor"))
+	if f, err := c.FormFile("face_reference_image"); err == nil && f != nil {
+		saved, upErr := utils.SaveUploadedFile(c, f)
+		if upErr != nil {
+			return utils.Error(c, 500, "Gagal upload foto referensi wajah", upErr.Error())
+		}
+		updates["face_reference_image"] = saved
+	}
+	if faceReferenceDescriptor != "" {
+		updates["face_reference_descriptor"] = faceReferenceDescriptor
 	}
 
 	if len(updates) == 0 {

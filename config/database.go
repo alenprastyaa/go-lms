@@ -39,6 +39,12 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name TEXT`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS face_reference_image TEXT`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS face_reference_descriptor TEXT`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE learning_submissions ADD COLUMN IF NOT EXISTS access_blocked BOOLEAN NOT NULL DEFAULT FALSE`).Error; err != nil {
 		return nil, err
 	}
