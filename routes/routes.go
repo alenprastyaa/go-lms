@@ -161,6 +161,7 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 
 	at := api.Group("/attendance", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	at.Post("/report/homeroom-email", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.SendHomeroomAttendanceReport)
+	at.Post("/report/homeroom-whatsapp", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.SendHomeroomAttendanceWhatsAppReport)
 }
 
 func registerAcademic(api fiber.Router, ctx *controllers.AppContext) {

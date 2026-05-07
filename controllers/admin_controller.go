@@ -14,6 +14,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
+	"lms/services"
 	"lms/utils"
 )
 
@@ -291,6 +292,229 @@ func (a *AppContext) SendHomeroomAttendanceReport(c *fiber.Ctx) error {
 		"results":       results,
 		"generated_at":  time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+func (a *AppContext) SendHomeroomAttendanceWhatsAppReport(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	var body struct {
+		Date    string `json:"date"`
+		ClassID uint   `json:"class_id"`
+	}
+	_ = c.BodyParser(&body)
+
+	reportDate := adminReportDateOrToday(body.Date)
+	if body.ClassID == 0 {
+		return utils.Error(c, 400, "Kelas wajib dipilih")
+	}
+
+	var classItem struct {
+		ClassID             uint    `json:"class_id"`
+		ClassName           string  `json:"class_name"`
+		WaliGuruName        *string `json:"wali_guru_name"`
+		WaliGuruPhoneNumber *string `json:"wali_guru_phone_number"`
+	}
+	if err := a.DB.Raw(`
+		SELECT
+			c.id AS class_id,
+			c.class_name,
+			COALESCE(NULLIF(u.full_name, ''), u.username) AS wali_guru_name,
+			u.phone_number AS wali_guru_phone_number
+		FROM class c
+		LEFT JOIN users u ON u.id = c.wali_guru_id
+		WHERE c.school_id = ? AND c.id = ?
+		LIMIT 1
+	`, schoolID, body.ClassID).Scan(&classItem).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memuat data wali kelas", err.Error())
+	}
+	if classItem.ClassID == 0 {
+		return utils.Error(c, 404, "Kelas tidak ditemukan")
+	}
+
+	normalizedPhone, phoneErr := normalizeWhatsAppPhone(classItem.WaliGuruPhoneNumber)
+	if phoneErr != nil {
+		return utils.Error(c, 400, phoneErr.Error())
+	}
+
+	students, err := a.fetchHomeroomAttendanceStudents(classItem.ClassID, schoolID, reportDate)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal memuat data kehadiran siswa", err.Error())
+	}
+
+	report := buildHomeroomAttendanceSummary(students)
+	message := buildHomeroomAttendanceWhatsAppMessage(
+		classItem.ClassName,
+		stringPointerValue(classItem.WaliGuruName),
+		reportDate,
+		report.PresentNames,
+		report.AbsentNames,
+	)
+
+	sendResp, sendErr := services.SendWhatsAppMessage(normalizedPhone, message)
+	if sendErr != nil {
+		return utils.Error(c, 500, "Gagal mengirim WhatsApp ke wali kelas", sendErr.Error())
+	}
+
+	return utils.Success(c, 200, "WhatsApp wali kelas berhasil dikirim", fiber.Map{
+		"class_id":        classItem.ClassID,
+		"class_name":      classItem.ClassName,
+		"wali_guru_name":  stringPointerValue(classItem.WaliGuruName),
+		"target":          normalizedPhone,
+		"success":         true,
+		"attendance_date": reportDate.Format("2006-01-02"),
+		"present_count":   len(report.PresentNames),
+		"present_names":   report.PresentNames,
+		"absent_count":    len(report.AbsentNames),
+		"absent_names":    report.AbsentNames,
+		"generated_at":    time.Now().UTC().Format(time.RFC3339),
+		"provider_data":   sendResp,
+	})
+}
+
+type homeroomAttendanceStudent struct {
+	StudentName      string  `json:"student_name"`
+	AttendanceStatus *string `json:"attendance_status"`
+}
+
+type homeroomAttendanceSummary struct {
+	PresentNames []string
+	AbsentNames  []string
+}
+
+func (a *AppContext) fetchHomeroomAttendanceStudents(classID, schoolID uint, reportDate time.Time) ([]homeroomAttendanceStudent, error) {
+	var students []homeroomAttendanceStudent
+	err := a.DB.Raw(`
+		SELECT
+			COALESCE(NULLIF(u.full_name, ''), u.username) AS student_name,
+			a.status AS attendance_status
+		FROM users u
+		LEFT JOIN attendance a
+			ON a.user_id = u.id
+			AND a.attendance_date = ?
+		WHERE u.role = 'SISWA'
+			AND u.school_id = ?
+			AND u.class_id = ?
+		ORDER BY COALESCE(NULLIF(u.full_name, ''), u.username) ASC
+	`, reportDate.Format("2006-01-02"), schoolID, classID).Scan(&students).Error
+	return students, err
+}
+
+func buildHomeroomAttendanceSummary(students []homeroomAttendanceStudent) homeroomAttendanceSummary {
+	summary := homeroomAttendanceSummary{
+		PresentNames: make([]string, 0),
+		AbsentNames:  make([]string, 0),
+	}
+
+	for _, student := range students {
+		name := strings.TrimSpace(student.StudentName)
+		if name == "" {
+			continue
+		}
+
+		status := strings.ToLower(stringPointerValue(student.AttendanceStatus))
+		if status == "hadir" {
+			summary.PresentNames = append(summary.PresentNames, name)
+			continue
+		}
+		summary.AbsentNames = append(summary.AbsentNames, name)
+	}
+
+	return summary
+}
+
+func adminReportDateOrToday(raw string) time.Time {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return currentJakartaDate()
+	}
+
+	parsed, err := time.ParseInLocation("2006-01-02", trimmed, jakartaLocation())
+	if err != nil {
+		return currentJakartaDate()
+	}
+	return parsed
+}
+
+func currentJakartaDate() time.Time {
+	now := time.Now().In(jakartaLocation())
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, jakartaLocation())
+}
+
+func normalizeWhatsAppPhone(value *string) (string, error) {
+	raw := stringPointerValue(value)
+	if raw == "" {
+		return "", fmt.Errorf("Nomor WhatsApp wali kelas belum tersedia")
+	}
+
+	replacer := strings.NewReplacer(" ", "", "-", "", "(", "", ")", "", ".", "", "+", "")
+	normalized := replacer.Replace(raw)
+	switch {
+	case strings.HasPrefix(normalized, "62"):
+	case strings.HasPrefix(normalized, "0"):
+		normalized = "62" + normalized[1:]
+	default:
+		return "", fmt.Errorf("Format nomor WhatsApp wali kelas tidak valid")
+	}
+
+	for _, char := range normalized {
+		if char < '0' || char > '9' {
+			return "", fmt.Errorf("Nomor WhatsApp wali kelas hanya boleh berisi angka")
+		}
+	}
+
+	if len(normalized) < 10 {
+		return "", fmt.Errorf("Nomor WhatsApp wali kelas terlalu pendek")
+	}
+
+	return normalized, nil
+}
+
+func stringPointerValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
+func buildHomeroomAttendanceWhatsAppMessage(className, waliName string, reportDate time.Time, presentNames, absentNames []string) string {
+	dateLabel := reportDate.In(jakartaLocation()).Format("02 January 2006")
+	if strings.TrimSpace(waliName) == "" {
+		waliName = "Bapak/Ibu Wali Kelas"
+	}
+
+	presentBlock := buildWhatsAppNameList("Siswa sudah hadir", presentNames)
+	absentBlock := buildWhatsAppNameList("Siswa belum hadir", absentNames)
+
+	return strings.TrimSpace(fmt.Sprintf(`Yth. %s,
+
+Berikut kami sampaikan rekap kehadiran siswa untuk kelas *%s* pada *%s*.
+
+*Ringkasan Kehadiran*
+- Total hadir: *%d siswa*
+- Total belum hadir: *%d siswa*
+
+%s
+
+%s
+
+Mohon tindak lanjut kepada siswa yang belum hadir apabila diperlukan.
+
+Terima kasih.
+
+Hormat kami,
+Admin Sekolah`, waliName, className, dateLabel, len(presentNames), len(absentNames), presentBlock, absentBlock))
+}
+
+func buildWhatsAppNameList(title string, names []string) string {
+	if len(names) == 0 {
+		return fmt.Sprintf("*%s*\n- Nihil", title)
+	}
+
+	lines := make([]string, 0, len(names)+1)
+	lines = append(lines, fmt.Sprintf("*%s*", title))
+	for index, name := range names {
+		lines = append(lines, fmt.Sprintf("%d. %s", index+1, name))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (a *AppContext) GetAdminSettingsSummary(c *fiber.Ctx) error {
