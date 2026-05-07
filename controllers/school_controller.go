@@ -69,6 +69,40 @@ func (a *AppContext) UpdateSchool(c *fiber.Ctx) error {
 	return utils.Success(c, 200, "Sekolah berhasil diperbarui", row)
 }
 
+func (a *AppContext) UpdateCurrentSchoolBranding(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+
+	var school models.School
+	if err := a.DB.Where("id = ?", schoolID).First(&school).Error; err != nil {
+		return utils.Error(c, 404, "Sekolah tidak ditemukan")
+	}
+
+	updates := map[string]interface{}{}
+	if strings.EqualFold(strings.TrimSpace(c.FormValue("remove_logo")), "true") {
+		updates["logo_url"] = nil
+	}
+
+	if file, err := c.FormFile("logo"); err == nil && file != nil {
+		logoURL, upErr := utils.SaveUploadedFile(c, file)
+		if upErr != nil {
+			return utils.Error(c, 500, "Gagal upload logo sekolah", upErr.Error())
+		}
+		updates["logo_url"] = logoURL
+	}
+
+	if len(updates) == 0 {
+		return utils.Error(c, 400, "Tidak ada perubahan logo sekolah")
+	}
+
+	if err := a.DB.Model(&school).Updates(updates).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memperbarui logo sekolah", err.Error())
+	}
+
+	var row map[string]interface{}
+	a.DB.Raw(`SELECT id, name, logo_url FROM schools WHERE id = ?`, schoolID).Scan(&row)
+	return utils.Success(c, 200, "Logo sekolah berhasil diperbarui", row)
+}
+
 func (a *AppContext) DeleteSchool(c *fiber.Ctx) error {
 	id := c.Params("id")
 
@@ -118,6 +152,7 @@ func schoolListQuery(whereClause string) string {
 		SELECT
 			s.id,
 			s.name,
+			s.logo_url,
 			COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END)::int AS total_admins,
 			COUNT(DISTINCT CASE WHEN u.role = 'GURU' THEN u.id END)::int AS total_teachers,
 			COUNT(DISTINCT CASE WHEN u.role = 'SISWA' THEN u.id END)::int AS total_students,
@@ -132,6 +167,6 @@ func schoolListQuery(whereClause string) string {
 		LEFT JOIN learning_subjects ls ON ls.school_id = s.id
 		LEFT JOIN academic_years ay ON ay.school_id = s.id
 		%s
-		GROUP BY s.id, s.name
+		GROUP BY s.id, s.name, s.logo_url
 	`, whereClause)
 }

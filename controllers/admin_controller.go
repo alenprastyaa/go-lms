@@ -143,6 +143,7 @@ func (a *AppContext) GetSuperAdminDashboard(c *fiber.Ctx) error {
 		ORDER BY a.clock_in DESC NULLS LAST
 		LIMIT 8
 	`).Scan(&recentAttendance)
+	normalizeAttendanceMaps(recentAttendance)
 
 	var recentReceipts []map[string]interface{}
 	a.DB.Raw(`
@@ -153,6 +154,7 @@ func (a *AppContext) GetSuperAdminDashboard(c *fiber.Ctx) error {
 		ORDER BY pr.created_at DESC
 		LIMIT 8
 	`).Scan(&recentReceipts)
+	normalizeReceiptMaps(recentReceipts)
 
 	return utils.Success(c, 200, "Success Get Super Admin Dashboard", fiber.Map{
 		"generatedAt":      time.Now().UTC().Format(time.RFC3339),
@@ -221,6 +223,7 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 		WHERE u.school_id = ?
 		ORDER BY a.clock_in DESC NULLS LAST LIMIT 8
 	`, schoolID).Scan(&recentAttendance)
+	normalizeAttendanceMaps(recentAttendance)
 
 	var recentReceipts []map[string]interface{}
 	a.DB.Raw(`
@@ -231,6 +234,7 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 		WHERE u.school_id = ?
 		ORDER BY pr.created_at DESC LIMIT 8
 	`, schoolID).Scan(&recentReceipts)
+	normalizeReceiptMaps(recentReceipts)
 
 	return utils.Success(c, 200, "Success Get Admin Dashboard", fiber.Map{
 		"generatedAt":      time.Now().UTC().Format(time.RFC3339),

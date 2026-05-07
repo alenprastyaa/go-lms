@@ -61,13 +61,15 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 
 	var school models.School
 	var schoolName interface{} = nil
+	var schoolLogo interface{} = nil
 	if user.SchoolID != nil {
 		_ = a.DB.Where("id = ?", *user.SchoolID).First(&school).Error
 		schoolName = school.Name
+		schoolLogo = school.LogoURL
 	}
 
 	return utils.Success(c, 200, "Login successful", fiber.Map{
-		"role": user.Role, "username": user.Username, "school_id": user.SchoolID, "school_name": schoolName, "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
+		"role": user.Role, "username": user.Username, "school_id": user.SchoolID, "school_name": schoolName, "school_logo": schoolLogo, "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
 	})
 }
 
@@ -154,11 +156,11 @@ func (a *AppContext) ImportUserSchoolTeachers(c *fiber.Ctx) error {
 		}
 
 		record := map[string]string{
-			"full_name":     cellValue(row, columnIndex["full_name"]),
-			"username":      strings.TrimSpace(cellValue(row, columnIndex["username"])),
-			"password":      strings.TrimSpace(cellValue(row, columnIndex["password"])),
-			"parent_email":  strings.TrimSpace(cellValue(row, columnIndex["parent_email"])),
-			"phone_number":  strings.TrimSpace(cellValue(row, columnIndex["phone_number"])),
+			"full_name":    cellValue(row, columnIndex["full_name"]),
+			"username":     strings.TrimSpace(cellValue(row, columnIndex["username"])),
+			"password":     strings.TrimSpace(cellValue(row, columnIndex["password"])),
+			"parent_email": strings.TrimSpace(cellValue(row, columnIndex["parent_email"])),
+			"phone_number": strings.TrimSpace(cellValue(row, columnIndex["phone_number"])),
 		}
 
 		if record["username"] == "" || record["password"] == "" {
@@ -263,11 +265,11 @@ func buildTeacherTemplateXLSX() ([]byte, error) {
 	zipWriter := archivezip.NewWriter(&buffer)
 
 	files := map[string]string{
-		"[Content_Types].xml":              xlsxContentTypesXML(),
-		"_rels/.rels":                      xlsxRootRelsXML(),
-		"xl/workbook.xml":                  xlsxWorkbookXML(),
-		"xl/_rels/workbook.xml.rels":       xlsxWorkbookRelsXML(),
-		"xl/worksheets/sheet1.xml":         xlsxTeacherTemplateSheetXML(),
+		"[Content_Types].xml":        xlsxContentTypesXML(),
+		"_rels/.rels":                xlsxRootRelsXML(),
+		"xl/workbook.xml":            xlsxWorkbookXML(),
+		"xl/_rels/workbook.xml.rels": xlsxWorkbookRelsXML(),
+		"xl/worksheets/sheet1.xml":   xlsxTeacherTemplateSheetXML(),
 	}
 
 	for name, content := range files {
@@ -771,9 +773,10 @@ func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 		FaceReferenceImage      *string `json:"face_reference_image"`
 		FaceReferenceDescriptor *string `json:"face_reference_descriptor"`
 		SchoolName              *string `json:"school_name"`
+		SchoolLogo              *string `json:"school_logo"`
 	}
 	err := a.DB.Table("users u").
-		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name").
+		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo").
 		Joins("left join schools s on s.id = u.school_id").
 		Where("u.id = ?", userID).
 		Scan(&profile).Error

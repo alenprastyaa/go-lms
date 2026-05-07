@@ -34,6 +34,7 @@ func (a *AppContext) CreateReceipt(c *fiber.Ctx) error {
 	if err := a.DB.Create(&receipt).Error; err != nil {
 		return utils.Error(c, 500, "Faild Create Receipt", err.Error())
 	}
+	normalizeReceiptModel(&receipt)
 	return utils.Success(c, 201, "Success Create Receipt", receipt)
 }
 
@@ -41,6 +42,7 @@ func (a *AppContext) GetReceipt(c *fiber.Ctx) error {
 	userID := c.Locals("userID").(uint)
 	var receipts []models.Receipt
 	a.DB.Where("user_id = ?", userID).Order("payment_date desc nulls last, created_at desc").Find(&receipts)
+	normalizeReceiptModels(receipts)
 	return utils.Success(c, 200, "Success Get Data Receipt", receipts)
 }
 
@@ -52,6 +54,7 @@ func (a *AppContext) GetReceiptByID(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ? AND user_id = ?", id, userID).First(&receipt).Error; err != nil {
 		return utils.Error(c, 404, "Receipt not found")
 	}
+	normalizeReceiptModel(&receipt)
 	return utils.Success(c, 200, "Success Get Receipt", receipt)
 }
 
@@ -97,6 +100,7 @@ func (a *AppContext) UpdateReceipt(c *fiber.Ctx) error {
 
 	var updated models.Receipt
 	_ = a.DB.Where("id = ? AND user_id = ?", id, userID).First(&updated).Error
+	normalizeReceiptModel(&updated)
 	return utils.Success(c, 200, "Success Update Receipt", updated)
 }
 

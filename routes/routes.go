@@ -1,11 +1,12 @@
 package routes
 
 import (
-	"github.com/gofiber/fiber/v2"
-	"gorm.io/gorm"
 	"lms/controllers"
 	"lms/middlewares"
 	"lms/realtime"
+
+	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 )
 
 func Register(app *fiber.App, db *gorm.DB, hub *realtime.Hub) {
@@ -48,6 +49,9 @@ func registerSchool(api fiber.Router, ctx *controllers.AppContext) {
 	r.Get("/", ctx.GetSchools)
 	r.Put("/:id", ctx.UpdateSchool)
 	r.Delete("/:id", ctx.DeleteSchool)
+
+	current := api.Group("/school/current", middlewares.Auth(), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN"))
+	current.Put("/branding", ctx.UpdateCurrentSchoolBranding)
 }
 
 func registerClass(api fiber.Router, ctx *controllers.AppContext) {
@@ -195,3 +199,5 @@ func registerLearningAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	r.Post("/assignments/:assignmentId/publish", middlewares.RoleAllowed("ADMIN"), ctx.PublishExamByAdmin)
 	r.Post("/submissions/:submissionId/exam-access-code", middlewares.RoleAllowed("ADMIN"), ctx.GenerateStudentExamAccessCodeByAdmin)
 }
+
+// Saya sedang test CI CD

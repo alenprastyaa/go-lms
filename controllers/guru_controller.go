@@ -287,6 +287,7 @@ func (a *AppContext) GetGuruDashboard(c *fiber.Ctx) error {
 		WHERE u.school_id=? AND c.wali_guru_id=?
 		ORDER BY a.clock_in DESC NULLS LAST LIMIT 8
 	`, schoolID, teacherID).Scan(&recentAttendance)
+	normalizeAttendanceMaps(recentAttendance)
 
 	var recentReceipts []map[string]interface{}
 	a.DB.Raw(`
@@ -297,6 +298,7 @@ func (a *AppContext) GetGuruDashboard(c *fiber.Ctx) error {
 		WHERE u.school_id=? AND c.wali_guru_id=?
 		ORDER BY pr.created_at DESC LIMIT 8
 	`, schoolID, teacherID).Scan(&recentReceipts)
+	normalizeReceiptMaps(recentReceipts)
 
 	var scheduleEntries []map[string]interface{}
 	a.DB.Raw(`
@@ -428,11 +430,11 @@ func (a *AppContext) GetGuruDashboard(c *fiber.Ctx) error {
 		"recentAttendance": recentAttendance,
 		"recentReceipts":   recentReceipts,
 		"teachingSchedule": fiber.Map{
-			"entries":             scheduleEntries,
-			"today":               scheduleToday,
-			"active_now":          activeTeaching,
-			"today_day_order":     todayOrder,
-			"today_name":          nowJakarta.Weekday().String(),
+			"entries":              scheduleEntries,
+			"today":                scheduleToday,
+			"active_now":           activeTeaching,
+			"today_day_order":      todayOrder,
+			"today_name":           nowJakarta.Weekday().String(),
 			"teaching_assignments": teachingAssignments,
 		},
 	})
@@ -457,6 +459,14 @@ func (a *AppContext) GetMyClassStudents(c *fiber.Ctx) error {
 		ORDER BY u.username ASC
 		LIMIT ? OFFSET ?
 	`, schoolID, teacherID, limit, offset).Scan(&rows)
+	for _, row := range rows {
+		if value, ok := row["clock_in"]; ok {
+			row["clock_in"] = normalizeJakartaDateTimeValue(value)
+		}
+		if value, ok := row["clock_out"]; ok {
+			row["clock_out"] = normalizeJakartaDateTimeValue(value)
+		}
+	}
 	return utils.Success(c, 200, "Success Get My Class Students", fiber.Map{"page": page, "limit": limit, "data": rows})
 }
 
@@ -486,6 +496,7 @@ func (a *AppContext) GetStudentAttendanceForTeacher(c *fiber.Ctx) error {
 		ORDER BY a.attendance_date DESC, a.clock_in DESC
 		LIMIT ? OFFSET ?
 	`, studentID, limit, offset).Scan(&rows)
+	normalizeAttendanceMaps(rows)
 	return utils.Success(c, 200, "Success Get Student Attendance", fiber.Map{"page": page, "limit": limit, "data": rows})
 }
 
@@ -510,6 +521,7 @@ func (a *AppContext) GetStudentReceiptForTeacher(c *fiber.Ctx) error {
 		WHERE user_id=?
 		ORDER BY payment_date DESC NULLS LAST, created_at DESC
 	`, studentID).Scan(&rows)
+	normalizeReceiptMaps(rows)
 	return utils.Success(c, 200, "Success Get Student Receipt", rows)
 }
 

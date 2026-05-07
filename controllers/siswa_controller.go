@@ -26,6 +26,7 @@ func (a *AppContext) GetSiswaDashboard(c *fiber.Ctx) error {
 
 	var today map[string]interface{}
 	a.DB.Raw(`SELECT attendance_date,clock_in,clock_out,status,image FROM attendance WHERE user_id=? AND attendance_date=CURRENT_DATE LIMIT 1`, studentID).Scan(&today)
+	normalizeAttendanceMap(today)
 
 	var overviewRows []struct {
 		Key   string `json:"key"`
@@ -46,8 +47,10 @@ func (a *AppContext) GetSiswaDashboard(c *fiber.Ctx) error {
 
 	var recentAttendance []map[string]interface{}
 	a.DB.Raw(`SELECT attendance_date,clock_in,clock_out,status,image FROM attendance WHERE user_id=? ORDER BY attendance_date DESC, clock_in DESC LIMIT 8`, studentID).Scan(&recentAttendance)
+	normalizeAttendanceMaps(recentAttendance)
 	var recentReceipts []map[string]interface{}
 	a.DB.Raw(`SELECT id,periode,description,created_at,image_path FROM payment_receipt WHERE user_id=? ORDER BY created_at DESC LIMIT 8`, studentID).Scan(&recentReceipts)
+	normalizeReceiptMaps(recentReceipts)
 	var pendingAssignments []map[string]interface{}
 	a.DB.Raw(`
 		SELECT la.id,la.title,la.due_date,ls.name AS subject_name,c.class_name,sub.id AS submission_id,sub.score
@@ -592,6 +595,7 @@ func (a *AppContext) GetListAttendance(c *fiber.Ctx) error {
 		ORDER BY a.attendance_date DESC, a.clock_in DESC
 		LIMIT ? OFFSET ?
 	`, userID, limit, offset).Scan(&rows)
+	normalizeAttendanceMaps(rows)
 	return utils.Success(c, 200, "Success Get Attendance Data", fiber.Map{"page": page, "limit": limit, "data": rows})
 }
 
