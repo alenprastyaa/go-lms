@@ -56,15 +56,24 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 		return utils.Error(c, 401, "Invalid Password")
 	}
 
+	sessionDevice := detectLoginDevice(c.Get("User-Agent"))
+	sessionIP := strings.TrimSpace(c.IP())
+	loginAt := time.Now().UTC()
+
 	var sessionRow struct {
 		SessionVersion int64 `json:"session_version"`
 	}
 	if err := a.DB.Raw(`
 		UPDATE users
-		SET session_version = COALESCE(session_version, 0) + 1
+		SET
+			session_version = COALESCE(session_version, 0) + 1,
+			current_session_device = ?,
+			current_session_user_agent = ?,
+			current_session_ip = ?,
+			current_session_login_at = ?
 		WHERE id = ?
 		RETURNING session_version
-	`, user.ID).Scan(&sessionRow).Error; err != nil {
+	`, sessionDevice, nullIfSessionValueEmpty(c.Get("User-Agent")), nullIfSessionValueEmpty(sessionIP), loginAt, user.ID).Scan(&sessionRow).Error; err != nil {
 		return utils.Error(c, 500, "Gagal membuat sesi login", err.Error())
 	}
 	user.SessionVersion = sessionRow.SessionVersion
@@ -897,4 +906,59 @@ func coalesceStrPtr(v *string, fallback *string) interface{} {
 		return nil
 	}
 	return *fallback
+}
+
+func nullIfSessionValueEmpty(value string) interface{} {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return trimmed
+}
+
+func detectLoginDevice(userAgent string) string {
+	normalized := strings.ToLower(strings.TrimSpace(userAgent))
+	if normalized == "" {
+		return "Perangkat tidak dikenal"
+	}
+
+	deviceType := "Desktop"
+	switch {
+	case strings.Contains(normalized, "ipad"):
+		deviceType = "Tablet"
+	case strings.Contains(normalized, "tablet"):
+		deviceType = "Tablet"
+	case strings.Contains(normalized, "mobile"), strings.Contains(normalized, "iphone"), strings.Contains(normalized, "android"):
+		deviceType = "Mobile"
+	}
+
+	platform := "Unknown OS"
+	switch {
+	case strings.Contains(normalized, "windows"):
+		platform = "Windows"
+	case strings.Contains(normalized, "mac os"), strings.Contains(normalized, "macintosh"):
+		platform = "macOS"
+	case strings.Contains(normalized, "iphone"), strings.Contains(normalized, "ipad"), strings.Contains(normalized, "ios"):
+		platform = "iOS"
+	case strings.Contains(normalized, "android"):
+		platform = "Android"
+	case strings.Contains(normalized, "linux"):
+		platform = "Linux"
+	}
+
+	browser := "Browser tidak dikenal"
+	switch {
+	case strings.Contains(normalized, "edg/"):
+		browser = "Microsoft Edge"
+	case strings.Contains(normalized, "opr/"), strings.Contains(normalized, "opera"):
+		browser = "Opera"
+	case strings.Contains(normalized, "chrome/") && !strings.Contains(normalized, "edg/") && !strings.Contains(normalized, "opr/"):
+		browser = "Google Chrome"
+	case strings.Contains(normalized, "firefox/"):
+		browser = "Mozilla Firefox"
+	case strings.Contains(normalized, "safari/") && !strings.Contains(normalized, "chrome/"):
+		browser = "Safari"
+	}
+
+	return fmt.Sprintf("%s • %s • %s", deviceType, platform, browser)
 }

@@ -3,6 +3,7 @@ package middlewares
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	jwtware "github.com/gofiber/jwt/v3"
@@ -32,17 +33,32 @@ func Auth(db *gorm.DB) fiber.Handler {
 			}
 
 			var current struct {
-				SessionVersion int64 `gorm:"column:session_version"`
+				SessionVersion        int64      `gorm:"column:session_version"`
+				CurrentSessionDevice  *string    `gorm:"column:current_session_device"`
+				CurrentSessionIP      *string    `gorm:"column:current_session_ip"`
+				CurrentSessionLoginAt *time.Time `gorm:"column:current_session_login_at"`
 			}
 			if err := db.Table("users").
-				Select("session_version").
+				Select("session_version, current_session_device, current_session_ip, current_session_login_at").
 				Where("id = ?", uint(userID)).
 				Take(&current).Error; err != nil {
 				return utils.Error(c, 401, "Unauthorized")
 			}
 
 			if current.SessionVersion != int64(sessionVersion) {
-				return utils.Error(c, 401, "Sesi login sudah digantikan oleh perangkat lain. Silakan login kembali")
+				return c.Status(401).JSON(fiber.Map{
+					"success": false,
+					"message": "Sesi login Anda telah digantikan oleh login dari perangkat lain",
+					"code":    "SESSION_REPLACED",
+					"data": fiber.Map{
+						"reason":            "SESSION_REPLACED",
+						"active_device":     current.CurrentSessionDevice,
+						"active_ip":         current.CurrentSessionIP,
+						"active_login_at":   current.CurrentSessionLoginAt,
+						"forced_logout":     true,
+						"should_show_modal": true,
+					},
+				})
 			}
 
 			return c.Next()

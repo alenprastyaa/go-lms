@@ -42,6 +42,18 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version BIGINT NOT NULL DEFAULT 0`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS current_session_device TEXT`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS current_session_user_agent TEXT`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS current_session_ip TEXT`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS current_session_login_at TIMESTAMP NULL`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS logo_url TEXT`).Error; err != nil {
 		return nil, err
 	}
