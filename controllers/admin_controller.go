@@ -65,56 +65,117 @@ func (a *AppContext) GetSuperAdminDashboard(c *fiber.Ctx) error {
 
 	var schools []map[string]interface{}
 	a.DB.Raw(`
+		WITH user_counts AS (
+			SELECT
+				school_id,
+				COUNT(*)::int AS total_users,
+				COUNT(*) FILTER (WHERE role = 'ADMIN')::int AS total_admins,
+				COUNT(*) FILTER (WHERE role = 'GURU')::int AS total_teachers,
+				COUNT(*) FILTER (WHERE role = 'SISWA')::int AS total_students
+			FROM users
+			GROUP BY school_id
+		),
+		class_counts AS (
+			SELECT school_id, COUNT(*)::int AS total_classes
+			FROM class
+			GROUP BY school_id
+		),
+		active_year_counts AS (
+			SELECT school_id, COUNT(*)::int AS active_academic_years
+			FROM academic_years
+			WHERE is_active = true
+			GROUP BY school_id
+		),
+		curriculum_counts AS (
+			SELECT school_id, COUNT(*)::int AS curriculum_subjects
+			FROM curriculum_subjects
+			GROUP BY school_id
+		),
+		attendance_counts AS (
+			SELECT u.school_id, COUNT(a.id)::int AS attendance_today
+			FROM attendance a
+			INNER JOIN users u ON u.id = a.user_id
+			WHERE a.attendance_date = CURRENT_DATE
+			GROUP BY u.school_id
+		),
+		receipt_counts AS (
+			SELECT u.school_id, COUNT(pr.id)::int AS receipts_this_month
+			FROM payment_receipt pr
+			INNER JOIN users u ON u.id = pr.user_id
+			WHERE DATE_TRUNC('month', pr.created_at) = DATE_TRUNC('month', CURRENT_DATE)
+			GROUP BY u.school_id
+		)
 		SELECT
 		  s.id,
 		  s.name,
-		  COUNT(DISTINCT u.id)::int AS total_users,
-		  COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END)::int AS total_admins,
-		  COUNT(DISTINCT CASE WHEN u.role = 'GURU' THEN u.id END)::int AS total_teachers,
-		  COUNT(DISTINCT CASE WHEN u.role = 'SISWA' THEN u.id END)::int AS total_students,
-		  COUNT(DISTINCT c.id)::int AS total_classes,
-		  COUNT(DISTINCT CASE WHEN ay.is_active = true THEN ay.id END)::int AS active_academic_years,
-		  COUNT(DISTINCT CASE WHEN cs.id IS NOT NULL THEN cs.id END)::int AS curriculum_subjects,
-		  COUNT(DISTINCT CASE WHEN a.attendance_date = CURRENT_DATE THEN a.id END)::int AS attendance_today,
-		  COUNT(DISTINCT CASE WHEN DATE_TRUNC('month', pr.created_at) = DATE_TRUNC('month', CURRENT_DATE) THEN pr.id END)::int AS receipts_this_month
+		  COALESCE(uc.total_users, 0) AS total_users,
+		  COALESCE(uc.total_admins, 0) AS total_admins,
+		  COALESCE(uc.total_teachers, 0) AS total_teachers,
+		  COALESCE(uc.total_students, 0) AS total_students,
+		  COALESCE(cc.total_classes, 0) AS total_classes,
+		  COALESCE(ayc.active_academic_years, 0) AS active_academic_years,
+		  COALESCE(cur.curriculum_subjects, 0) AS curriculum_subjects,
+		  COALESCE(ac.attendance_today, 0) AS attendance_today,
+		  COALESCE(rc.receipts_this_month, 0) AS receipts_this_month
 		FROM schools s
-		LEFT JOIN users u ON u.school_id = s.id
-		LEFT JOIN class c ON c.school_id = s.id
-		LEFT JOIN academic_years ay ON ay.school_id = s.id
-		LEFT JOIN curriculum_subjects cs ON cs.school_id = s.id
-		LEFT JOIN attendance a ON a.user_id = u.id
-		LEFT JOIN payment_receipt pr ON pr.user_id = u.id
-		GROUP BY s.id, s.name
+		LEFT JOIN user_counts uc ON uc.school_id = s.id
+		LEFT JOIN class_counts cc ON cc.school_id = s.id
+		LEFT JOIN active_year_counts ayc ON ayc.school_id = s.id
+		LEFT JOIN curriculum_counts cur ON cur.school_id = s.id
+		LEFT JOIN attendance_counts ac ON ac.school_id = s.id
+		LEFT JOIN receipt_counts rc ON rc.school_id = s.id
 		ORDER BY total_students DESC, s.name ASC
 		LIMIT 12
 	`).Scan(&schools)
 
 	var schoolAlerts []map[string]interface{}
 	a.DB.Raw(`
+		WITH admin_counts AS (
+			SELECT school_id, COUNT(*)::int AS total_admins
+			FROM users
+			WHERE role = 'ADMIN'
+			GROUP BY school_id
+		),
+		class_counts AS (
+			SELECT school_id, COUNT(*)::int AS total_classes
+			FROM class
+			GROUP BY school_id
+		),
+		student_counts AS (
+			SELECT school_id, COUNT(*)::int AS total_students
+			FROM users
+			WHERE role = 'SISWA'
+			GROUP BY school_id
+		),
+		curriculum_counts AS (
+			SELECT school_id, COUNT(*)::int AS curriculum_subjects
+			FROM curriculum_subjects
+			GROUP BY school_id
+		)
 		SELECT
 		  s.id,
 		  s.name,
 		  CASE
-			WHEN COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END) = 0 THEN 'Belum punya admin sekolah'
-			WHEN COUNT(DISTINCT c.id) = 0 THEN 'Belum punya kelas'
-			WHEN COUNT(DISTINCT CASE WHEN u.role = 'SISWA' THEN u.id END) = 0 THEN 'Belum punya siswa'
-			WHEN COUNT(DISTINCT cs.id) = 0 THEN 'Modul kurikulum belum diisi'
+			WHEN COALESCE(ac.total_admins, 0) = 0 THEN 'Belum punya admin sekolah'
+			WHEN COALESCE(cc.total_classes, 0) = 0 THEN 'Belum punya kelas'
+			WHEN COALESCE(sc.total_students, 0) = 0 THEN 'Belum punya siswa'
+			WHEN COALESCE(cur.curriculum_subjects, 0) = 0 THEN 'Modul kurikulum belum diisi'
 			ELSE 'Perlu pemantauan'
 		  END AS issue,
-		  COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END)::int AS total_admins,
-		  COUNT(DISTINCT c.id)::int AS total_classes,
-		  COUNT(DISTINCT CASE WHEN u.role = 'SISWA' THEN u.id END)::int AS total_students,
-		  COUNT(DISTINCT cs.id)::int AS curriculum_subjects
+		  COALESCE(ac.total_admins, 0) AS total_admins,
+		  COALESCE(cc.total_classes, 0) AS total_classes,
+		  COALESCE(sc.total_students, 0) AS total_students,
+		  COALESCE(cur.curriculum_subjects, 0) AS curriculum_subjects
 		FROM schools s
-		LEFT JOIN users u ON u.school_id = s.id
-		LEFT JOIN class c ON c.school_id = s.id
-		LEFT JOIN curriculum_subjects cs ON cs.school_id = s.id
-		GROUP BY s.id, s.name
-		HAVING
-		  COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END) = 0
-		  OR COUNT(DISTINCT c.id) = 0
-		  OR COUNT(DISTINCT CASE WHEN u.role = 'SISWA' THEN u.id END) = 0
-		  OR COUNT(DISTINCT cs.id) = 0
+		LEFT JOIN admin_counts ac ON ac.school_id = s.id
+		LEFT JOIN class_counts cc ON cc.school_id = s.id
+		LEFT JOIN student_counts sc ON sc.school_id = s.id
+		LEFT JOIN curriculum_counts cur ON cur.school_id = s.id
+		WHERE
+		  COALESCE(ac.total_admins, 0) = 0
+		  OR COALESCE(cc.total_classes, 0) = 0
+		  OR COALESCE(sc.total_students, 0) = 0
+		  OR COALESCE(cur.curriculum_subjects, 0) = 0
 		ORDER BY total_students ASC, s.name ASC
 		LIMIT 8
 	`).Scan(&schoolAlerts)

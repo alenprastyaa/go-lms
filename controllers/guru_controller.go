@@ -755,6 +755,12 @@ func averageScore(sum float64, count int) interface{} {
 }
 
 func (a *AppContext) syncAutoGradedMcqScores(rows []map[string]interface{}) {
+	type scoreUpdate struct {
+		SubmissionID int
+		Score        float64
+	}
+
+	updates := make([]scoreUpdate, 0)
 	for idx := range rows {
 		if strings.ToUpper(strings.TrimSpace(fmt.Sprint(rows[idx]["assignment_type"]))) != "MCQ" {
 			continue
@@ -788,9 +794,31 @@ func (a *AppContext) syncAutoGradedMcqScores(rows []map[string]interface{}) {
 			submissionID = utils.ToInt(fmt.Sprint(rows[idx]["id"]), 0)
 		}
 		if submissionID > 0 {
-			a.DB.Exec(`UPDATE learning_submissions SET score = ? WHERE id = ?`, recalculatedScore, submissionID)
+			updates = append(updates, scoreUpdate{
+				SubmissionID: submissionID,
+				Score:        recalculatedScore,
+			})
 		}
 	}
+
+	if len(updates) == 0 {
+		return
+	}
+
+	valuePlaceholders := make([]string, 0, len(updates))
+	args := make([]interface{}, 0, len(updates)*2)
+	for _, item := range updates {
+		valuePlaceholders = append(valuePlaceholders, "(?, ?)")
+		args = append(args, item.SubmissionID, item.Score)
+	}
+
+	a.DB.Exec(`
+		UPDATE learning_submissions AS s
+		SET score = v.score
+		FROM (VALUES `+strings.Join(valuePlaceholders, ",")+`) AS v(id, score)
+		WHERE s.id = v.id
+		  AND s.score IS DISTINCT FROM v.score
+	`, args...)
 }
 
 func (a *AppContext) GetSubjectGradebookForTeacher(c *fiber.Ctx) error {
@@ -1078,35 +1106,30 @@ func (a *AppContext) CreateSubjectChatMessage(c *fiber.Ctx) error {
 	}
 
 	messageType := detectChatMessageType(body.MessageType, body.AttachmentMimeType, body.AttachmentName, attachment)
-	var row map[string]interface{}
-	a.DB.Raw(`
-		INSERT INTO learning_chat_messages (
-			subject_id,
-			sender_id,
-			message,
-			message_type,
-			attachment_url,
-			attachment_name,
-			attachment_mime_type,
-			attachment_size,
-			created_at
-		)
-		VALUES (?,?,?,?,?,?,?,?,NOW()) RETURNING *
-	`, subjectID, userID, msg, messageType, nullIfEmpty(attachment), nullIfEmpty(body.AttachmentName), nullIfEmpty(body.AttachmentMimeType), nullIfZero(int(body.AttachmentSize))).Scan(&row)
-	if len(row) == 0 {
-		return utils.Error(c, 500, "Failed to create chat message")
-	}
-
 	var fullRow map[string]interface{}
 	a.DB.Raw(`
-		SELECT m.*, u.username AS sender_name, u.role AS sender_role, u.profile_image AS sender_profile_image
-		FROM learning_chat_messages m
-		LEFT JOIN users u ON u.id=m.sender_id
-		WHERE m.id=?
+		WITH inserted AS (
+			INSERT INTO learning_chat_messages (
+				subject_id,
+				sender_id,
+				message,
+				message_type,
+				attachment_url,
+				attachment_name,
+				attachment_mime_type,
+				attachment_size,
+				created_at
+			)
+			VALUES (?,?,?,?,?,?,?,?,NOW())
+			RETURNING *
+		)
+		SELECT i.*, u.username AS sender_name, u.role AS sender_role, u.profile_image AS sender_profile_image
+		FROM inserted i
+		LEFT JOIN users u ON u.id = i.sender_id
 		LIMIT 1
-	`, row["id"]).Scan(&fullRow)
+	`, subjectID, userID, msg, messageType, nullIfEmpty(attachment), nullIfEmpty(body.AttachmentName), nullIfEmpty(body.AttachmentMimeType), nullIfZero(int(body.AttachmentSize))).Scan(&fullRow)
 	if len(fullRow) == 0 {
-		fullRow = row
+		return utils.Error(c, 500, "Failed to create chat message")
 	}
 	fullRow["origin_client_id"] = clientID
 
@@ -1167,15 +1190,19 @@ func (a *AppContext) BroadcastSubjectTyping(c *fiber.Ctx) error {
 		clientID = strings.TrimSpace(c.FormValue("client_id"))
 	}
 
-	var sender struct {
-		Username string `json:"username"`
+	senderName, _ := c.Locals("username").(string)
+	if senderName == "" {
+		var sender struct {
+			Username string `json:"username"`
+		}
+		_ = a.DB.Raw(`SELECT username FROM users WHERE id = ?`, userID).Scan(&sender).Error
+		senderName = sender.Username
 	}
-	_ = a.DB.Raw(`SELECT username FROM users WHERE id = ?`, userID).Scan(&sender).Error
 
 	payload := fiber.Map{
 		"subject_id":        subjectID,
 		"user_id":           userID,
-		"sender_name":       sender.Username,
+		"sender_name":       senderName,
 		"is_typing":         body.IsTyping,
 		"origin_client_id":  clientID,
 		"updated_at_unixms": time.Now().UnixMilli(),

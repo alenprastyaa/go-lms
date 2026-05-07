@@ -15,34 +15,69 @@ import (
 func (a *AppContext) GetSiswaDashboard(c *fiber.Ctx) error {
 	studentID := c.Locals("userID").(uint)
 
-	var student map[string]interface{}
+	var studentToday map[string]interface{}
 	a.DB.Raw(`
-		SELECT u.id,u.username,u.parent_email,u.phone_number,c.class_name,s.name AS school_name
+		SELECT
+			u.id,
+			u.username,
+			u.parent_email,
+			u.phone_number,
+			c.class_name,
+			s.name AS school_name,
+			a.attendance_date,
+			a.clock_in,
+			a.clock_out,
+			a.status,
+			a.image
 		FROM users u
 		LEFT JOIN class c ON c.id=u.class_id
 		LEFT JOIN schools s ON s.id=u.school_id
+		LEFT JOIN LATERAL (
+			SELECT attendance_date, clock_in, clock_out, status, image
+			FROM attendance
+			WHERE user_id = u.id AND attendance_date = CURRENT_DATE
+			LIMIT 1
+		) a ON true
 		WHERE u.id=?
-	`, studentID).Scan(&student)
+	`, studentID).Scan(&studentToday)
 
-	var today map[string]interface{}
-	a.DB.Raw(`SELECT attendance_date,clock_in,clock_out,status,image FROM attendance WHERE user_id=? AND attendance_date=CURRENT_DATE LIMIT 1`, studentID).Scan(&today)
-	normalizeAttendanceMap(today)
+	student := map[string]interface{}{
+		"id":           studentToday["id"],
+		"username":     studentToday["username"],
+		"parent_email": studentToday["parent_email"],
+		"phone_number": studentToday["phone_number"],
+		"class_name":   studentToday["class_name"],
+		"school_name":  studentToday["school_name"],
+	}
 
-	var overviewRows []struct {
-		Key   string `json:"key"`
-		Value int    `json:"value"`
+	today := map[string]interface{}{}
+	if studentToday["attendance_date"] != nil || studentToday["clock_in"] != nil || studentToday["clock_out"] != nil || studentToday["status"] != nil || studentToday["image"] != nil {
+		today["attendance_date"] = studentToday["attendance_date"]
+		today["clock_in"] = studentToday["clock_in"]
+		today["clock_out"] = studentToday["clock_out"]
+		today["status"] = studentToday["status"]
+		today["image"] = studentToday["image"]
+		normalizeAttendanceMap(today)
+	}
+
+	var overviewSummary struct {
+		AttendanceTotal   int `json:"attendance_total"`
+		ReceiptsTotal     int `json:"receipts_total"`
+		ReceiptsThisMonth int `json:"receipts_this_month"`
 	}
 	a.DB.Raw(`
-		SELECT 'attendance_total' AS key, COUNT(*)::int AS value FROM attendance WHERE user_id=?
-		UNION ALL
-		SELECT 'receipts_total' AS key, COUNT(*)::int AS value FROM payment_receipt WHERE user_id=?
-		UNION ALL
-		SELECT 'receipts_this_month' AS key, COUNT(*)::int AS value
-		FROM payment_receipt WHERE user_id=? AND DATE_TRUNC('month', created_at)=DATE_TRUNC('month', CURRENT_DATE)
-	`, studentID, studentID, studentID).Scan(&overviewRows)
-	overview := map[string]int{}
-	for _, r := range overviewRows {
-		overview[r.Key] = r.Value
+		SELECT
+			(SELECT COUNT(*)::int FROM attendance WHERE user_id = ?) AS attendance_total,
+			(SELECT COUNT(*)::int FROM payment_receipt WHERE user_id = ?) AS receipts_total,
+			(SELECT COUNT(*)::int
+			 FROM payment_receipt
+			 WHERE user_id = ?
+			   AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)) AS receipts_this_month
+	`, studentID, studentID, studentID).Scan(&overviewSummary)
+	overview := map[string]int{
+		"attendance_total":    overviewSummary.AttendanceTotal,
+		"receipts_total":      overviewSummary.ReceiptsTotal,
+		"receipts_this_month": overviewSummary.ReceiptsThisMonth,
 	}
 
 	var recentAttendance []map[string]interface{}

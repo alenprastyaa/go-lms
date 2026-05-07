@@ -42,28 +42,35 @@ func Auth(db *gorm.DB) fiber.Handler {
 			}
 
 			var current struct {
-				SessionVersion        int64      `gorm:"column:session_version"`
-				CurrentSessionDevice  *string    `gorm:"column:current_session_device"`
-				CurrentSessionIP      *string    `gorm:"column:current_session_ip"`
-				CurrentSessionLoginAt *time.Time `gorm:"column:current_session_login_at"`
+				SessionVersion int64 `gorm:"column:session_version"`
 			}
 			if err := db.Table("users").
-				Select("session_version, current_session_device, current_session_ip, current_session_login_at").
+				Select("session_version").
 				Where("id = ?", uint(userID)).
 				Take(&current).Error; err != nil {
 				return utils.Error(c, 401, "Unauthorized")
 			}
 
 			if current.SessionVersion != int64(sessionVersion) {
+				var sessionDetails struct {
+					CurrentSessionDevice  *string    `gorm:"column:current_session_device"`
+					CurrentSessionIP      *string    `gorm:"column:current_session_ip"`
+					CurrentSessionLoginAt *time.Time `gorm:"column:current_session_login_at"`
+				}
+				_ = db.Table("users").
+					Select("current_session_device, current_session_ip, current_session_login_at").
+					Where("id = ?", uint(userID)).
+					Take(&sessionDetails).Error
+
 				return c.Status(401).JSON(fiber.Map{
 					"success": false,
 					"message": "Sesi login Anda telah digantikan oleh login dari perangkat lain",
 					"code":    "SESSION_REPLACED",
 					"data": fiber.Map{
 						"reason":            "SESSION_REPLACED",
-						"active_device":     current.CurrentSessionDevice,
-						"active_ip":         current.CurrentSessionIP,
-						"active_login_at":   current.CurrentSessionLoginAt,
+						"active_device":     sessionDetails.CurrentSessionDevice,
+						"active_ip":         sessionDetails.CurrentSessionIP,
+						"active_login_at":   sessionDetails.CurrentSessionLoginAt,
 						"forced_logout":     true,
 						"should_show_modal": true,
 					},
@@ -95,6 +102,9 @@ func ExtractClaims() fiber.Handler {
 		c.Locals("userID", uint(userID))
 		c.Locals("schoolID", uint(schoolID))
 		c.Locals("userRole", fmt.Sprint(claims["role"]))
+		if username, ok := claims["username"].(string); ok {
+			c.Locals("username", username)
+		}
 		if sessionVersion, ok := claims["sessionVersion"].(float64); ok {
 			c.Locals("sessionVersion", int64(sessionVersion))
 		}

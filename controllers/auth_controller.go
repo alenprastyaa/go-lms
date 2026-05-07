@@ -79,14 +79,14 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 	user.SessionVersion = sessionRow.SessionVersion
 
 	token, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"id": user.ID, "role": user.Role, "schoolId": user.SchoolID, "sessionVersion": user.SessionVersion, "exp": time.Now().Add(24 * time.Hour).Unix(),
+		"id": user.ID, "role": user.Role, "schoolId": user.SchoolID, "username": user.Username, "sessionVersion": user.SessionVersion, "exp": time.Now().Add(24 * time.Hour).Unix(),
 	}).SignedString([]byte(os.Getenv("JWT_SECRET")))
 
 	var school models.School
 	var schoolName interface{} = nil
 	var schoolLogo interface{} = nil
 	if user.SchoolID != nil {
-		_ = a.DB.Where("id = ?", *user.SchoolID).First(&school).Error
+		_ = a.DB.Select("name", "logo_url").Where("id = ?", *user.SchoolID).First(&school).Error
 		schoolName = school.Name
 		schoolLogo = school.LogoURL
 	}
@@ -172,6 +172,35 @@ func (a *AppContext) ImportUserSchoolTeachers(c *fiber.Ctx) error {
 
 	imported := 0
 	failedRows := make([]fiber.Map, 0)
+	usernameSet := make([]string, 0, len(rows))
+	for rowIndex := headerIndex + 1; rowIndex < len(rows); rowIndex++ {
+		row := rows[rowIndex]
+		if isExcelRowEmpty(row) {
+			continue
+		}
+		username := strings.TrimSpace(cellValue(row, columnIndex["username"]))
+		if username != "" {
+			usernameSet = append(usernameSet, username)
+		}
+	}
+
+	existingUsernames := make(map[string]struct{}, len(usernameSet))
+	if len(usernameSet) > 0 {
+		var existingRows []struct {
+			Username string `gorm:"column:username"`
+		}
+		if err := tx.Table("users").
+			Select("username").
+			Where("school_id = ? AND username IN ?", schoolID, usernameSet).
+			Scan(&existingRows).Error; err != nil {
+			tx.Rollback()
+			return utils.Error(c, 500, "Gagal memeriksa data user", err.Error())
+		}
+		for _, item := range existingRows {
+			existingUsernames[item.Username] = struct{}{}
+		}
+	}
+
 	for rowIndex := headerIndex + 1; rowIndex < len(rows); rowIndex++ {
 		row := rows[rowIndex]
 		if isExcelRowEmpty(row) {
@@ -194,14 +223,7 @@ func (a *AppContext) ImportUserSchoolTeachers(c *fiber.Ctx) error {
 			continue
 		}
 
-		var existingCount int64
-		if err := tx.Table("users").
-			Where("school_id = ? AND username = ?", schoolID, record["username"]).
-			Count(&existingCount).Error; err != nil {
-			tx.Rollback()
-			return utils.Error(c, 500, "Gagal memeriksa data user", err.Error())
-		}
-		if existingCount > 0 {
+		if _, exists := existingUsernames[record["username"]]; exists {
 			failedRows = append(failedRows, fiber.Map{
 				"row":     rowIndex + 1,
 				"message": fmt.Sprintf("username %s sudah ada", record["username"]),
@@ -227,6 +249,7 @@ func (a *AppContext) ImportUserSchoolTeachers(c *fiber.Ctx) error {
 			})
 			continue
 		}
+		existingUsernames[record["username"]] = struct{}{}
 		imported += 1
 	}
 
