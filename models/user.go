@@ -6,6 +6,7 @@ type User struct {
 	Username                string  `gorm:"column:username" json:"username"`
 	Password                string  `gorm:"column:password" json:"-"`
 	Role                    string  `gorm:"column:role" json:"role"`
+	SessionVersion          int64   `gorm:"column:session_version" json:"session_version"`
 	SchoolID                *uint   `gorm:"column:school_id" json:"school_id"`
 	ClassID                 *uint   `gorm:"column:class_id" json:"class_id"`
 	ParentEmail             *string `gorm:"column:parent_email" json:"parent_email"`

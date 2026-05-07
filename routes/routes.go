@@ -31,7 +31,7 @@ func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
 	r.Post("/register", ctx.RegisterUser)
 	r.Post("/login", ctx.Login)
 
-	p := r.Use(middlewares.Auth(), middlewares.ExtractClaims())
+	p := r.Use(middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	p.Post("/register/student", ctx.RegisterStudent)
 	p.Post("/register/user-school", middlewares.RoleAllowed("ADMIN"), ctx.RegisterUserSchool)
 	p.Get("/user-school/template", middlewares.RoleAllowed("ADMIN"), ctx.DownloadUserSchoolTeacherTemplate)
@@ -39,23 +39,27 @@ func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
 	p.Get("/user-school", middlewares.RoleAllowed("ADMIN"), ctx.GetUserSchoolList)
 	p.Put("/user-school/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateUserSchool)
 	p.Delete("/user-school/:id", middlewares.RoleAllowed("ADMIN"), ctx.DeleteUserSchool)
+	p.Get("/super-admin/admin-users", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.GetSuperAdminAdminUsers)
+	p.Post("/super-admin/admin-users", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.CreateSuperAdminAdminUser)
+	p.Put("/super-admin/admin-users/:id", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.UpdateSuperAdminAdminUser)
+	p.Delete("/super-admin/admin-users/:id", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.DeleteSuperAdminAdminUser)
 	p.Get("/profile", ctx.GetMyProfile)
 	p.Put("/profile", ctx.UpdateMyProfile)
 }
 
 func registerSchool(api fiber.Router, ctx *controllers.AppContext) {
-	r := api.Group("/school", middlewares.Auth(), middlewares.ExtractClaims(), middlewares.RoleAllowed("SUPER_ADMIN"))
+	r := api.Group("/school", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("SUPER_ADMIN"))
 	r.Post("/", ctx.CreateSchool)
 	r.Get("/", ctx.GetSchools)
 	r.Put("/:id", ctx.UpdateSchool)
 	r.Delete("/:id", ctx.DeleteSchool)
 
-	current := api.Group("/school/current", middlewares.Auth(), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN"))
+	current := api.Group("/school/current", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN"))
 	current.Put("/branding", ctx.UpdateCurrentSchoolBranding)
 }
 
 func registerClass(api fiber.Router, ctx *controllers.AppContext) {
-	r := api.Group("/class", middlewares.Auth(), middlewares.ExtractClaims())
+	r := api.Group("/class", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	r.Post("/", ctx.CreateClass)
 	r.Get("/", ctx.GetClasses)
 	r.Put("/:id", ctx.UpdateClass)
@@ -64,7 +68,7 @@ func registerClass(api fiber.Router, ctx *controllers.AppContext) {
 }
 
 func registerStudent(api fiber.Router, ctx *controllers.AppContext) {
-	r := api.Group("/student", middlewares.Auth(), middlewares.ExtractClaims())
+	r := api.Group("/student", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	r.Get("/", ctx.GetStudents)
 	r.Get("/my-class", middlewares.RoleAllowed("GURU"), ctx.GetMyClassStudents)
 	r.Get("/:id/attendance", middlewares.RoleAllowed("GURU"), ctx.GetStudentAttendanceForTeacher)
@@ -80,7 +84,7 @@ func registerPublic(api fiber.Router, ctx *controllers.AppContext) {
 }
 
 func registerReceipt(api fiber.Router, ctx *controllers.AppContext) {
-	r := api.Group("/receipt", middlewares.Auth(), middlewares.ExtractClaims())
+	r := api.Group("/receipt", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	r.Post("/", ctx.CreateReceipt)
 	r.Get("/", ctx.GetReceipt)
 	r.Get("/:id", ctx.GetReceiptByID)
@@ -89,10 +93,10 @@ func registerReceipt(api fiber.Router, ctx *controllers.AppContext) {
 }
 
 func registerGuru(api fiber.Router, ctx *controllers.AppContext) {
-	d := api.Group("/dashboard", middlewares.Auth(), middlewares.ExtractClaims())
+	d := api.Group("/dashboard", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	d.Get("/guru", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "GURU"), ctx.GetGuruDashboard)
 
-	l := api.Group("/learning", middlewares.Auth(), middlewares.ExtractClaims())
+	l := api.Group("/learning", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	l.Get("/subjects/teacher", middlewares.RoleAllowed("GURU"), ctx.GetTeacherSubjects)
 	l.Get("/subjects/:subjectId/materials", middlewares.RoleAllowed("GURU", "SISWA"), ctx.GetSubjectMaterials)
 	l.Post("/materials", middlewares.RoleAllowed("GURU"), ctx.CreateLearningMaterial)
@@ -127,15 +131,15 @@ func registerGuru(api fiber.Router, ctx *controllers.AppContext) {
 }
 
 func registerSiswa(api fiber.Router, ctx *controllers.AppContext) {
-	d := api.Group("/dashboard", middlewares.Auth(), middlewares.ExtractClaims())
+	d := api.Group("/dashboard", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	d.Get("/siswa", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "GURU", "SISWA"), ctx.GetSiswaDashboard)
 
-	at := api.Group("/attendance", middlewares.Auth(), middlewares.ExtractClaims())
+	at := api.Group("/attendance", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	at.Post("/", ctx.CheckIn)
 	at.Post("/checkout", ctx.CheckOut)
 	at.Get("/", ctx.GetListAttendance)
 
-	l := api.Group("/learning", middlewares.Auth(), middlewares.ExtractClaims())
+	l := api.Group("/learning", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	l.Get("/subjects/student", middlewares.RoleAllowed("SISWA"), ctx.GetStudentSubjects)
 	l.Get("/grades/student", middlewares.RoleAllowed("SISWA"), ctx.GetStudentGrades)
 	l.Post("/assignments/:assignmentId/start", middlewares.RoleAllowed("SISWA"), ctx.StartLearningQuizAttempt)
@@ -144,23 +148,23 @@ func registerSiswa(api fiber.Router, ctx *controllers.AppContext) {
 }
 
 func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
-	d := api.Group("/dashboard", middlewares.Auth(), middlewares.ExtractClaims())
+	d := api.Group("/dashboard", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	d.Get("/superadmin", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.GetSuperAdminDashboard)
 	d.Get("/admin", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.GetAdminDashboard)
 
-	a := api.Group("/admin-settings", middlewares.Auth(), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN"))
+	a := api.Group("/admin-settings", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN"))
 	a.Get("/summary", ctx.GetAdminSettingsSummary)
 	a.Get("/public-registration-link", ctx.GetPublicStudentRegistrationLink)
 	a.Post("/load-test", ctx.RunAdminLoadTest)
 	a.Post("/load-test-login", ctx.RunAdminLoginLoadTest)
 	a.Post("/reset", ctx.ResetAdminScope)
 
-	at := api.Group("/attendance", middlewares.Auth(), middlewares.ExtractClaims())
+	at := api.Group("/attendance", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	at.Post("/report/homeroom-email", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.SendHomeroomAttendanceReport)
 }
 
 func registerAcademic(api fiber.Router, ctx *controllers.AppContext) {
-	r := api.Group("/academic-periods", middlewares.Auth(), middlewares.ExtractClaims())
+	r := api.Group("/academic-periods", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	r.Get("/", middlewares.RoleAllowed("ADMIN", "GURU"), ctx.GetAcademicPeriods)
 	r.Post("/years", middlewares.RoleAllowed("ADMIN"), ctx.CreateAcademicYear)
 	r.Put("/years/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateAcademicYear)
@@ -171,7 +175,7 @@ func registerAcademic(api fiber.Router, ctx *controllers.AppContext) {
 }
 
 func registerLearningAdmin(api fiber.Router, ctx *controllers.AppContext) {
-	r := api.Group("/learning", middlewares.Auth(), middlewares.ExtractClaims())
+	r := api.Group("/learning", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	r.Get("/curriculum/overview", middlewares.RoleAllowed("ADMIN"), ctx.GetCurriculumOverview)
 	r.Post("/curriculum/subjects", middlewares.RoleAllowed("ADMIN"), ctx.CreateCurriculumSubject)
 	r.Put("/curriculum/subjects/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateCurriculumSubject)

@@ -14,6 +14,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v4"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 	"lms/models"
 	"lms/utils"
 )
@@ -55,8 +56,21 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 		return utils.Error(c, 401, "Invalid Password")
 	}
 
+	var sessionRow struct {
+		SessionVersion int64 `json:"session_version"`
+	}
+	if err := a.DB.Raw(`
+		UPDATE users
+		SET session_version = COALESCE(session_version, 0) + 1
+		WHERE id = ?
+		RETURNING session_version
+	`, user.ID).Scan(&sessionRow).Error; err != nil {
+		return utils.Error(c, 500, "Gagal membuat sesi login", err.Error())
+	}
+	user.SessionVersion = sessionRow.SessionVersion
+
 	token, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"id": user.ID, "role": user.Role, "schoolId": user.SchoolID, "exp": time.Now().Add(24 * time.Hour).Unix(),
+		"id": user.ID, "role": user.Role, "schoolId": user.SchoolID, "sessionVersion": user.SessionVersion, "exp": time.Now().Add(24 * time.Hour).Unix(),
 	}).SignedString([]byte(os.Getenv("JWT_SECRET")))
 
 	var school models.School
@@ -739,6 +753,7 @@ func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 	if body.Password != nil && *body.Password != "" {
 		hash, _ := bcrypt.GenerateFromPassword([]byte(*body.Password), 8)
 		updates["password"] = string(hash)
+		updates["session_version"] = gorm.Expr("COALESCE(session_version, 0) + 1")
 	}
 	a.DB.Table("users").Where("id = ? AND school_id = ?", id, schoolID).Updates(updates)
 	var updated map[string]interface{}
@@ -837,6 +852,7 @@ func (a *AppContext) UpdateMyProfile(c *fiber.Ctx) error {
 		}
 		hash, _ := bcrypt.GenerateFromPassword([]byte(newPassword), 8)
 		updates["password"] = string(hash)
+		updates["session_version"] = gorm.Expr("COALESCE(session_version, 0) + 1")
 	}
 
 	if f, err := c.FormFile("profile_image"); err == nil && f != nil {
