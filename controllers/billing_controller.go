@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,18 +19,21 @@ import (
 )
 
 type xenditPaymentRequest struct {
-	ReferenceID   string                   `json:"reference_id"`
-	Type          string                   `json:"type"`
-	Country       string                   `json:"country"`
-	Currency      string                   `json:"currency"`
-	RequestAmount int64                    `json:"request_amount"`
-	Description   string                   `json:"description,omitempty"`
-	ChannelCode   string                   `json:"channel_code"`
-	ChannelProps  map[string]interface{}   `json:"channel_properties,omitempty"`
-	Metadata      map[string]interface{}   `json:"metadata,omitempty"`
-	SuccessURL    string                   `json:"success_return_url,omitempty"`
-	FailureURL    string                   `json:"failure_return_url,omitempty"`
-	Items         []map[string]interface{} `json:"items,omitempty"`
+	ReferenceID      string `json:"reference_id"`
+	SessionType      string `json:"session_type"`
+	Mode             string `json:"mode"`
+	Amount           int64  `json:"amount"`
+	Currency         string `json:"currency"`
+	Country          string `json:"country"`
+	SuccessReturnURL string `json:"success_return_url,omitempty"`
+	CancelReturnURL  string `json:"cancel_return_url,omitempty"`
+	Locale           string `json:"locale,omitempty"`
+	Customer         struct {
+		ReferenceID string `json:"reference_id,omitempty"`
+		Type        string `json:"type,omitempty"`
+		Email       string `json:"email,omitempty"`
+	} `json:"customer,omitempty"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
 func (a *AppContext) GetSchoolBillingSettings(c *fiber.Ctx) error {
@@ -211,7 +215,7 @@ func (a *AppContext) CreateMidtransPaymentForInvoice(c *fiber.Ctx) error {
 		return utils.Error(c, 404, "Invoice tidak ditemukan")
 	}
 
-	xenditResp, err := createXenditQrisPayment(invoice.InvoiceNumber, invoice.Amount)
+	xenditResp, err := createXenditCheckoutSession(invoice.InvoiceNumber, invoice.Amount, schoolID)
 	if err != nil {
 		return utils.Error(c, 500, "Gagal membuat pembayaran Xendit", err.Error())
 	}
@@ -230,8 +234,7 @@ func (a *AppContext) CreateMidtransPaymentForInvoice(c *fiber.Ctx) error {
 	return utils.Success(c, 200, "Success Create Xendit Payment", fiber.Map{
 		"invoice":      invoice,
 		"redirect_url": xenditResp.PaymentURL,
-		"payment_type": "qris",
-		"qr_string":    xenditResp.QRString,
+		"payment_type": "checkout",
 	})
 }
 
@@ -303,15 +306,15 @@ func (a *AppContext) XenditWebhook(c *fiber.Ctx) error {
 	}
 
 	updates := map[string]interface{}{
-		"payment_method": "qris",
+		"payment_method": "xendit",
 		"updated_at":     time.Now(),
 	}
 	switch status {
-	case "paid", "completed", "success", "settled", "settlement":
+	case "paid", "completed", "success", "settled", "settlement", "payment_session.completed":
 		updates["status"] = "PAID"
 		now := time.Now()
 		updates["paid_at"] = &now
-	case "expired", "expire", "failed", "cancel", "cancelled", "canceled", "rejected":
+	case "expired", "expire", "failed", "cancel", "cancelled", "canceled", "rejected", "payment_session.expired":
 		updates["status"] = strings.ToUpper(status)
 	default:
 		updates["status"] = "PENDING"
@@ -329,10 +332,9 @@ func (a *AppContext) XenditWebhook(c *fiber.Ctx) error {
 
 type xenditCreateResponse struct {
 	PaymentURL string
-	QRString   string
 }
 
-func createXenditQrisPayment(referenceID string, amount int64) (*xenditCreateResponse, error) {
+func createXenditCheckoutSession(referenceID string, amount int64, schoolID uint) (*xenditCreateResponse, error) {
 	apiKey := strings.TrimSpace(os.Getenv("XENDIT_API_KEY"))
 	if apiKey == "" {
 		return nil, fmt.Errorf("XENDIT_API_KEY is not configured")
@@ -344,40 +346,40 @@ func createXenditQrisPayment(referenceID string, amount int64) (*xenditCreateRes
 	}
 
 	payload := xenditPaymentRequest{
-		ReferenceID:   referenceID,
-		Type:          "PAY",
-		Country:       envOrDefault("XENDIT_PAYMENT_COUNTRY", "ID"),
-		Currency:      envOrDefault("XENDIT_PAYMENT_CURRENCY", "IDR"),
-		RequestAmount: amount,
-		Description:   fmt.Sprintf("Pembayaran invoice %s", referenceID),
-		ChannelCode:   envOrDefault("XENDIT_PAYMENT_CHANNEL", "QRIS"),
-		ChannelProps:  map[string]interface{}{},
+		ReferenceID:      referenceID,
+		SessionType:      "PAY",
+		Mode:             "PAYMENT_LINK",
+		Amount:           amount,
+		Currency:         envOrDefault("XENDIT_PAYMENT_CURRENCY", "IDR"),
+		Country:          envOrDefault("XENDIT_PAYMENT_COUNTRY", "ID"),
+		SuccessReturnURL: strings.TrimSpace(os.Getenv("XENDIT_SUCCESS_RETURN_URL")),
+		CancelReturnURL:  strings.TrimSpace(os.Getenv("XENDIT_FAILURE_RETURN_URL")),
+		Locale:           "id",
 		Metadata: map[string]interface{}{
 			"invoice_number": referenceID,
+			"school_id":      schoolID,
+			"description":    fmt.Sprintf("Pembayaran invoice %s", referenceID),
 		},
-		SuccessURL: strings.TrimSpace(os.Getenv("XENDIT_SUCCESS_RETURN_URL")),
-		FailureURL: strings.TrimSpace(os.Getenv("XENDIT_FAILURE_RETURN_URL")),
-		Items: []map[string]interface{}{
-			{
-				"reference_id":    referenceID,
-				"category":        "service",
-				"type":            "DIGITAL_SERVICE",
-				"name":            "Billing Sekolah",
-				"currency":        envOrDefault("XENDIT_PAYMENT_CURRENCY", "IDR"),
-				"net_unit_amount": amount,
-				"quantity":        1,
-			},
-		},
+	}
+	if payload.SuccessReturnURL == "" {
+		payload.SuccessReturnURL = strings.TrimSpace(os.Getenv("XENDIT_SUCCESS_RETURN_URL"))
+	}
+	if payload.CancelReturnURL == "" {
+		payload.CancelReturnURL = strings.TrimSpace(os.Getenv("XENDIT_FAILURE_RETURN_URL"))
+	}
+	expireMinutes := envIntOrDefault("XENDIT_EXPIRE_AFTER_MINUTES", 30)
+	if expireMinutes > 0 {
+		// Xendit expects an expiry date on the session so use a bounded TTL.
+		payload.Metadata["expires_in_minutes"] = expireMinutes
 	}
 
 	bodyBytes, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", baseURL+"/v3/payment_requests", bytes.NewReader(bodyBytes))
+	req, err := http.NewRequest("POST", baseURL+"/sessions", bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("api-version", "2024-11-11")
 	req.SetBasicAuth(apiKey, "")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -392,17 +394,8 @@ func createXenditQrisPayment(referenceID string, amount int64) (*xenditCreateRes
 	}
 
 	var parsed struct {
-		ID      string `json:"id"`
-		Status  string `json:"status"`
-		Actions []struct {
-			Type       string `json:"type"`
-			Descriptor string `json:"descriptor"`
-			Value      string `json:"value"`
-		} `json:"actions"`
-		PaymentMethod struct {
-			ChannelCode string `json:"channel_code"`
-		} `json:"payment_method"`
-		Message string `json:"message"`
+		PaymentLinkURL string `json:"payment_link_url"`
+		Message        string `json:"message"`
 	}
 	if err := json.Unmarshal(rawBody, &parsed); err != nil {
 		return nil, fmt.Errorf("xendit response parse failed: %w; body=%s", err, string(rawBody))
@@ -415,25 +408,9 @@ func createXenditQrisPayment(referenceID string, amount int64) (*xenditCreateRes
 		return nil, fmt.Errorf("xendit error: %s", msg)
 	}
 
-	out := &xenditCreateResponse{}
-	for _, action := range parsed.Actions {
-		switch strings.ToUpper(action.Type) {
-		case "WEB_URL", "REDIRECT_CUSTOMER":
-			if out.PaymentURL == "" {
-				out.PaymentURL = action.Value
-			}
-		case "QR_STRING":
-			if out.QRString == "" {
-				out.QRString = action.Value
-			}
-		case "PRESENT_TO_CUSTOMER":
-			if strings.EqualFold(action.Descriptor, "QR_STRING") && out.QRString == "" {
-				out.QRString = action.Value
-			}
-		}
-	}
-	if out.PaymentURL == "" && out.QRString == "" {
-		return nil, fmt.Errorf("xendit response missing payment action: %s", string(rawBody))
+	out := &xenditCreateResponse{PaymentURL: parsed.PaymentLinkURL}
+	if out.PaymentURL == "" {
+		return nil, fmt.Errorf("xendit response missing payment_link_url: %s", string(rawBody))
 	}
 	return out, nil
 }
@@ -448,6 +425,18 @@ func defaultBillingCurrency(value string) string {
 func envOrDefault(key, fallback string) string {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func envIntOrDefault(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
 		return fallback
 	}
 	return value
