@@ -172,6 +172,8 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	b.Get("/current", middlewares.RoleAllowed("ADMIN"), ctx.GetCurrentSchoolBilling)
 	b.Get("/current/invoices", middlewares.RoleAllowed("ADMIN"), ctx.GetCurrentSchoolInvoices)
 	b.Post("/current/invoices/:invoiceId/pay", middlewares.RoleAllowed("ADMIN"), ctx.CreateMidtransPaymentForInvoice)
+	b.Post("/current/invoices/:invoiceId/sync-xendit", middlewares.RoleAllowed("ADMIN"), ctx.SyncXenditInvoiceStatus)
+	b.Post("/current/invoices/reference/:referenceId/sync-xendit", middlewares.RoleAllowed("ADMIN"), ctx.SyncXenditInvoiceStatusByReference)
 	b.Post("/midtrans/notification", ctx.MidtransNotification)
 
 	at := api.Group("/attendance", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())

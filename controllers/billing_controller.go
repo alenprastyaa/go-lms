@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -227,6 +228,7 @@ func (a *AppContext) CreateMidtransPaymentForInvoice(c *fiber.Ctx) error {
 	now := time.Now()
 	updates := map[string]interface{}{
 		"snap_token":        nil,
+		"transaction_id":    xenditResp.SessionID,
 		"snap_redirect_url": xenditResp.PaymentURL,
 		"updated_at":        now,
 	}
@@ -314,11 +316,11 @@ func (a *AppContext) XenditWebhook(c *fiber.Ctx) error {
 		"updated_at":     time.Now(),
 	}
 	switch status {
-	case "paid", "completed", "success", "settled", "settlement", "payment_session.completed":
+	case "paid", "completed", "success", "settled", "settlement", "succeeded", "successfully completed", "payment_session.completed":
 		updates["status"] = "PAID"
 		now := time.Now()
 		updates["paid_at"] = &now
-	case "expired", "expire", "failed", "cancel", "cancelled", "canceled", "rejected", "payment_session.expired":
+	case "expired", "expire", "failed", "cancel", "cancelled", "canceled", "rejected", "payment_session.expired", "payment_session.canceled":
 		updates["status"] = strings.ToUpper(status)
 	default:
 		updates["status"] = "PENDING"
@@ -335,6 +337,7 @@ func (a *AppContext) XenditWebhook(c *fiber.Ctx) error {
 }
 
 type xenditCreateResponse struct {
+	SessionID  string
 	PaymentURL string
 }
 
@@ -376,6 +379,10 @@ func createXenditCheckoutSession(referenceID string, amount int64, schoolID uint
 	if payload.CancelReturnURL == "" {
 		payload.CancelReturnURL = strings.TrimSpace(os.Getenv("XENDIT_FAILURE_RETURN_URL"))
 	}
+	payload.SuccessReturnURL = appendReturnQuery(payload.SuccessReturnURL, "payment_status", "success")
+	payload.SuccessReturnURL = appendReturnQuery(payload.SuccessReturnURL, "reference_id", referenceID)
+	payload.CancelReturnURL = appendReturnQuery(payload.CancelReturnURL, "payment_status", "failed")
+	payload.CancelReturnURL = appendReturnQuery(payload.CancelReturnURL, "reference_id", referenceID)
 	expireMinutes := envIntOrDefault("XENDIT_EXPIRE_AFTER_MINUTES", 30)
 	if expireMinutes > 0 {
 		// Xendit expects an expiry date on the session so use a bounded TTL.
@@ -403,8 +410,9 @@ func createXenditCheckoutSession(referenceID string, amount int64, schoolID uint
 	}
 
 	var parsed struct {
-		PaymentLinkURL string `json:"payment_link_url"`
-		Message        string `json:"message"`
+		PaymentSessionID string `json:"payment_session_id"`
+		PaymentLinkURL   string `json:"payment_link_url"`
+		Message          string `json:"message"`
 	}
 	if err := json.Unmarshal(rawBody, &parsed); err != nil {
 		return nil, fmt.Errorf("xendit response parse failed: %w; body=%s", err, string(rawBody))
@@ -417,11 +425,104 @@ func createXenditCheckoutSession(referenceID string, amount int64, schoolID uint
 		return nil, fmt.Errorf("xendit error: %s", msg)
 	}
 
-	out := &xenditCreateResponse{PaymentURL: parsed.PaymentLinkURL}
+	out := &xenditCreateResponse{SessionID: parsed.PaymentSessionID, PaymentURL: parsed.PaymentLinkURL}
 	if out.PaymentURL == "" {
 		return nil, fmt.Errorf("xendit response missing payment_link_url: %s", string(rawBody))
 	}
 	return out, nil
+}
+
+func (a *AppContext) SyncXenditInvoiceStatus(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	invoiceID := c.Params("invoiceId")
+	if strings.TrimSpace(invoiceID) == "" {
+		return utils.Error(c, 400, "Invoice wajib dipilih")
+	}
+
+	var invoice models.SchoolInvoice
+	if err := a.DB.Where("id = ? AND school_id = ?", invoiceID, schoolID).First(&invoice).Error; err != nil {
+		return utils.Error(c, 404, "Invoice tidak ditemukan")
+	}
+	if invoice.TransactionID == nil || strings.TrimSpace(*invoice.TransactionID) == "" {
+		return utils.Error(c, 400, "Session Xendit belum tersedia")
+	}
+
+	status, err := fetchXenditSessionStatus(*invoice.TransactionID)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal sinkron status Xendit", err.Error())
+	}
+
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	updates := map[string]interface{}{
+		"payment_method": "xendit",
+		"updated_at":     time.Now(),
+	}
+	switch normalized {
+	case "completed", "success", "succeeded", "paid", "settlement", "settled":
+		updates["status"] = "PAID"
+		now := time.Now()
+		updates["paid_at"] = &now
+	case "expired", "expire", "canceled", "cancelled", "failed", "rejected":
+		updates["status"] = strings.ToUpper(normalized)
+	default:
+		updates["status"] = "PENDING"
+	}
+
+	if err := a.DB.Model(&models.SchoolInvoice{}).Where("id = ?", invoice.ID).Updates(updates).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memperbarui invoice", err.Error())
+	}
+
+	if err := a.DB.Where("id = ?", invoice.ID).First(&invoice).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memuat invoice", err.Error())
+	}
+
+	return utils.Success(c, 200, "Invoice berhasil disinkronkan", invoice)
+}
+
+func (a *AppContext) SyncXenditInvoiceStatusByReference(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	referenceID := strings.TrimSpace(c.Params("referenceId"))
+	if referenceID == "" {
+		return utils.Error(c, 400, "Reference invoice wajib dipilih")
+	}
+
+	var invoice models.SchoolInvoice
+	if err := a.DB.Where("invoice_number = ? AND school_id = ?", referenceID, schoolID).First(&invoice).Error; err != nil {
+		return utils.Error(c, 404, "Invoice tidak ditemukan")
+	}
+	if invoice.TransactionID == nil || strings.TrimSpace(*invoice.TransactionID) == "" {
+		return utils.Error(c, 400, "Session Xendit belum tersedia")
+	}
+
+	status, err := fetchXenditSessionStatus(*invoice.TransactionID)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal sinkron status Xendit", err.Error())
+	}
+
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	updates := map[string]interface{}{
+		"payment_method": "xendit",
+		"updated_at":     time.Now(),
+	}
+	switch normalized {
+	case "completed", "success", "succeeded", "paid", "settlement", "settled":
+		updates["status"] = "PAID"
+		now := time.Now()
+		updates["paid_at"] = &now
+	case "expired", "expire", "canceled", "cancelled", "failed", "rejected":
+		updates["status"] = strings.ToUpper(normalized)
+	default:
+		updates["status"] = "PENDING"
+	}
+
+	if err := a.DB.Model(&models.SchoolInvoice{}).Where("id = ?", invoice.ID).Updates(updates).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memperbarui invoice", err.Error())
+	}
+	if err := a.DB.Where("id = ?", invoice.ID).First(&invoice).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memuat invoice", err.Error())
+	}
+
+	return utils.Success(c, 200, "Invoice berhasil disinkronkan", invoice)
 }
 
 func defaultBillingCurrency(value string) string {
@@ -449,6 +550,62 @@ func envIntOrDefault(key string, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+func appendReturnQuery(rawURL, key, value string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	query := parsed.Query()
+	query.Set(key, value)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func fetchXenditSessionStatus(sessionID string) (string, error) {
+	apiKey := strings.TrimSpace(os.Getenv("XENDIT_API_KEY"))
+	if apiKey == "" {
+		return "", fmt.Errorf("XENDIT_API_KEY is not configured")
+	}
+
+	baseURL := strings.TrimSpace(os.Getenv("XENDIT_BASE_URL"))
+	if baseURL == "" {
+		baseURL = "https://api.xendit.co"
+	}
+
+	req, err := http.NewRequest("GET", baseURL+"/sessions/"+sessionID, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.SetBasicAuth(apiKey, "")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("xendit session lookup failed: %s", string(rawBody))
+	}
+
+	var parsed struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(rawBody, &parsed); err != nil {
+		return "", fmt.Errorf("xendit session parse failed: %w; body=%s", err, string(rawBody))
+	}
+	return parsed.Status, nil
 }
 
 func nextBillingDueDate(dayOfMonth int) time.Time {
