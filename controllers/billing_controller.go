@@ -361,7 +361,7 @@ func createXenditCheckoutSession(referenceID string, amount int64, schoolID uint
 		Locale:           "id",
 		Metadata: map[string]interface{}{
 			"invoice_number": referenceID,
-			"school_id":      schoolID,
+			"school_id":      fmt.Sprintf("%d", schoolID),
 			"description":    fmt.Sprintf("Pembayaran invoice %s", referenceID),
 		},
 	}
