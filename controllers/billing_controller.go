@@ -37,7 +37,7 @@ type xenditPaymentRequest struct {
 			Surname    string `json:"surname,omitempty"`
 		} `json:"individual_detail,omitempty"`
 	} `json:"customer,omitempty"`
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 func (a *AppContext) GetSchoolBillingSettings(c *fiber.Ctx) error {
@@ -359,7 +359,7 @@ func createXenditCheckoutSession(referenceID string, amount int64, schoolID uint
 		SuccessReturnURL: strings.TrimSpace(os.Getenv("XENDIT_SUCCESS_RETURN_URL")),
 		CancelReturnURL:  strings.TrimSpace(os.Getenv("XENDIT_FAILURE_RETURN_URL")),
 		Locale:           "id",
-		Metadata: map[string]interface{}{
+		Metadata: map[string]string{
 			"invoice_number": referenceID,
 			"school_id":      fmt.Sprintf("%d", schoolID),
 			"description":    fmt.Sprintf("Pembayaran invoice %s", referenceID),
@@ -379,7 +379,7 @@ func createXenditCheckoutSession(referenceID string, amount int64, schoolID uint
 	expireMinutes := envIntOrDefault("XENDIT_EXPIRE_AFTER_MINUTES", 30)
 	if expireMinutes > 0 {
 		// Xendit expects an expiry date on the session so use a bounded TTL.
-		payload.Metadata["expires_in_minutes"] = expireMinutes
+		payload.Metadata["expires_in_minutes"] = fmt.Sprintf("%d", expireMinutes)
 	}
 
 	bodyBytes, _ := json.Marshal(payload)
