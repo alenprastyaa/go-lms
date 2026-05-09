@@ -298,6 +298,22 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 	`, schoolID).Scan(&recentReceipts)
 	normalizeReceiptMaps(recentReceipts)
 
+	var lockedSchools []map[string]interface{}
+	a.DB.Raw(`
+		SELECT
+			s.id,
+			s.name,
+			MIN(si.due_date) AS oldest_due_date,
+			COUNT(si.id)::int AS overdue_invoice_count
+		FROM schools s
+		INNER JOIN school_invoices si ON si.school_id = s.id
+		WHERE si.status <> 'PAID'
+		  AND si.due_date < CURRENT_TIMESTAMP
+		GROUP BY s.id, s.name
+		ORDER BY oldest_due_date ASC, s.name ASC
+		LIMIT 8
+	`).Scan(&lockedSchools)
+
 	return utils.Success(c, 200, "Success Get Admin Dashboard", fiber.Map{
 		"generatedAt":      time.Now().UTC().Format(time.RFC3339),
 		"school":           school,
@@ -305,6 +321,7 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 		"classes":          recentOrEmpty(classes),
 		"recentAttendance": recentOrEmpty(recentAttendance),
 		"recentReceipts":   recentOrEmpty(recentReceipts),
+		"lockedSchools":    recentOrEmpty(lockedSchools),
 	})
 }
 

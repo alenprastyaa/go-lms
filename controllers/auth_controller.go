@@ -56,6 +56,16 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 		return utils.Error(c, 401, "Invalid Password")
 	}
 
+	if strings.ToUpper(strings.TrimSpace(user.Role)) != "ADMIN" && strings.ToUpper(strings.TrimSpace(user.Role)) != "SUPER_ADMIN" {
+		locked, err := a.isSchoolAccountLocked(user.SchoolID)
+		if err != nil {
+			return utils.Error(c, 500, "Gagal memeriksa status akun", err.Error())
+		}
+		if locked {
+			return utils.Error(c, 403, "Status akun terkunci, silakan hubungi admin untuk membuka akses")
+		}
+	}
+
 	sessionDevice := detectLoginDevice(c.Get("User-Agent"))
 	sessionIP := strings.TrimSpace(c.IP())
 	loginAt := time.Now().UTC()
@@ -94,6 +104,20 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 	return utils.Success(c, 200, "Login successful", fiber.Map{
 		"role": user.Role, "username": user.Username, "school_id": user.SchoolID, "school_name": schoolName, "school_logo": schoolLogo, "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
 	})
+}
+
+func (a *AppContext) isSchoolAccountLocked(schoolID *uint) (bool, error) {
+	if schoolID == nil || *schoolID == 0 {
+		return false, nil
+	}
+
+	var count int64
+	if err := a.DB.Table("school_invoices").
+		Where("school_id = ? AND status <> ? AND due_date < ?", *schoolID, "PAID", time.Now()).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (a *AppContext) RegisterStudent(c *fiber.Ctx) error { return a.registerScopedUser(c, true) }
