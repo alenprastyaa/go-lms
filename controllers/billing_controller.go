@@ -63,12 +63,12 @@ func (a *AppContext) UpsertSchoolBillingSettings(c *fiber.Ctx) error {
 		return utils.Error(c, 400, "Sekolah wajib dipilih")
 	}
 	var body struct {
-		BillingName   string  `json:"billing_name"`
-		Amount        int64   `json:"amount"`
-		Currency      string  `json:"currency"`
-		DueDayOfMonth int     `json:"due_day_of_month"`
-		IsActive      bool    `json:"is_active"`
-		Notes         *string `json:"notes"`
+		BillingName string  `json:"billing_name"`
+		Amount      int64   `json:"amount"`
+		Currency    string  `json:"currency"`
+		DueDate     string  `json:"due_date"`
+		IsActive    bool    `json:"is_active"`
+		Notes       *string `json:"notes"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return utils.Error(c, 400, "Invalid request")
@@ -79,27 +79,28 @@ func (a *AppContext) UpsertSchoolBillingSettings(c *fiber.Ctx) error {
 	if body.Amount <= 0 {
 		return utils.Error(c, 400, "Nominal billing wajib lebih dari 0")
 	}
-	if body.DueDayOfMonth < 1 || body.DueDayOfMonth > 28 {
-		return utils.Error(c, 400, "Tanggal jatuh tempo harus 1-28")
+	dueDate, err := parseBillingDueDate(body.DueDate)
+	if err != nil {
+		return utils.Error(c, 400, err.Error())
 	}
 
 	var billing models.SchoolBilling
-	err := a.DB.Where("school_id = ?", schoolID).First(&billing).Error
+	err = a.DB.Where("school_id = ?", schoolID).First(&billing).Error
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return utils.Error(c, 500, "Gagal memuat billing sekolah", err.Error())
 	}
 	now := time.Now()
 	if err == gorm.ErrRecordNotFound {
 		billing = models.SchoolBilling{
-			SchoolID:      schoolID,
-			BillingName:   strings.TrimSpace(body.BillingName),
-			Amount:        body.Amount,
-			Currency:      defaultBillingCurrency(body.Currency),
-			DueDayOfMonth: body.DueDayOfMonth,
-			IsActive:      body.IsActive,
-			Notes:         body.Notes,
-			CreatedAt:     &now,
-			UpdatedAt:     &now,
+			SchoolID:    schoolID,
+			BillingName: strings.TrimSpace(body.BillingName),
+			Amount:      body.Amount,
+			Currency:    defaultBillingCurrency(body.Currency),
+			DueDate:     dueDate,
+			IsActive:    body.IsActive,
+			Notes:       body.Notes,
+			CreatedAt:   &now,
+			UpdatedAt:   &now,
 		}
 		if err := a.DB.Create(&billing).Error; err != nil {
 			return utils.Error(c, 500, "Gagal membuat billing sekolah", err.Error())
@@ -108,13 +109,13 @@ func (a *AppContext) UpsertSchoolBillingSettings(c *fiber.Ctx) error {
 	}
 
 	updates := map[string]interface{}{
-		"billing_name":     strings.TrimSpace(body.BillingName),
-		"amount":           body.Amount,
-		"currency":         defaultBillingCurrency(body.Currency),
-		"due_day_of_month": body.DueDayOfMonth,
-		"is_active":        body.IsActive,
-		"notes":            body.Notes,
-		"updated_at":       now,
+		"billing_name": strings.TrimSpace(body.BillingName),
+		"amount":       body.Amount,
+		"currency":     defaultBillingCurrency(body.Currency),
+		"due_date":     dueDate,
+		"is_active":    body.IsActive,
+		"notes":        body.Notes,
+		"updated_at":   now,
 	}
 	if err := a.DB.Model(&models.SchoolBilling{}).Where("id = ?", billing.ID).Updates(updates).Error; err != nil {
 		return utils.Error(c, 500, "Gagal memperbarui billing sekolah", err.Error())
@@ -161,14 +162,18 @@ func (a *AppContext) CreateSchoolInvoice(c *fiber.Ctx) error {
 	if err := a.DB.Where("school_id = ? AND is_active = true", schoolID).First(&billing).Error; err != nil {
 		return utils.Error(c, 404, "Billing sekolah tidak ditemukan")
 	}
-	dueDate := nextBillingDueDate(billing.DueDayOfMonth)
+	dueDate := billing.DueDate
+	if dueDate == nil || dueDate.IsZero() {
+		fallback := nextBillingDueDate(billing.DueDayOfMonth)
+		dueDate = &fallback
+	}
 	invoiceNumber := fmt.Sprintf("INV-%d-%d", schoolID, time.Now().Unix())
 	invoice := models.SchoolInvoice{
 		SchoolBillingID: billing.ID,
 		SchoolID:        schoolID,
 		InvoiceNumber:   invoiceNumber,
 		Amount:          billing.Amount,
-		DueDate:         dueDate,
+		DueDate:         *dueDate,
 		Status:          "PENDING",
 	}
 	if err := a.DB.Create(&invoice).Error; err != nil {
@@ -617,6 +622,19 @@ func nextBillingDueDate(dayOfMonth int) time.Time {
 		due = due.AddDate(0, 1, 0)
 	}
 	return due
+}
+
+func parseBillingDueDate(raw string) (*time.Time, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, fmt.Errorf("Tanggal jatuh tempo wajib diisi")
+	}
+	parsed, err := time.ParseInLocation("2006-01-02", trimmed, time.Local)
+	if err != nil {
+		return nil, fmt.Errorf("Format tanggal jatuh tempo tidak valid")
+	}
+	normalized := time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 23, 59, 59, 0, parsed.Location())
+	return &normalized, nil
 }
 
 func verifyMidtransSignature(orderID, statusCode, grossAmount, signatureKey string) bool {

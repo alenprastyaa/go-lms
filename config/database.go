@@ -175,12 +175,14 @@ func NewDatabase() (*gorm.DB, error) {
 			billing_name TEXT NOT NULL,
 			amount BIGINT NOT NULL DEFAULT 0,
 			currency TEXT NOT NULL DEFAULT 'IDR',
+			due_date TIMESTAMP NULL,
 			due_day_of_month INT NOT NULL DEFAULT 1,
 			is_active BOOLEAN NOT NULL DEFAULT TRUE,
 			notes TEXT NULL,
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
+		`ALTER TABLE school_billings ADD COLUMN IF NOT EXISTS due_date TIMESTAMP NULL`,
 		`CREATE TABLE IF NOT EXISTS school_invoices (
 			id BIGSERIAL PRIMARY KEY,
 			school_billing_id BIGINT NOT NULL,
@@ -205,6 +207,7 @@ func NewDatabase() (*gorm.DB, error) {
 			return nil, err
 		}
 	}
+	_ = db.Exec(`UPDATE school_billings SET due_date = (DATE_TRUNC('month', CURRENT_DATE) + ((due_day_of_month - 1) || ' days')::interval)::timestamp WHERE due_date IS NULL`).Error
 
 	return db, nil
 }
