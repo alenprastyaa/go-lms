@@ -360,6 +360,7 @@ func createXenditQrisPayment(referenceID string, amount int64) (*xenditCreateRes
 		Items: []map[string]interface{}{
 			{
 				"reference_id":    referenceID,
+				"category":        "service",
 				"type":            "DIGITAL_SERVICE",
 				"name":            "Billing Sekolah",
 				"net_unit_amount": amount,
