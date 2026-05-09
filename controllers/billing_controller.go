@@ -395,8 +395,9 @@ func createXenditQrisPayment(referenceID string, amount int64) (*xenditCreateRes
 		ID      string `json:"id"`
 		Status  string `json:"status"`
 		Actions []struct {
-			Type  string `json:"type"`
-			Value string `json:"value"`
+			Type       string `json:"type"`
+			Descriptor string `json:"descriptor"`
+			Value      string `json:"value"`
 		} `json:"actions"`
 		PaymentMethod struct {
 			ChannelCode string `json:"channel_code"`
@@ -423,6 +424,10 @@ func createXenditQrisPayment(referenceID string, amount int64) (*xenditCreateRes
 			}
 		case "QR_STRING":
 			if out.QRString == "" {
+				out.QRString = action.Value
+			}
+		case "PRESENT_TO_CUSTOMER":
+			if strings.EqualFold(action.Descriptor, "QR_STRING") && out.QRString == "" {
 				out.QRString = action.Value
 			}
 		}
