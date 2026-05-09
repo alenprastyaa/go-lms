@@ -361,6 +361,9 @@ func createXenditCheckoutSession(referenceID string, amount int64, schoolID uint
 			"description":    fmt.Sprintf("Pembayaran invoice %s", referenceID),
 		},
 	}
+	payload.Customer.ReferenceID = fmt.Sprintf("school-%d", schoolID)
+	payload.Customer.Type = "INDIVIDUAL"
+	payload.Customer.Email = strings.TrimSpace(os.Getenv("XENDIT_CUSTOMER_EMAIL"))
 	if payload.SuccessReturnURL == "" {
 		payload.SuccessReturnURL = strings.TrimSpace(os.Getenv("XENDIT_SUCCESS_RETURN_URL"))
 	}
