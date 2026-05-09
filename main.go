@@ -5,12 +5,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/compress"
-	"github.com/gofiber/fiber/v2/middleware/cors"
 	"lms/config"
 	"lms/realtime"
 	"lms/routes"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/compress"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 )
 
 func main() {
@@ -29,6 +30,7 @@ func main() {
 	if allowedOrigins == "" {
 		allowedOrigins = strings.Join([]string{
 			"https://school-system.my.id",
+			"https://lms.school-system.my.id",
 			"https://alentest.my.id",
 			"http://localhost:8080",
 			"http://localhost:5173",

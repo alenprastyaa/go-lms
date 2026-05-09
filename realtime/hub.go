@@ -560,12 +560,13 @@ func allowedOrigin(origin string) string {
 	}
 
 	allowed := map[string]struct{}{
-		"https://school-system.my.id": {},
-		"https://alentest.my.id":      {},
-		"http://localhost:8080":       {},
-		"http://localhost:5173":       {},
-		"http://127.0.0.1:8080":       {},
-		"http://127.0.0.1:5173":       {},
+		"https://school-system.my.id":     {},
+		"https://lms.school-system.my.id": {},
+		"https://alentest.my.id":          {},
+		"http://localhost:8080":           {},
+		"http://localhost:5173":           {},
+		"http://127.0.0.1:8080":           {},
+		"http://127.0.0.1:5173":           {},
 	}
 	if _, ok := allowed[origin]; ok {
 		return origin

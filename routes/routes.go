@@ -57,6 +57,12 @@ func registerSchool(api fiber.Router, ctx *controllers.AppContext) {
 	r.Get("/", ctx.GetSchools)
 	r.Put("/:id", ctx.UpdateSchool)
 	r.Delete("/:id", ctx.DeleteSchool)
+	r.Get("/:schoolId/billing", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.GetSchoolBillingSettings)
+	r.Put("/:schoolId/billing", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.UpsertSchoolBillingSettings)
+	r.Delete("/:schoolId/billing", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.DeleteSchoolBillingSettings)
+	r.Post("/:schoolId/billing/invoices", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.CreateSchoolInvoice)
+	r.Get("/:schoolId/billing/invoices", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.GetSchoolInvoices)
+	r.Delete("/:schoolId/billing/invoices/:invoiceId", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.DeleteSchoolInvoice)
 }
 
 func registerClass(api fiber.Router, ctx *controllers.AppContext) {
@@ -159,6 +165,14 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	a.Post("/load-test", ctx.RunAdminLoadTest)
 	a.Post("/load-test-login", ctx.RunAdminLoginLoadTest)
 	a.Post("/reset", ctx.ResetAdminScope)
+
+	api.Post("/billing/xendit/webhook", ctx.XenditWebhook)
+
+	b := api.Group("/billing", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
+	b.Get("/current", middlewares.RoleAllowed("ADMIN"), ctx.GetCurrentSchoolBilling)
+	b.Get("/current/invoices", middlewares.RoleAllowed("ADMIN"), ctx.GetCurrentSchoolInvoices)
+	b.Post("/current/invoices/:invoiceId/pay", middlewares.RoleAllowed("ADMIN"), ctx.CreateMidtransPaymentForInvoice)
+	b.Post("/midtrans/notification", ctx.MidtransNotification)
 
 	at := api.Group("/attendance", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	at.Post("/report/homeroom-email", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.SendHomeroomAttendanceReport)

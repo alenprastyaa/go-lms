@@ -169,6 +169,36 @@ func NewDatabase() (*gorm.DB, error) {
 		`CREATE INDEX IF NOT EXISTS idx_curriculum_class_distributions_school_load ON curriculum_class_distributions (school_id, curriculum_teacher_load_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_curriculum_schedule_slots_school_day ON curriculum_schedule_slots (school_id, day_order, session_order)`,
 		`CREATE INDEX IF NOT EXISTS idx_curriculum_schedule_entries_school_class ON curriculum_schedule_entries (school_id, class_id, schedule_slot_id)`,
+		`CREATE TABLE IF NOT EXISTS school_billings (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL UNIQUE,
+			billing_name TEXT NOT NULL,
+			amount BIGINT NOT NULL DEFAULT 0,
+			currency TEXT NOT NULL DEFAULT 'IDR',
+			due_day_of_month INT NOT NULL DEFAULT 1,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			notes TEXT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS school_invoices (
+			id BIGSERIAL PRIMARY KEY,
+			school_billing_id BIGINT NOT NULL,
+			school_id BIGINT NOT NULL,
+			invoice_number TEXT NOT NULL UNIQUE,
+			amount BIGINT NOT NULL DEFAULT 0,
+			due_date TIMESTAMP NOT NULL,
+			status TEXT NOT NULL DEFAULT 'PENDING',
+			payment_method TEXT NULL,
+			gross_amount BIGINT NULL,
+			transaction_id TEXT NULL,
+			snap_token TEXT NULL,
+			snap_redirect_url TEXT NULL,
+			paid_at TIMESTAMP NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_school_invoices_school_status ON school_invoices (school_id, status, due_date)`,
 	}
 	for _, stmt := range indexStatements {
 		if err := db.Exec(stmt).Error; err != nil {
