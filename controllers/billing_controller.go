@@ -363,6 +363,7 @@ func createXenditQrisPayment(referenceID string, amount int64) (*xenditCreateRes
 				"category":        "service",
 				"type":            "DIGITAL_SERVICE",
 				"name":            "Billing Sekolah",
+				"currency":        envOrDefault("XENDIT_PAYMENT_CURRENCY", "IDR"),
 				"net_unit_amount": amount,
 				"quantity":        1,
 			},
