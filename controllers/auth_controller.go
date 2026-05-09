@@ -111,9 +111,11 @@ func (a *AppContext) isSchoolAccountLocked(schoolID *uint) (bool, error) {
 		return false, nil
 	}
 
+	today := time.Now().In(jakartaLocation()).Format("2006-01-02")
+
 	var count int64
 	if err := a.DB.Table("school_invoices").
-		Where("school_id = ? AND status <> ? AND due_date < ?", *schoolID, "PAID", time.Now()).
+		Where("school_id = ? AND status <> ? AND DATE(due_date) < ?::date", *schoolID, "PAID", today).
 		Count(&count).Error; err != nil {
 		return false, err
 	}
