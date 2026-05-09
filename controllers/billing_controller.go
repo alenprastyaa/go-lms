@@ -29,9 +29,13 @@ type xenditPaymentRequest struct {
 	CancelReturnURL  string `json:"cancel_return_url,omitempty"`
 	Locale           string `json:"locale,omitempty"`
 	Customer         struct {
-		ReferenceID string `json:"reference_id,omitempty"`
-		Type        string `json:"type,omitempty"`
-		Email       string `json:"email,omitempty"`
+		ReferenceID      string `json:"reference_id,omitempty"`
+		Type             string `json:"type,omitempty"`
+		Email            string `json:"email,omitempty"`
+		IndividualDetail struct {
+			GivenNames string `json:"given_names,omitempty"`
+			Surname    string `json:"surname,omitempty"`
+		} `json:"individual_detail,omitempty"`
 	} `json:"customer,omitempty"`
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
@@ -364,6 +368,8 @@ func createXenditCheckoutSession(referenceID string, amount int64, schoolID uint
 	payload.Customer.ReferenceID = fmt.Sprintf("school-%d", schoolID)
 	payload.Customer.Type = "INDIVIDUAL"
 	payload.Customer.Email = strings.TrimSpace(os.Getenv("XENDIT_CUSTOMER_EMAIL"))
+	payload.Customer.IndividualDetail.GivenNames = envOrDefault("XENDIT_CUSTOMER_GIVEN_NAMES", "School")
+	payload.Customer.IndividualDetail.Surname = envOrDefault("XENDIT_CUSTOMER_SURNAME", "Billing")
 	if payload.SuccessReturnURL == "" {
 		payload.SuccessReturnURL = strings.TrimSpace(os.Getenv("XENDIT_SUCCESS_RETURN_URL"))
 	}
