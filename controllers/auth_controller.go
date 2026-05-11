@@ -1011,3 +1011,47 @@ func detectLoginDevice(userAgent string) string {
 
 	return fmt.Sprintf("%s • %s • %s", deviceType, platform, browser)
 }
+
+func (a *AppContext) CheckUsernameAvailability(c *fiber.Ctx) error {
+	username := strings.TrimSpace(c.Query("username"))
+	if username == "" {
+		return utils.Error(c, 400, "Username wajib diisi")
+	}
+
+	if len(username) < 3 {
+		return utils.Error(c, 400, "Username minimal 3 karakter")
+	}
+
+	var count int64
+	if err := a.DB.Table("users").Where("LOWER(username) = LOWER(?)", username).Count(&count).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memeriksa username", err.Error())
+	}
+
+	if count > 0 {
+		// Generate suggestions
+		suggestions := make([]string, 0, 3)
+		for i := 1; i <= 5; i++ {
+			candidate := fmt.Sprintf("%s%d", username, i)
+			var candidateCount int64
+			if err := a.DB.Table("users").Where("LOWER(username) = LOWER(?)", candidate).Count(&candidateCount).Error; err == nil && candidateCount == 0 {
+				suggestions = append(suggestions, candidate)
+				if len(suggestions) >= 3 {
+					break
+				}
+			}
+		}
+
+		return c.JSON(fiber.Map{
+			"success":     true,
+			"available":   false,
+			"message":     fmt.Sprintf("Username '%s' sudah digunakan", username),
+			"suggestions": suggestions,
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success":   true,
+		"available": true,
+		"message":   fmt.Sprintf("Username '%s' tersedia", username),
+	})
+}

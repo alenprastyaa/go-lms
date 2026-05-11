@@ -337,6 +337,12 @@ func (a *AppContext) StartLearningQuizAttempt(c *fiber.Ctx) error {
 	} else {
 		row = existing
 	}
+	var violationCount int
+	a.DB.Raw(`
+		SELECT COUNT(*)::int
+		FROM learning_quiz_violation_logs
+		WHERE submission_id = ?
+	`, row["id"]).Scan(&violationCount)
 	startedAt := parseTimeAny(row["started_at"])
 	questionCount := countQuizQuestionsFromText(assignment.QuizPayloadText)
 	expiresAt := interface{}(nil)
@@ -356,6 +362,8 @@ func (a *AppContext) StartLearningQuizAttempt(c *fiber.Ctx) error {
 		"expires_at":                expiresAt,
 		"question_duration_seconds": assignment.QuestionDurationSeconds,
 		"question_count":            questionCount,
+		"violation_count":           violationCount,
+		"access_blocked":            boolFromAny(row["access_blocked"]),
 	})
 }
 
