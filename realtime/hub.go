@@ -165,6 +165,14 @@ func (h *Hub) BroadcastSubjectTyping(subjectID any, payload any) {
 	h.broadcastSubjectEvent("learning-chat:typing", subjectID, payload)
 }
 
+func (h *Hub) BroadcastPrivateChatMessage(schoolID uint, senderID uint, recipientID uint, payload any) {
+	h.broadcastUserEvent("private-chat:new-message", schoolID, []uint{senderID, recipientID}, payload)
+}
+
+func (h *Hub) BroadcastPrivateChatReadUpdated(schoolID uint, ownerUserID uint, peerUserID uint, payload any) {
+	h.broadcastUserEvent("private-chat:read-updated", schoolID, []uint{ownerUserID, peerUserID}, payload)
+}
+
 func (h *Hub) broadcastSubjectEvent(eventName string, subjectID any, payload any) {
 	if h == nil {
 		return
@@ -194,6 +202,45 @@ func (h *Hub) broadcastSubjectEvent(eventName string, subjectID any, payload any
 		case sub.ch <- sseEvent{Name: eventName, Data: data}:
 		default:
 			// Drop stale events instead of blocking the whole broadcaster.
+		}
+	}
+}
+
+func (h *Hub) broadcastUserEvent(eventName string, schoolID uint, userIDs []uint, payload any) {
+	if h == nil || schoolID == 0 || len(userIDs) == 0 {
+		return
+	}
+
+	allowedUsers := make(map[uint]struct{}, len(userIDs))
+	for _, userID := range userIDs {
+		if userID == 0 {
+			continue
+		}
+		allowedUsers[userID] = struct{}{}
+	}
+	if len(allowedUsers) == 0 {
+		return
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, sub := range h.subscribers {
+		if sub.schoolID != schoolID || sub.userID == 0 {
+			continue
+		}
+		if _, ok := allowedUsers[sub.userID]; !ok {
+			continue
+		}
+
+		select {
+		case sub.ch <- sseEvent{Name: eventName, Data: data}:
+		default:
 		}
 	}
 }

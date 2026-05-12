@@ -137,6 +137,28 @@ func NewDatabase() (*gorm.DB, error) {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
+		`CREATE TABLE IF NOT EXISTS private_chat_messages (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			sender_id BIGINT NOT NULL,
+			recipient_id BIGINT NOT NULL,
+			message TEXT NOT NULL,
+			message_type TEXT NOT NULL DEFAULT 'TEXT',
+			attachment_url TEXT NULL,
+			attachment_name TEXT NULL,
+			attachment_mime_type TEXT NULL,
+			attachment_size BIGINT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS private_chat_reads (
+			owner_user_id BIGINT NOT NULL,
+			peer_user_id BIGINT NOT NULL,
+			last_read_message_id BIGINT NULL,
+			last_read_at TIMESTAMP NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (owner_user_id, peer_user_id)
+		)`,
 	}
 	for _, stmt := range curriculumStatements {
 		if err := db.Exec(stmt).Error; err != nil {
@@ -158,6 +180,9 @@ func NewDatabase() (*gorm.DB, error) {
 		`CREATE INDEX IF NOT EXISTS idx_learning_subjects_curriculum_subject ON learning_subjects (school_id, curriculum_subject_id, class_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_learning_chat_messages_subject_created ON learning_chat_messages (subject_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_learning_chat_reads_subject_user ON learning_chat_reads (subject_id, user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_private_chat_messages_school_pair_created ON private_chat_messages (school_id, sender_id, recipient_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_private_chat_messages_recipient_created ON private_chat_messages (recipient_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_private_chat_reads_owner_peer ON private_chat_reads (owner_user_id, peer_user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance (user_id, attendance_date)`,
 		`CREATE INDEX IF NOT EXISTS idx_attendance_date_user ON attendance (attendance_date, user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_payment_receipt_user_created ON payment_receipt (user_id, created_at)`,
