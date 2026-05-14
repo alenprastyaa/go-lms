@@ -685,6 +685,10 @@ func (a *AppContext) GetPublicStudentRegistrationLink(c *fiber.Ctx) error {
 }
 
 func (a *AppContext) RunAdminLoadTest(c *fiber.Ctx) error {
+	if strings.ToLower(strings.TrimSpace(os.Getenv("ENABLE_ADMIN_LOAD_TEST"))) != "true" {
+		return utils.Error(c, 403, "Load test endpoint disabled")
+	}
+
 	var body struct {
 		HitCount int `json:"hit_count"`
 	}
@@ -803,6 +807,10 @@ func (a *AppContext) RunAdminLoadTest(c *fiber.Ctx) error {
 }
 
 func (a *AppContext) RunAdminLoginLoadTest(c *fiber.Ctx) error {
+	if strings.ToLower(strings.TrimSpace(os.Getenv("ENABLE_ADMIN_LOAD_TEST"))) != "true" {
+		return utils.Error(c, 403, "Load test endpoint disabled")
+	}
+
 	var body struct {
 		HitCount int    `json:"hit_count"`
 		Username string `json:"username"`

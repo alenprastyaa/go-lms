@@ -31,8 +31,8 @@ func NewDatabase() (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	sqlDB.SetMaxOpenConns(getEnvInt("DB_MAX_OPEN_CONNS", 60))
-	sqlDB.SetMaxIdleConns(getEnvInt("DB_MAX_IDLE_CONNS", 30))
+	sqlDB.SetMaxOpenConns(getEnvInt("DB_MAX_OPEN_CONNS", 15))
+	sqlDB.SetMaxIdleConns(getEnvInt("DB_MAX_IDLE_CONNS", 5))
 	sqlDB.SetConnMaxLifetime(time.Duration(getEnvInt("DB_CONN_MAX_LIFETIME_MINUTES", 30)) * time.Minute)
 	sqlDB.SetConnMaxIdleTime(time.Duration(getEnvInt("DB_CONN_MAX_IDLE_MINUTES", 10)) * time.Minute)
 
@@ -168,6 +168,7 @@ func NewDatabase() (*gorm.DB, error) {
 
 	indexStatements := []string{
 		`CREATE INDEX IF NOT EXISTS idx_users_school_role ON users (school_id, role)`,
+		`CREATE INDEX IF NOT EXISTS idx_users_username ON users (username)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_school_class_role ON users (school_id, class_id, role)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_school_username ON users (school_id, username)`,
 		`CREATE INDEX IF NOT EXISTS idx_class_school_wali_guru ON class (school_id, wali_guru_id)`,
