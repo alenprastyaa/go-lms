@@ -57,6 +57,12 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS logo_url TEXT`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS inventory_module_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS official_exam_module_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS face_reference_image TEXT`).Error; err != nil {
 		return nil, err
 	}

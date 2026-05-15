@@ -63,6 +63,7 @@ func registerSchool(api fiber.Router, ctx *controllers.AppContext) {
 	r.Post("/", ctx.CreateSchool)
 	r.Get("/", ctx.GetSchools)
 	r.Put("/:id", ctx.UpdateSchool)
+	r.Put("/:id/modules", ctx.UpdateSchoolModules)
 	r.Delete("/:id", ctx.DeleteSchool)
 	r.Get("/:schoolId/billing", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.GetSchoolBillingSettings)
 	r.Put("/:schoolId/billing", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.UpsertSchoolBillingSettings)

@@ -25,7 +25,11 @@ func (a *AppContext) CreateSchool(c *fiber.Ctx) error {
 		return utils.Error(c, 400, "Nama sekolah wajib diisi")
 	}
 
-	school := models.School{Name: name}
+	school := models.School{
+		Name:                      name,
+		InventoryModuleEnabled:    true,
+		OfficialExamModuleEnabled: true,
+	}
 	if file, err := c.FormFile("logo"); err == nil && file != nil {
 		logoURL, upErr := utils.SaveUploadedFile(c, file)
 		if upErr != nil {
@@ -75,6 +79,12 @@ func (a *AppContext) UpdateSchool(c *fiber.Ctx) error {
 	updates := map[string]interface{}{
 		"name": name,
 	}
+	if v := strings.TrimSpace(c.FormValue("inventory_module_enabled")); v != "" {
+		updates["inventory_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
+	}
+	if v := strings.TrimSpace(c.FormValue("official_exam_module_enabled")); v != "" {
+		updates["official_exam_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
+	}
 	if strings.EqualFold(strings.TrimSpace(c.FormValue("remove_logo")), "true") {
 		updates["logo_url"] = nil
 	}
@@ -93,6 +103,33 @@ func (a *AppContext) UpdateSchool(c *fiber.Ctx) error {
 	var row map[string]interface{}
 	a.DB.Raw(schoolListQuery(`WHERE s.id = ?`), school.ID).Scan(&row)
 	return utils.Success(c, 200, "Sekolah berhasil diperbarui", row)
+}
+
+func (a *AppContext) UpdateSchoolModules(c *fiber.Ctx) error {
+	id := c.Params("id")
+	var school models.School
+	if err := a.DB.Where("id = ?", id).First(&school).Error; err != nil {
+		return utils.Error(c, 404, "Sekolah tidak ditemukan")
+	}
+
+	updates := map[string]interface{}{}
+	if v, ok := parseBoolFormValue(c.FormValue("inventory_module_enabled")); ok {
+		updates["inventory_module_enabled"] = v
+	}
+	if v, ok := parseBoolFormValue(c.FormValue("official_exam_module_enabled")); ok {
+		updates["official_exam_module_enabled"] = v
+	}
+	if len(updates) == 0 {
+		return utils.Error(c, 400, "Tidak ada perubahan modul")
+	}
+
+	if err := a.DB.Model(&school).Updates(updates).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memperbarui modul sekolah", err.Error())
+	}
+
+	var row map[string]interface{}
+	a.DB.Raw(schoolListQuery(`WHERE s.id = ?`), school.ID).Scan(&row)
+	return utils.Success(c, 200, "Modul sekolah berhasil diperbarui", row)
 }
 
 func (a *AppContext) UpdateCurrentSchoolBranding(c *fiber.Ctx) error {
@@ -224,6 +261,8 @@ func schoolListQuery(whereClause string) string {
 			s.id,
 			s.name,
 			s.logo_url,
+			COALESCE(s.inventory_module_enabled, true) AS inventory_module_enabled,
+			COALESCE(s.official_exam_module_enabled, true) AS official_exam_module_enabled,
 			COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END)::int AS total_admins,
 			COUNT(DISTINCT CASE WHEN u.role = 'GURU' THEN u.id END)::int AS total_teachers,
 			COUNT(DISTINCT CASE WHEN u.role = 'SISWA' THEN u.id END)::int AS total_students,
@@ -240,4 +279,16 @@ func schoolListQuery(whereClause string) string {
 		%s
 		GROUP BY s.id, s.name, s.logo_url
 	`, whereClause)
+}
+
+func parseBoolFormValue(value string) (bool, bool) {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	switch normalized {
+	case "true", "1", "yes", "y", "on":
+		return true, true
+	case "false", "0", "no", "n", "off":
+		return false, true
+	default:
+		return false, false
+	}
 }
