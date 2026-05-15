@@ -1089,6 +1089,22 @@ func (a *AppContext) CreateSubjectChatMessage(c *fiber.Ctx) error {
 	if msg == "" {
 		msg = strings.TrimSpace(c.FormValue("text"))
 	}
+	messageTypeRaw := strings.TrimSpace(body.MessageType)
+	if messageTypeRaw == "" {
+		messageTypeRaw = strings.TrimSpace(c.FormValue("message_type"))
+	}
+	attachmentName := strings.TrimSpace(body.AttachmentName)
+	if attachmentName == "" {
+		attachmentName = strings.TrimSpace(c.FormValue("attachment_name"))
+	}
+	attachmentMimeType := strings.TrimSpace(body.AttachmentMimeType)
+	if attachmentMimeType == "" {
+		attachmentMimeType = strings.TrimSpace(c.FormValue("attachment_mime_type"))
+	}
+	attachmentSize := int(body.AttachmentSize)
+	if attachmentSize == 0 {
+		attachmentSize = utils.ToInt(c.FormValue("attachment_size"), 0)
+	}
 
 	attachment := strings.TrimSpace(body.AttachmentURL)
 	clientID := strings.TrimSpace(body.ClientID)
@@ -1096,16 +1112,21 @@ func (a *AppContext) CreateSubjectChatMessage(c *fiber.Ctx) error {
 		clientID = strings.TrimSpace(c.FormValue("client_id"))
 	}
 	if f, err := c.FormFile("attachment"); err == nil && f != nil {
-		u, upErr := utils.SaveUploadedFile(c, f)
+		uploaded, upErr := utils.SaveUploadedChatAttachment(c, f)
 		if upErr == nil {
-			attachment = u
+			attachment = uploaded.URL
+			attachmentName = strings.TrimSpace(uploaded.FileName)
+			attachmentMimeType = strings.TrimSpace(uploaded.ContentType)
+			attachmentSize = uploaded.Size
+		} else {
+			return utils.Error(c, 400, upErr.Error())
 		}
 	}
 	if msg == "" && attachment == "" {
 		return utils.Error(c, 400, "message is required")
 	}
 
-	messageType := detectChatMessageType(body.MessageType, body.AttachmentMimeType, body.AttachmentName, attachment)
+	messageType := detectChatMessageType(messageTypeRaw, attachmentMimeType, attachmentName, attachment)
 	var fullRow map[string]interface{}
 	a.DB.Raw(`
 		WITH inserted AS (
@@ -1127,7 +1148,7 @@ func (a *AppContext) CreateSubjectChatMessage(c *fiber.Ctx) error {
 		FROM inserted i
 		LEFT JOIN users u ON u.id = i.sender_id
 		LIMIT 1
-	`, subjectID, userID, msg, messageType, nullIfEmpty(attachment), nullIfEmpty(body.AttachmentName), nullIfEmpty(body.AttachmentMimeType), nullIfZero(int(body.AttachmentSize))).Scan(&fullRow)
+	`, subjectID, userID, msg, messageType, nullIfEmpty(attachment), nullIfEmpty(attachmentName), nullIfEmpty(attachmentMimeType), nullIfZero(attachmentSize)).Scan(&fullRow)
 	if len(fullRow) == 0 {
 		return utils.Error(c, 500, "Failed to create chat message")
 	}

@@ -232,9 +232,14 @@ func (a *AppContext) CreatePrivateChatMessage(c *fiber.Ctx) error {
 	}
 
 	var body struct {
-		Message  string `json:"message"`
-		Text     string `json:"text"`
-		ClientID string `json:"client_id"`
+		Message            string  `json:"message"`
+		Text               string  `json:"text"`
+		MessageType        string  `json:"message_type"`
+		AttachmentURL      string  `json:"attachment_url"`
+		AttachmentName     string  `json:"attachment_name"`
+		AttachmentMimeType string  `json:"attachment_mime_type"`
+		AttachmentSize     float64 `json:"attachment_size"`
+		ClientID           string  `json:"client_id"`
 	}
 	_ = c.BodyParser(&body)
 
@@ -248,7 +253,35 @@ func (a *AppContext) CreatePrivateChatMessage(c *fiber.Ctx) error {
 	if message == "" {
 		message = strings.TrimSpace(c.FormValue("text"))
 	}
-	if message == "" {
+	messageTypeRaw := strings.TrimSpace(body.MessageType)
+	if messageTypeRaw == "" {
+		messageTypeRaw = strings.TrimSpace(c.FormValue("message_type"))
+	}
+	attachmentName := strings.TrimSpace(body.AttachmentName)
+	if attachmentName == "" {
+		attachmentName = strings.TrimSpace(c.FormValue("attachment_name"))
+	}
+	attachmentMimeType := strings.TrimSpace(body.AttachmentMimeType)
+	if attachmentMimeType == "" {
+		attachmentMimeType = strings.TrimSpace(c.FormValue("attachment_mime_type"))
+	}
+	attachmentSize := int(body.AttachmentSize)
+	if attachmentSize == 0 {
+		attachmentSize = utils.ToInt(c.FormValue("attachment_size"), 0)
+	}
+	attachment := strings.TrimSpace(body.AttachmentURL)
+	if f, err := c.FormFile("attachment"); err == nil && f != nil {
+		uploaded, upErr := utils.SaveUploadedChatAttachment(c, f)
+		if upErr == nil {
+			attachment = uploaded.URL
+			attachmentName = strings.TrimSpace(uploaded.FileName)
+			attachmentMimeType = strings.TrimSpace(uploaded.ContentType)
+			attachmentSize = uploaded.Size
+		} else {
+			return utils.Error(c, 400, upErr.Error())
+		}
+	}
+	if message == "" && attachment == "" {
 		return utils.Error(c, 400, "message is required")
 	}
 
@@ -256,6 +289,7 @@ func (a *AppContext) CreatePrivateChatMessage(c *fiber.Ctx) error {
 	if clientID == "" {
 		clientID = strings.TrimSpace(c.FormValue("client_id"))
 	}
+	messageType := detectChatMessageType(messageTypeRaw, attachmentMimeType, attachmentName, attachment)
 
 	var row map[string]interface{}
 	a.DB.Raw(`
@@ -266,9 +300,13 @@ func (a *AppContext) CreatePrivateChatMessage(c *fiber.Ctx) error {
 				recipient_id,
 				message,
 				message_type,
+				attachment_url,
+				attachment_name,
+				attachment_mime_type,
+				attachment_size,
 				created_at
 			)
-			VALUES (?, ?, ?, ?, 'TEXT', NOW())
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
 			RETURNING *
 		)
 		SELECT
@@ -280,7 +318,7 @@ func (a *AppContext) CreatePrivateChatMessage(c *fiber.Ctx) error {
 		FROM inserted i
 		LEFT JOIN users sender ON sender.id = i.sender_id
 		LIMIT 1
-	`, schoolID, userID, peerID, message).Scan(&row)
+	`, schoolID, userID, peerID, message, messageType, nullIfEmpty(attachment), nullIfEmpty(attachmentName), nullIfEmpty(attachmentMimeType), nullIfZero(attachmentSize)).Scan(&row)
 	if len(row) == 0 {
 		return utils.Error(c, 500, "Failed to create private chat message")
 	}

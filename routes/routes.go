@@ -25,6 +25,7 @@ func Register(app *fiber.App, db *gorm.DB, hub *realtime.Hub) {
 	registerPrivateChat(api, ctx)
 	registerGuru(api, ctx)
 	registerSiswa(api, ctx)
+	registerInventory(api, ctx)
 }
 
 func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
@@ -34,10 +35,15 @@ func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
 
 	p := r.Use(middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	p.Post("/register/student", ctx.RegisterStudent)
+	p.Get("/student/template", middlewares.RoleAllowed("ADMIN"), ctx.DownloadStudentTemplate)
+	p.Post("/register/student/import", middlewares.RoleAllowed("ADMIN"), ctx.ImportStudents)
 	p.Post("/register/user-school", middlewares.RoleAllowed("ADMIN"), ctx.RegisterUserSchool)
 	p.Get("/user-school/template", middlewares.RoleAllowed("ADMIN"), ctx.DownloadUserSchoolTeacherTemplate)
 	p.Post("/register/user-school/import", middlewares.RoleAllowed("ADMIN"), ctx.ImportUserSchoolTeachers)
 	p.Get("/user-school", middlewares.RoleAllowed("ADMIN"), ctx.GetUserSchoolList)
+	p.Get("/teachers", ctx.GetSchoolTeacherList)
+	p.Get("/teachers/student", middlewares.RoleAllowed("SISWA", "SARPRAS"), ctx.GetStudentTeacherList)
+	p.Get("/schedule-options", middlewares.RoleAllowed("SISWA", "SARPRAS"), ctx.GetStudentScheduleOptions)
 	p.Put("/user-school/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateUserSchool)
 	p.Delete("/user-school/:id", middlewares.RoleAllowed("ADMIN"), ctx.DeleteUserSchool)
 	p.Get("/super-admin/admin-users", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.GetSuperAdminAdminUsers)
@@ -78,9 +84,11 @@ func registerClass(api fiber.Router, ctx *controllers.AppContext) {
 func registerStudent(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/student", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	r.Get("/", ctx.GetStudents)
+	r.Post("/promotions", middlewares.RoleAllowed("ADMIN"), ctx.PromoteStudents)
 	r.Get("/my-class", middlewares.RoleAllowed("GURU"), ctx.GetMyClassStudents)
 	r.Get("/:id/attendance", middlewares.RoleAllowed("GURU"), ctx.GetStudentAttendanceForTeacher)
 	r.Get("/:id/receipt", middlewares.RoleAllowed("GURU"), ctx.GetStudentReceiptForTeacher)
+	r.Get("/:id/class-history", middlewares.RoleAllowed("ADMIN", "GURU"), ctx.GetStudentClassHistory)
 	r.Put("/:id", ctx.EditStudent)
 	r.Delete("/:id", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.DeleteStudent)
 }
@@ -163,6 +171,22 @@ func registerSiswa(api fiber.Router, ctx *controllers.AppContext) {
 	l.Post("/assignments/:assignmentId/start", middlewares.RoleAllowed("SISWA"), ctx.StartLearningQuizAttempt)
 	l.Post("/assignments/:assignmentId/submit", middlewares.RoleAllowed("SISWA"), ctx.SubmitLearningAssignment)
 	l.Post("/assignments/:assignmentId/violations", middlewares.RoleAllowed("SISWA"), ctx.RecordQuizViolation)
+}
+
+func registerInventory(api fiber.Router, ctx *controllers.AppContext) {
+	d := api.Group("/dashboard", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
+	d.Get("/sarpras", middlewares.RoleAllowed("ADMIN", "SARPRAS"), ctx.GetSarprasDashboard)
+
+	r := api.Group("/inventory", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
+	r.Get("/overview", middlewares.RoleAllowed("ADMIN", "SARPRAS"), ctx.GetSarprasDashboard)
+	r.Get("/items", middlewares.RoleAllowed("ADMIN", "SARPRAS", "SISWA"), ctx.GetInventoryItems)
+	r.Post("/items", middlewares.RoleAllowed("ADMIN", "SARPRAS"), ctx.CreateInventoryItem)
+	r.Put("/items/:id", middlewares.RoleAllowed("ADMIN", "SARPRAS"), ctx.UpdateInventoryItem)
+	r.Delete("/items/:id", middlewares.RoleAllowed("ADMIN", "SARPRAS"), ctx.DeleteInventoryItem)
+	r.Get("/loans", middlewares.RoleAllowed("ADMIN", "SARPRAS", "SISWA"), ctx.GetInventoryLoans)
+	r.Get("/active-loans", middlewares.RoleAllowed("ADMIN", "SARPRAS", "SISWA"), ctx.GetInventoryActiveLoans)
+	r.Post("/loans", middlewares.RoleAllowed("SISWA"), ctx.CreateInventoryLoan)
+	r.Post("/loans/:id/return", middlewares.RoleAllowed("ADMIN", "SARPRAS", "SISWA"), ctx.ReturnInventoryLoan)
 }
 
 func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {

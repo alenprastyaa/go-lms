@@ -3,6 +3,7 @@ package controllers
 import (
 	"github.com/gofiber/fiber/v2"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 	"lms/models"
 	"lms/utils"
 )
@@ -61,7 +62,12 @@ func (a *AppContext) RegisterStudentPublic(c *fiber.Ctx) error {
 		ParentEmail: body.ParentEmail,
 		PhoneNumber: body.PhoneNumber,
 	}
-	if err := a.DB.Create(&user).Error; err != nil {
+	if err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&user).Error; err != nil {
+			return err
+		}
+		return ensureInitialStudentClassEnrollmentTx(tx, schoolID, user.ID, body.ClassID, nil)
+	}); err != nil {
 		return utils.Error(c, 500, "Failed Student Registration", err.Error())
 	}
 	return utils.Success(c, 201, "Registrasi siswa berhasil", user)

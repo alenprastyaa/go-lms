@@ -301,6 +301,216 @@ func (a *AppContext) DownloadUserSchoolTeacherTemplate(c *fiber.Ctx) error {
 	return c.Send(xlsxBytes)
 }
 
+func (a *AppContext) DownloadStudentTemplate(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	classID := strings.TrimSpace(c.Query("class_id"))
+	if classID == "" {
+		return utils.Error(c, 400, "Pilih kelas terlebih dahulu")
+	}
+
+	var selectedClass models.Class
+	if err := a.DB.Where("id = ? AND school_id = ?", classID, schoolID).First(&selectedClass).Error; err != nil {
+		return utils.Error(c, 404, "Kelas tidak ditemukan")
+	}
+
+	var classes []models.Class
+	if err := a.DB.Where("school_id = ?", schoolID).Order("class_name ASC").Find(&classes).Error; err != nil {
+		return utils.Error(c, 500, "Gagal membaca data kelas", err.Error())
+	}
+
+	xlsxBytes, err := buildStudentTemplateXLSX(classes, &selectedClass)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal membuat template", err.Error())
+	}
+
+	c.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="template-siswa-%s.xlsx"`, safeFilenamePart(selectedClass.ClassName)))
+	return c.Send(xlsxBytes)
+}
+
+func (a *AppContext) ImportStudents(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	file, err := c.FormFile("file")
+	if err != nil {
+		return utils.Error(c, 400, "File template wajib diupload")
+	}
+	handle, err := file.Open()
+	if err != nil {
+		return utils.Error(c, 500, "Gagal membuka file", err.Error())
+	}
+	defer handle.Close()
+
+	payload, err := io.ReadAll(handle)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal membaca file", err.Error())
+	}
+
+	rows, err := parseTeacherImportXLSXRows(payload)
+	if err != nil {
+		return utils.Error(c, 400, err.Error())
+	}
+
+	headerIndex := -1
+	columnIndex := map[string]int{}
+	for rowIndex, row := range rows {
+		columnIndex = map[string]int{}
+		for cellIndex, cellValue := range row {
+			normalized := normalizeExcelHeader(cellValue)
+			switch {
+			case strings.Contains(normalized, "username"):
+				columnIndex["username"] = cellIndex
+			case strings.Contains(normalized, "password"):
+				columnIndex["password"] = cellIndex
+			case strings.Contains(normalized, "nama lengkap") || strings.Contains(normalized, "full name") || strings.EqualFold(normalized, "nama") || strings.EqualFold(normalized, "name"):
+				columnIndex["full_name"] = cellIndex
+			case strings.Contains(normalized, "kelas") || strings.Contains(normalized, "class"):
+				columnIndex["class_name"] = cellIndex
+			case strings.Contains(normalized, "email"):
+				columnIndex["parent_email"] = cellIndex
+			case strings.Contains(normalized, "hp") || strings.Contains(normalized, "phone") || strings.Contains(normalized, "telepon"):
+				columnIndex["phone_number"] = cellIndex
+			}
+		}
+
+		if hasRequiredStudentHeaders(columnIndex) {
+			headerIndex = rowIndex
+			break
+		}
+	}
+	if headerIndex < 0 {
+		return utils.Error(c, 400, "Header template siswa tidak dikenali, unduh ulang template terbaru")
+	}
+
+	var classRows []models.Class
+	if err := a.DB.Where("school_id = ?", schoolID).Find(&classRows).Error; err != nil {
+		return utils.Error(c, 500, "Gagal membaca data kelas", err.Error())
+	}
+	classByName := map[string]models.Class{}
+	classByID := map[string]models.Class{}
+	for _, classItem := range classRows {
+		classByName[normalizeExcelHeader(classItem.ClassName)] = classItem
+		classByID[fmt.Sprint(classItem.ID)] = classItem
+	}
+
+	tx := a.DB.Begin()
+	if tx.Error != nil {
+		return utils.Error(c, 500, "Gagal memulai transaksi")
+	}
+
+	imported := 0
+	failedRows := make([]fiber.Map, 0)
+	usernameSet := make([]string, 0, len(rows))
+	for rowIndex := headerIndex + 1; rowIndex < len(rows); rowIndex++ {
+		row := rows[rowIndex]
+		if isStudentImportRowEmpty(row, columnIndex) {
+			continue
+		}
+		username := strings.TrimSpace(cellValue(row, columnIndex["username"]))
+		if username != "" {
+			usernameSet = append(usernameSet, username)
+		}
+	}
+
+	existingUsernames := make(map[string]struct{}, len(usernameSet))
+	if len(usernameSet) > 0 {
+		var existingRows []struct {
+			Username string `gorm:"column:username"`
+		}
+		if err := tx.Table("users").
+			Select("username").
+			Where("school_id = ? AND username IN ?", schoolID, usernameSet).
+			Scan(&existingRows).Error; err != nil {
+			tx.Rollback()
+			return utils.Error(c, 500, "Gagal memeriksa data siswa", err.Error())
+		}
+		for _, item := range existingRows {
+			existingUsernames[item.Username] = struct{}{}
+		}
+	}
+
+	for rowIndex := headerIndex + 1; rowIndex < len(rows); rowIndex++ {
+		row := rows[rowIndex]
+		if isStudentImportRowEmpty(row, columnIndex) {
+			continue
+		}
+
+		record := map[string]string{
+			"full_name":    cellValue(row, columnIndex["full_name"]),
+			"username":     strings.TrimSpace(cellValue(row, columnIndex["username"])),
+			"password":     strings.TrimSpace(cellValue(row, columnIndex["password"])),
+			"class_name":   strings.TrimSpace(cellValue(row, columnIndex["class_name"])),
+			"parent_email": strings.TrimSpace(cellValue(row, columnIndex["parent_email"])),
+			"phone_number": strings.TrimSpace(cellValue(row, columnIndex["phone_number"])),
+		}
+
+		if record["username"] == "" || record["password"] == "" || record["class_name"] == "" {
+			failedRows = append(failedRows, fiber.Map{
+				"row":     rowIndex + 1,
+				"message": "username, password, dan kelas wajib diisi",
+			})
+			continue
+		}
+		if _, exists := existingUsernames[record["username"]]; exists {
+			failedRows = append(failedRows, fiber.Map{
+				"row":     rowIndex + 1,
+				"message": fmt.Sprintf("username %s sudah ada", record["username"]),
+			})
+			continue
+		}
+
+		classItem, ok := classByID[record["class_name"]]
+		if !ok {
+			classItem, ok = classByName[normalizeExcelHeader(record["class_name"])]
+		}
+		if !ok {
+			failedRows = append(failedRows, fiber.Map{
+				"row":     rowIndex + 1,
+				"message": fmt.Sprintf("kelas %s tidak ditemukan", record["class_name"]),
+			})
+			continue
+		}
+
+		hash, _ := bcrypt.GenerateFromPassword([]byte(record["password"]), 8)
+		user := models.User{
+			FullName:    utils.StringPtr(record["full_name"]),
+			Username:    record["username"],
+			Password:    string(hash),
+			Role:        "SISWA",
+			SchoolID:    &schoolID,
+			ClassID:     &classItem.ID,
+			ParentEmail: utils.StringPtr(record["parent_email"]),
+			PhoneNumber: utils.StringPtr(record["phone_number"]),
+		}
+
+		if err := tx.Create(&user).Error; err != nil {
+			failedRows = append(failedRows, fiber.Map{
+				"row":     rowIndex + 1,
+				"message": err.Error(),
+			})
+			continue
+		}
+		if err := ensureInitialStudentClassEnrollmentTx(tx, schoolID, user.ID, classItem.ID, uintPointerFromLocal(c, "userID")); err != nil {
+			failedRows = append(failedRows, fiber.Map{
+				"row":     rowIndex + 1,
+				"message": err.Error(),
+			})
+			continue
+		}
+		existingUsernames[record["username"]] = struct{}{}
+		imported += 1
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return utils.Error(c, 500, "Gagal menyimpan hasil import siswa", err.Error())
+	}
+
+	return utils.Success(c, 200, "Import siswa selesai", fiber.Map{
+		"imported": imported,
+		"failed":   len(failedRows),
+		"errors":   failedRows,
+	})
+}
+
 func (a *AppContext) registerScopedUser(c *fiber.Ctx, asStudent bool) error {
 	var body map[string]interface{}
 	_ = c.BodyParser(&body)
@@ -326,7 +536,15 @@ func (a *AppContext) registerScopedUser(c *fiber.Ctx, asStudent bool) error {
 		user.ClassID = &classID
 	}
 
-	if err := a.DB.Create(&user).Error; err != nil {
+	if err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&user).Error; err != nil {
+			return err
+		}
+		if asStudent && user.SchoolID != nil && user.ClassID != nil {
+			return ensureInitialStudentClassEnrollmentTx(tx, *user.SchoolID, user.ID, *user.ClassID, uintPointerFromLocal(c, "userID"))
+		}
+		return nil
+	}); err != nil {
 		return utils.Error(c, 500, "Registration failed", err.Error())
 	}
 	return utils.Success(c, 201, "User registered successfully", user)
@@ -339,9 +557,42 @@ func buildTeacherTemplateXLSX() ([]byte, error) {
 	files := map[string]string{
 		"[Content_Types].xml":        xlsxContentTypesXML(),
 		"_rels/.rels":                xlsxRootRelsXML(),
-		"xl/workbook.xml":            xlsxWorkbookXML(),
+		"xl/workbook.xml":            xlsxWorkbookXML("Template Guru"),
 		"xl/_rels/workbook.xml.rels": xlsxWorkbookRelsXML(),
+		"xl/styles.xml":              xlsxStylesXML(),
 		"xl/worksheets/sheet1.xml":   xlsxTeacherTemplateSheetXML(),
+	}
+
+	for name, content := range files {
+		writer, err := zipWriter.Create(name)
+		if err != nil {
+			_ = zipWriter.Close()
+			return nil, err
+		}
+		if _, err := writer.Write([]byte(content)); err != nil {
+			_ = zipWriter.Close()
+			return nil, err
+		}
+	}
+
+	if err := zipWriter.Close(); err != nil {
+		return nil, err
+	}
+
+	return buffer.Bytes(), nil
+}
+
+func buildStudentTemplateXLSX(classes []models.Class, selectedClass *models.Class) ([]byte, error) {
+	var buffer bytes.Buffer
+	zipWriter := archivezip.NewWriter(&buffer)
+
+	files := map[string]string{
+		"[Content_Types].xml":        xlsxContentTypesXML(),
+		"_rels/.rels":                xlsxRootRelsXML(),
+		"xl/workbook.xml":            xlsxWorkbookXML("Template Siswa"),
+		"xl/_rels/workbook.xml.rels": xlsxWorkbookRelsXML(),
+		"xl/styles.xml":              xlsxStylesXML(),
+		"xl/worksheets/sheet1.xml":   xlsxStudentTemplateSheetXML(classes, selectedClass),
 	}
 
 	for name, content := range files {
@@ -369,6 +620,7 @@ func xlsxContentTypesXML() string {
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
   <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
 </Types>`
 }
@@ -380,11 +632,14 @@ func xlsxRootRelsXML() string {
 </Relationships>`
 }
 
-func xlsxWorkbookXML() string {
+func xlsxWorkbookXML(sheetName string) string {
+	if strings.TrimSpace(sheetName) == "" {
+		sheetName = "Template"
+	}
 	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets>
-    <sheet name="Template Guru" sheetId="1" r:id="rId1"/>
+    <sheet name="` + xlsxEscape(sheetName) + `" sheetId="1" r:id="rId1"/>
   </sheets>
 </workbook>`
 }
@@ -393,31 +648,183 @@ func xlsxWorkbookRelsXML() string {
 	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
 </Relationships>`
 }
 
-func xlsxTeacherTemplateSheetXML() string {
+func xlsxStylesXML() string {
 	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="6">
+    <font><sz val="11"/><color rgb="FF334155"/><name val="Calibri"/></font>
+    <font><b/><sz val="18"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
+    <font><sz val="11"/><color rgb="FFE0F2FE"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><color rgb="FF0F172A"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
+    <font><i/><sz val="10"/><color rgb="FF64748B"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="7">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF0F172A"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFE0F2FE"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF0369A1"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFDCFCE7"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFF8FAFC"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="2">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border>
+      <left style="thin"><color rgb="FFCBD5E1"/></left>
+      <right style="thin"><color rgb="FFCBD5E1"/></right>
+      <top style="thin"><color rgb="FFCBD5E1"/></top>
+      <bottom style="thin"><color rgb="FFCBD5E1"/></bottom>
+      <diagonal/>
+    </border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="9">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="3" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="4" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>
+    <xf numFmtId="0" fontId="5" fillId="6" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>
+    <xf numFmtId="0" fontId="3" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>
+    <xf numFmtId="49" fontId="0" fillId="6" borderId="1" xfId="0" applyNumberFormat="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+  <dxfs count="0"/>
+  <tableStyles count="0" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"/>
+</styleSheet>`
+}
+
+func xlsxTeacherTemplateSheetXML() string {
+	var builder strings.Builder
+	builder.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:E40"/>
+  <sheetViews>
+    <sheetView workbookViewId="0">
+      <pane ySplit="11" topLeftCell="A12" activePane="bottomLeft" state="frozen"/>
+      <selection pane="bottomLeft" activeCell="A12" sqref="A12"/>
+    </sheetView>
+  </sheetViews>
+  <sheetFormatPr defaultRowHeight="18"/>
+  <cols>
+    <col min="1" max="1" width="30" customWidth="1"/>
+    <col min="2" max="2" width="24" customWidth="1"/>
+    <col min="3" max="3" width="20" customWidth="1"/>
+    <col min="4" max="4" width="32" customWidth="1"/>
+    <col min="5" max="5" width="22" style="8" customWidth="1"/>
+  </cols>
   <sheetData>
-    <row r="1">
-      <c r="A1" t="inlineStr"><is><t xml:space="preserve">Template Import Guru</t></is></c>
-    </row>
-    <row r="2">
-      <c r="A2" t="inlineStr"><is><t xml:space="preserve">Role akan otomatis diisi sebagai GURU.</t></is></c>
-    </row>
-    <row r="3">
-      <c r="A3" t="inlineStr"><is><t xml:space="preserve">Isi 1 baris per guru lalu upload kembali file ini.</t></is></c>
-    </row>
-    <row r="5">
-      <c r="A5" t="inlineStr"><is><t xml:space="preserve">Nama Lengkap</t></is></c>
-      <c r="B5" t="inlineStr"><is><t xml:space="preserve">Username</t></is></c>
-      <c r="C5" t="inlineStr"><is><t xml:space="preserve">Password</t></is></c>
-      <c r="D5" t="inlineStr"><is><t xml:space="preserve">Email</t></is></c>
-      <c r="E5" t="inlineStr"><is><t xml:space="preserve">No. HP</t></is></c>
-    </row>
-  </sheetData>
-</worksheet>`
+    <row r="1" ht="28" customHeight="1">` + xlsxStyledCell("A1", "Template Import Data Guru", 1) + `</row>
+    <row r="2" ht="22" customHeight="1">` + xlsxStyledCell("A2", "Gunakan template ini untuk menambahkan akun guru secara massal.", 2) + `</row>
+    <row r="4" ht="24" customHeight="1">` + xlsxStyledCell("A4", "Petunjuk Pengisian", 3) + `</row>
+    <row r="5" ht="22" customHeight="1">` + xlsxStyledCell("A5", "1. Kolom Username dan Password wajib diisi. Nama Lengkap, Email, dan No. HP bersifat opsional.", 3) + `</row>
+    <row r="6" ht="22" customHeight="1">` + xlsxStyledCell("A6", "2. Role akan otomatis dibuat sebagai GURU. Jangan mengubah nama kolom pada baris header.", 3) + `</row>
+    <row r="7" ht="22" customHeight="1">` + xlsxStyledCell("A7", "3. Isi data guru mulai baris 12. Baris contoh hanya sebagai referensi format.", 3) + `</row>
+    <row r="9" ht="22" customHeight="1">` + xlsxStyledCell("A9", "Contoh Format", 7) + xlsxStyledCell("B9", "guru_matematika", 7) + xlsxStyledCell("C9", "GantiPassword123", 7) + xlsxStyledCell("D9", "guru@example.sch.id", 7) + xlsxStyledCell("E9", "081234567890", 8) + `</row>
+    <row r="11" ht="24" customHeight="1">` + xlsxStyledCell("A11", "Nama Lengkap", 4) + xlsxStyledCell("B11", "Username", 4) + xlsxStyledCell("C11", "Password", 4) + xlsxStyledCell("D11", "Email", 4) + xlsxStyledCell("E11", "No. HP", 4) + `</row>
+`)
+
+	for row := 12; row <= 40; row++ {
+		builder.WriteString(fmt.Sprintf(`    <row r="%d" ht="22" customHeight="1">`, row))
+		for _, col := range []string{"A", "B", "C", "D", "E"} {
+			styleID := 5
+			if col == "E" {
+				styleID = 8
+			}
+			builder.WriteString(xlsxStyledCell(fmt.Sprintf("%s%d", col, row), "", styleID))
+		}
+		builder.WriteString("</row>\n")
+	}
+
+	builder.WriteString(`  </sheetData>
+  <autoFilter ref="A11:E40"/>
+  <mergeCells count="6">
+    <mergeCell ref="A1:E1"/>
+    <mergeCell ref="A2:E2"/>
+    <mergeCell ref="A4:E4"/>
+    <mergeCell ref="A5:E5"/>
+    <mergeCell ref="A6:E6"/>
+    <mergeCell ref="A7:E7"/>
+  </mergeCells>
+  <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+</worksheet>`)
+	return builder.String()
+}
+
+func xlsxStudentTemplateSheetXML(classes []models.Class, selectedClass *models.Class) string {
+	className := selectedStudentTemplateClassName(classes, selectedClass)
+	instructionText := fmt.Sprintf("1. Template ini khusus untuk kelas %s. Kolom Kelas sudah terisi otomatis, admin cukup mengisi data siswa.", className)
+	var builder strings.Builder
+	builder.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:H40"/>
+  <sheetViews>
+    <sheetView workbookViewId="0">
+      <pane ySplit="11" topLeftCell="A12" activePane="bottomLeft" state="frozen"/>
+      <selection pane="bottomLeft" activeCell="A12" sqref="A12"/>
+    </sheetView>
+  </sheetViews>
+  <sheetFormatPr defaultRowHeight="18"/>
+  <cols>
+    <col min="1" max="1" width="30" customWidth="1"/>
+    <col min="2" max="2" width="24" customWidth="1"/>
+    <col min="3" max="3" width="20" customWidth="1"/>
+    <col min="4" max="4" width="24" customWidth="1"/>
+    <col min="5" max="5" width="32" customWidth="1"/>
+    <col min="6" max="6" width="22" style="8" customWidth="1"/>
+    <col min="7" max="7" width="4" customWidth="1"/>
+    <col min="8" max="8" width="32" customWidth="1"/>
+  </cols>
+  <sheetData>
+    <row r="1" ht="28" customHeight="1">` + xlsxStyledCell("A1", "Template Import Data Siswa", 1) + `</row>
+    <row r="2" ht="22" customHeight="1">` + xlsxStyledCell("A2", "Gunakan template ini untuk menambahkan akun siswa secara massal.", 2) + `</row>
+    <row r="4" ht="24" customHeight="1">` + xlsxStyledCell("A4", "Petunjuk Pengisian", 3) + `</row>
+    <row r="5" ht="22" customHeight="1">` + xlsxStyledCell("A5", instructionText, 3) + `</row>
+    <row r="6" ht="22" customHeight="1">` + xlsxStyledCell("A6", "2. Role akan otomatis dibuat sebagai SISWA. Jangan mengubah nama kolom pada baris header.", 3) + `</row>
+    <row r="7" ht="22" customHeight="1">` + xlsxStyledCell("A7", "3. Isi data siswa mulai baris 12. Kolom No. HP sudah diformat sebagai teks agar angka 0 di depan tidak hilang.", 3) + `</row>
+    <row r="9" ht="22" customHeight="1">` + xlsxStyledCell("A9", "Contoh Format", 7) + xlsxStyledCell("B9", "siswa_andi", 7) + xlsxStyledCell("C9", "GantiPassword123", 7) + xlsxStyledCell("D9", className, 7) + xlsxStyledCell("E9", "wali@example.com", 7) + xlsxStyledCell("F9", "081234567890", 8) + `</row>
+    <row r="11" ht="24" customHeight="1">` + xlsxStyledCell("A11", "Nama Lengkap", 4) + xlsxStyledCell("B11", "Username", 4) + xlsxStyledCell("C11", "Password", 4) + xlsxStyledCell("D11", "Kelas", 4) + xlsxStyledCell("E11", "Email Orang Tua", 4) + xlsxStyledCell("F11", "No. HP", 4) + xlsxStyledCell("H11", "Daftar Kelas Tersedia", 4) + `</row>
+`)
+
+	for row := 12; row <= 40; row++ {
+		builder.WriteString(fmt.Sprintf(`    <row r="%d" ht="22" customHeight="1">`, row))
+		for _, col := range []string{"A", "B", "C", "D", "E", "F"} {
+			styleID := 5
+			if col == "F" {
+				styleID = 8
+			}
+			value := ""
+			if col == "D" {
+				value = className
+			}
+			builder.WriteString(xlsxStyledCell(fmt.Sprintf("%s%d", col, row), value, styleID))
+		}
+		classIndex := row - 12
+		if classIndex >= 0 && classIndex < len(classes) {
+			builder.WriteString(xlsxStyledCell(fmt.Sprintf("H%d", row), classes[classIndex].ClassName, 6))
+		}
+		builder.WriteString("</row>\n")
+	}
+
+	builder.WriteString(`  </sheetData>
+  <autoFilter ref="A11:F40"/>
+  <mergeCells count="6">
+    <mergeCell ref="A1:F1"/>
+    <mergeCell ref="A2:F2"/>
+    <mergeCell ref="A4:F4"/>
+    <mergeCell ref="A5:F5"/>
+    <mergeCell ref="A6:F6"/>
+    <mergeCell ref="A7:F7"/>
+  </mergeCells>
+  <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+</worksheet>`)
+	return builder.String()
 }
 
 func parseTeacherImportXLSXRows(payload []byte) ([][]string, error) {
@@ -641,6 +1048,38 @@ func xlsxCell(reference, value string) string {
 	return fmt.Sprintf(`<c r="%s" t="inlineStr"><is><t xml:space="preserve">%s</t></is></c>`, reference, xlsxEscape(value))
 }
 
+func xlsxStyledCell(reference, value string, styleID int) string {
+	if value == "" {
+		return fmt.Sprintf(`<c r="%s" s="%d"/>`, reference, styleID)
+	}
+	return fmt.Sprintf(`<c r="%s" s="%d" t="inlineStr"><is><t xml:space="preserve">%s</t></is></c>`, reference, styleID, xlsxEscape(value))
+}
+
+func selectedStudentTemplateClassName(classes []models.Class, selectedClass *models.Class) string {
+	if selectedClass != nil && strings.TrimSpace(selectedClass.ClassName) != "" {
+		return selectedClass.ClassName
+	}
+	if len(classes) > 0 && strings.TrimSpace(classes[0].ClassName) != "" {
+		return classes[0].ClassName
+	}
+	return "Contoh: X IPA 1"
+}
+
+func safeFilenamePart(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.ReplaceAll(normalized, " ", "-")
+	var builder strings.Builder
+	for _, char := range normalized {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-' || char == '_' {
+			builder.WriteRune(char)
+		}
+	}
+	if builder.Len() == 0 {
+		return "kelas"
+	}
+	return builder.String()
+}
+
 func parseSpreadsheetMLRows(payload []byte) ([][]string, error) {
 	decoder := xml.NewDecoder(bytes.NewReader(payload))
 	rows := make([][]string, 0)
@@ -717,9 +1156,25 @@ func hasRequiredGuruHeaders(columnIndex map[string]int) bool {
 	return hasUsername && hasPassword
 }
 
+func hasRequiredStudentHeaders(columnIndex map[string]int) bool {
+	_, hasUsername := columnIndex["username"]
+	_, hasPassword := columnIndex["password"]
+	_, hasClass := columnIndex["class_name"]
+	return hasUsername && hasPassword && hasClass
+}
+
 func isExcelRowEmpty(row []string) bool {
 	for _, cell := range row {
 		if strings.TrimSpace(cell) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func isStudentImportRowEmpty(row []string, columnIndex map[string]int) bool {
+	for _, key := range []string{"full_name", "username", "password", "class_name", "parent_email", "phone_number"} {
+		if strings.TrimSpace(cellValue(row, columnIndex[key])) != "" {
 			return false
 		}
 	}
@@ -774,6 +1229,113 @@ func (a *AppContext) GetUserSchoolList(c *fiber.Ctx) error {
 	return utils.Success(c, 200, "Success Get User School", users)
 }
 
+func (a *AppContext) GetSchoolTeacherList(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+
+	var users []map[string]interface{}
+	if err := a.DB.Table("users").
+		Select("id, full_name, username, role, school_id").
+		Where("school_id = ? AND role = ?", schoolID, "GURU").
+		Order("full_name ASC, username ASC").
+		Scan(&users).Error; err != nil {
+		return utils.Error(c, 500, "Failed Get School Teacher List", err.Error())
+	}
+
+	return utils.Success(c, 200, "Success Get School Teacher List", users)
+}
+
+func (a *AppContext) GetStudentTeacherList(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	userID := c.Locals("userID").(uint)
+
+	var student struct {
+		ClassID *uint `gorm:"column:class_id"`
+	}
+	if err := a.DB.Raw(`SELECT class_id FROM users WHERE id = ? AND school_id = ? AND role = 'SISWA'`, userID, schoolID).Scan(&student).Error; err != nil {
+		return utils.Error(c, 500, "Failed Get Student Teacher List", err.Error())
+	}
+	if student.ClassID == nil || *student.ClassID == 0 {
+		return utils.Success(c, 200, "Success Get Student Teacher List", fiber.Map{"data": []map[string]interface{}{}})
+	}
+
+	var teachers []map[string]interface{}
+	if err := a.DB.Raw(`
+		SELECT
+			u.id,
+			u.full_name,
+			u.username,
+			u.role,
+			u.school_id,
+			COALESCE(string_agg(DISTINCT ls.name, ', '), '') AS subjects
+		FROM learning_subjects ls
+		INNER JOIN users u ON u.id = ls.teacher_id
+		WHERE ls.school_id = ? AND ls.class_id = ?
+		GROUP BY u.id, u.full_name, u.username, u.role, u.school_id
+		ORDER BY MIN(COALESCE(u.full_name, u.username)) ASC, u.username ASC
+	`, schoolID, *student.ClassID).Scan(&teachers).Error; err != nil {
+		return utils.Error(c, 500, "Failed Get Student Teacher List", err.Error())
+	}
+
+	if len(teachers) == 0 {
+		var homeroom map[string]interface{}
+		_ = a.DB.Raw(`
+			SELECT u.id, u.full_name, u.username, u.role, u.school_id, '' AS subjects
+			FROM class c
+			INNER JOIN users u ON u.id = c.wali_guru_id
+			WHERE c.school_id = ? AND c.id = ?
+			LIMIT 1
+		`, schoolID, *student.ClassID).Scan(&homeroom).Error
+		if len(homeroom) > 0 {
+			teachers = append(teachers, homeroom)
+		}
+	}
+
+	return utils.Success(c, 200, "Success Get Student Teacher List", fiber.Map{
+		"data": teachers,
+	})
+}
+
+func (a *AppContext) GetStudentScheduleOptions(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	userID := c.Locals("userID").(uint)
+
+	var student struct {
+		ClassID *uint `gorm:"column:class_id"`
+	}
+	if err := a.DB.Raw(`SELECT class_id FROM users WHERE id = ? AND school_id = ? AND role = 'SISWA'`, userID, schoolID).Scan(&student).Error; err != nil {
+		return utils.Error(c, 500, "Failed Get Student Schedule Options", err.Error())
+	}
+	if student.ClassID == nil || *student.ClassID == 0 {
+		return utils.Success(c, 200, "Success Get Student Schedule Options", fiber.Map{"data": []map[string]interface{}{}})
+	}
+
+	var rows []map[string]interface{}
+	if err := a.DB.Raw(`
+		SELECT
+			slot.id,
+			slot.day_name,
+			slot.day_order,
+			slot.session_order,
+			slot.start_time,
+			slot.end_time,
+			COALESCE(slot.label, '') AS label,
+			COALESCE(u.full_name, u.username, '-') AS teacher_name,
+			COALESCE(ls.name, '-') AS subject_name
+		FROM curriculum_schedule_entries cse
+		INNER JOIN curriculum_schedule_slots slot ON slot.id = cse.schedule_slot_id
+		INNER JOIN users u ON u.id = cse.teacher_id
+		LEFT JOIN curriculum_subjects ls ON ls.id = cse.curriculum_subject_id
+		WHERE cse.school_id = ? AND cse.class_id = ?
+		ORDER BY slot.day_order ASC, slot.session_order ASC, teacher_name ASC, subject_name ASC
+	`, schoolID, *student.ClassID).Scan(&rows).Error; err != nil {
+		return utils.Error(c, 500, "Failed Get Student Schedule Options", err.Error())
+	}
+
+	return utils.Success(c, 200, "Success Get Student Schedule Options", fiber.Map{
+		"data": rows,
+	})
+}
+
 func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 	id := c.Params("id")
 	schoolID := c.Locals("schoolID").(uint)
@@ -790,8 +1352,8 @@ func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ? AND school_id = ?", id, schoolID).First(&current).Error; err != nil {
 		return utils.Error(c, 404, "User school not found")
 	}
-	if current.Role != "ADMIN" && current.Role != "GURU" {
-		return utils.Error(c, 400, "Only school admin and teacher can be updated here")
+	if current.Role != "ADMIN" && current.Role != "GURU" && current.Role != "SARPRAS" {
+		return utils.Error(c, 400, "Only school admin, teacher, and sarpras can be updated here")
 	}
 	nextUsername := current.Username
 	if body.Username != nil {
@@ -825,8 +1387,8 @@ func (a *AppContext) DeleteUserSchool(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ? AND school_id = ?", id, schoolID).First(&current).Error; err != nil {
 		return utils.Error(c, 404, "User school not found")
 	}
-	if current.Role != "ADMIN" && current.Role != "GURU" {
-		return utils.Error(c, 400, "Only school admin and teacher can be deleted here")
+	if current.Role != "ADMIN" && current.Role != "GURU" && current.Role != "SARPRAS" {
+		return utils.Error(c, 400, "Only school admin, teacher, and sarpras can be deleted here")
 	}
 	a.DB.Exec(`DELETE FROM users WHERE id = ? AND school_id = ?`, id, schoolID)
 	return utils.Success(c, 200, fmt.Sprintf(`User "%s" berhasil dihapus`, current.Username), nil)

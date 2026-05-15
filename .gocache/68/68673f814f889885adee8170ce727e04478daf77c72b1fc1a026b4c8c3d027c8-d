@@ -1,0 +1,7 @@
+# test log
+getenv DB_MAX_OPEN_CONNS
+getenv DB_MAX_OPEN_CONNS
+getenv DB_MAX_OPEN_CONNS
+getenv DB_MAX_OPEN_CONNS
+getenv DB_MAX_OPEN_CONNS
+getenv DB_MAX_OPEN_CONNS

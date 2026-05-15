@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/color"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
@@ -23,6 +24,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gofiber/fiber/v2"
 )
+
+type UploadedAsset struct {
+	URL         string
+	FileName    string
+	ContentType string
+	Size        int
+}
 
 func SaveUploadedFile(c *fiber.Ctx, fh *multipart.FileHeader) (string, error) {
 	remoteURL, err := UploadToR2(c, fh)
@@ -68,6 +76,41 @@ func UploadToR2(c *fiber.Ctx, fh *multipart.FileHeader) (string, error) {
 		return "", err
 	}
 	return uploadBytesToR2(c.Context(), content, fh.Filename, contentType)
+}
+
+func SaveUploadedChatAttachment(c *fiber.Ctx, fh *multipart.FileHeader) (*UploadedAsset, error) {
+	file, err := fh.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	contentType := strings.TrimSpace(fh.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	content, err := io.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+
+	normalizedContent, normalizedName, normalizedType, err := normalizeChatAttachmentForUpload(content, fh.Filename, contentType)
+	if err != nil {
+		return nil, err
+	}
+
+	url, err := uploadBytesToR2(c.Context(), normalizedContent, normalizedName, normalizedType)
+	if err != nil {
+		return nil, err
+	}
+
+	return &UploadedAsset{
+		URL:         url,
+		FileName:    normalizedName,
+		ContentType: normalizedType,
+		Size:        len(normalizedContent),
+	}, nil
 }
 
 func uploadBytesToR2(ctx context.Context, content []byte, originalName, contentType string) (string, error) {
@@ -145,6 +188,129 @@ func maybeCompressUpload(content []byte, contentType string) ([]byte, string) {
 		detectedType = "application/octet-stream"
 	}
 	return content, detectedType
+}
+
+func normalizeChatAttachmentForUpload(content []byte, originalName, contentType string) ([]byte, string, string, error) {
+	if len(content) == 0 {
+		return content, originalName, "application/octet-stream", nil
+	}
+
+	detectedType := strings.ToLower(strings.TrimSpace(contentType))
+	if detectedType == "" || detectedType == "application/octet-stream" {
+		detectedType = strings.ToLower(http.DetectContentType(content))
+	}
+
+	if !strings.HasPrefix(detectedType, "image/") {
+		return content, originalName, detectedType, nil
+	}
+
+	baseName := strings.TrimSuffix(strings.TrimSpace(filepath.Base(originalName)), filepath.Ext(originalName))
+	if baseName == "" {
+		baseName = "image"
+	}
+
+	switch {
+	case strings.Contains(detectedType, "image/webp"):
+		return content, fmt.Sprintf("%s.webp", baseName), "image/webp", nil
+	case strings.Contains(detectedType, "image/png"):
+		normalized, err := encodeChatImage(content, "png")
+		if err != nil {
+			return nil, "", "", err
+		}
+		return normalized, fmt.Sprintf("%s.png", baseName), "image/png", nil
+	case strings.Contains(detectedType, "image/gif"):
+		normalized, err := encodeChatImage(content, "png")
+		if err != nil {
+			return nil, "", "", err
+		}
+		return normalized, fmt.Sprintf("%s.png", baseName), "image/png", nil
+	case strings.Contains(detectedType, "image/jpeg"), strings.Contains(detectedType, "image/jpg"):
+		normalized, err := encodeChatImage(content, "jpeg")
+		if err != nil {
+			return nil, "", "", err
+		}
+		return normalized, fmt.Sprintf("%s.jpg", baseName), "image/jpeg", nil
+	default:
+		img, _, err := image.Decode(bytes.NewReader(content))
+		if err != nil {
+			return nil, "", "", fmt.Errorf("format gambar chat tidak didukung server. Gunakan JPG, PNG, atau WebP")
+		}
+		if hasTransparency(img) {
+			normalized, encodeErr := encodeImageByFormat(img, "png")
+			if encodeErr != nil {
+				return nil, "", "", encodeErr
+			}
+			return normalized, fmt.Sprintf("%s.png", baseName), "image/png", nil
+		}
+		normalized, encodeErr := encodeImageByFormat(img, "jpeg")
+		if encodeErr != nil {
+			return nil, "", "", encodeErr
+		}
+		return normalized, fmt.Sprintf("%s.jpg", baseName), "image/jpeg", nil
+	}
+}
+
+func encodeChatImage(content []byte, format string) ([]byte, error) {
+	img, _, err := image.Decode(bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("format gambar chat tidak didukung server. Gunakan JPG, PNG, atau WebP")
+	}
+	return encodeImageByFormat(img, format)
+}
+
+func encodeImageByFormat(img image.Image, format string) ([]byte, error) {
+	var buf bytes.Buffer
+
+	switch format {
+	case "png":
+		encoder := png.Encoder{CompressionLevel: png.BestCompression}
+		if err := encoder.Encode(&buf, img); err != nil {
+			return nil, err
+		}
+	case "jpeg":
+		if err := jpeg.Encode(&buf, flattenImageIfNeeded(img), &jpeg.Options{Quality: 86}); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("format output gambar tidak didukung")
+	}
+
+	return buf.Bytes(), nil
+}
+
+func hasTransparency(img image.Image) bool {
+	bounds := img.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += 1 {
+		for x := bounds.Min.X; x < bounds.Max.X; x += 1 {
+			_, _, _, alpha := img.At(x, y).RGBA()
+			if alpha < 0xffff {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func flattenImageIfNeeded(img image.Image) image.Image {
+	if !hasTransparency(img) {
+		return img
+	}
+
+	bounds := img.Bounds()
+	canvas := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += 1 {
+		for x := bounds.Min.X; x < bounds.Max.X; x += 1 {
+			canvas.Set(x, y, color.White)
+		}
+	}
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += 1 {
+		for x := bounds.Min.X; x < bounds.Max.X; x += 1 {
+			canvas.Set(x, y, img.At(x, y))
+		}
+	}
+
+	return canvas
 }
 
 func recompressJPEG(content []byte) ([]byte, bool) {

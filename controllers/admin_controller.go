@@ -30,6 +30,8 @@ func (a *AppContext) GetSuperAdminDashboard(c *fiber.Ctx) error {
 		UNION ALL
 		SELECT 'admins' AS key, COUNT(*)::int AS value FROM users WHERE role = 'ADMIN'
 		UNION ALL
+		SELECT 'sarpras' AS key, COUNT(*)::int AS value FROM users WHERE role = 'SARPRAS'
+		UNION ALL
 		SELECT 'teachers' AS key, COUNT(*)::int AS value FROM users WHERE role = 'GURU'
 		UNION ALL
 		SELECT 'students' AS key, COUNT(*)::int AS value FROM users WHERE role = 'SISWA'
@@ -70,6 +72,7 @@ func (a *AppContext) GetSuperAdminDashboard(c *fiber.Ctx) error {
 				school_id,
 				COUNT(*)::int AS total_users,
 				COUNT(*) FILTER (WHERE role = 'ADMIN')::int AS total_admins,
+				COUNT(*) FILTER (WHERE role = 'SARPRAS')::int AS total_sarpras,
 				COUNT(*) FILTER (WHERE role = 'GURU')::int AS total_teachers,
 				COUNT(*) FILTER (WHERE role = 'SISWA')::int AS total_students
 			FROM users

@@ -1,0 +1,8 @@
+./helpers.go
+./registration_link.go
+./response.go
+./upload.go
+./helpers_test.go
+./registration_link_test.go
+./response_test.go
+./upload_test.go

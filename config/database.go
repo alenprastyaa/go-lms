@@ -63,6 +63,12 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS face_reference_descriptor TEXT`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('SUPER_ADMIN', 'ADMIN', 'SARPRAS', 'GURU', 'SISWA'))`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE learning_submissions ADD COLUMN IF NOT EXISTS access_blocked BOOLEAN NOT NULL DEFAULT FALSE`).Error; err != nil {
 		return nil, err
 	}
@@ -159,11 +165,62 @@ func NewDatabase() (*gorm.DB, error) {
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (owner_user_id, peer_user_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS student_class_enrollments (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			student_id BIGINT NOT NULL,
+			class_id BIGINT NOT NULL,
+			academic_year_id BIGINT NULL,
+			semester_id BIGINT NULL,
+			start_date DATE NOT NULL DEFAULT CURRENT_DATE,
+			end_date DATE NULL,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			promotion_note TEXT NULL,
+			created_by BIGINT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS inventory_items (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			name TEXT NOT NULL,
+			code TEXT NULL,
+			category TEXT NULL,
+			description TEXT NULL,
+			condition_status TEXT NOT NULL DEFAULT 'BAIK',
+			total_quantity INT NOT NULL DEFAULT 1,
+			available_quantity INT NOT NULL DEFAULT 1,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_by BIGINT NULL,
+			updated_by BIGINT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS inventory_loans (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			item_id BIGINT NOT NULL,
+			borrower_id BIGINT NOT NULL,
+			teacher_id BIGINT NULL,
+			quantity INT NOT NULL DEFAULT 1,
+			borrowed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			due_date TIMESTAMP NULL,
+			returned_at TIMESTAMP NULL,
+			status TEXT NOT NULL DEFAULT 'BORROWED',
+			notes TEXT NULL,
+			handled_by BIGINT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
 	}
 	for _, stmt := range curriculumStatements {
 		if err := db.Exec(stmt).Error; err != nil {
 			return nil, err
 		}
+	}
+
+	if err := db.Exec(`ALTER TABLE inventory_loans ADD COLUMN IF NOT EXISTS teacher_id BIGINT NULL`).Error; err != nil {
+		return nil, err
 	}
 
 	indexStatements := []string{
@@ -184,6 +241,15 @@ func NewDatabase() (*gorm.DB, error) {
 		`CREATE INDEX IF NOT EXISTS idx_private_chat_messages_school_pair_created ON private_chat_messages (school_id, sender_id, recipient_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_private_chat_messages_recipient_created ON private_chat_messages (recipient_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_private_chat_reads_owner_peer ON private_chat_reads (owner_user_id, peer_user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_student_class_enrollments_school_class ON student_class_enrollments (school_id, class_id, is_active)`,
+		`CREATE INDEX IF NOT EXISTS idx_student_class_enrollments_student ON student_class_enrollments (student_id, start_date, end_date)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_student_class_enrollments_one_active ON student_class_enrollments (student_id) WHERE is_active = true`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_items_school_code ON inventory_items (school_id, code) WHERE code IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_inventory_items_school_active ON inventory_items (school_id, is_active, name)`,
+		`CREATE INDEX IF NOT EXISTS idx_inventory_loans_school_status ON inventory_loans (school_id, status, borrowed_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_inventory_loans_item_status ON inventory_loans (item_id, status, borrowed_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_inventory_loans_borrower ON inventory_loans (borrower_id, borrowed_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_inventory_loans_teacher ON inventory_loans (teacher_id, borrowed_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance (user_id, attendance_date)`,
 		`CREATE INDEX IF NOT EXISTS idx_attendance_date_user ON attendance (attendance_date, user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_payment_receipt_user_created ON payment_receipt (user_id, created_at)`,
@@ -232,6 +298,24 @@ func NewDatabase() (*gorm.DB, error) {
 		if err := db.Exec(stmt).Error; err != nil {
 			return nil, err
 		}
+	}
+	if err := db.Exec(`
+		INSERT INTO student_class_enrollments (
+			school_id, student_id, class_id, start_date, is_active, promotion_note, created_at, updated_at
+		)
+		SELECT u.school_id, u.id, u.class_id, CURRENT_DATE, true, 'Migrasi awal dari kelas aktif siswa', NOW(), NOW()
+		FROM users u
+		WHERE u.role = 'SISWA'
+		  AND u.school_id IS NOT NULL
+		  AND u.class_id IS NOT NULL
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM student_class_enrollments sce
+			WHERE sce.student_id = u.id
+			  AND sce.is_active = true
+		  )
+	`).Error; err != nil {
+		return nil, err
 	}
 	_ = db.Exec(`UPDATE school_billings SET due_date = (DATE_TRUNC('month', CURRENT_DATE) + ((due_day_of_month - 1) || ' days')::interval)::timestamp WHERE due_date IS NULL`).Error
 

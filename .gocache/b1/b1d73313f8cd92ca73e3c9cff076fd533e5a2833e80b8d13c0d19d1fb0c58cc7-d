@@ -1,0 +1,4 @@
+./helpers.go
+./registration_link.go
+./response.go
+./upload.go
