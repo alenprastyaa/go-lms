@@ -251,6 +251,7 @@ func (a *AppContext) StartLearningQuizAttempt(c *fiber.Ctx) error {
 		ExamCode                *string `gorm:"column:exam_code"`
 		StartAtRaw              string  `gorm:"column:start_at_raw"`
 		DueDateRaw              string  `gorm:"column:due_date_raw"`
+		QuestionDurationMode    string  `gorm:"column:question_duration_mode"`
 		QuestionDurationSeconds *int    `gorm:"column:question_duration_seconds"`
 		QuizPayloadText         string  `gorm:"column:quiz_payload_text"`
 	}
@@ -258,6 +259,7 @@ func (a *AppContext) StartLearningQuizAttempt(c *fiber.Ctx) error {
 		SELECT la.id, ls.school_id, ls.class_id, la.assignment_type, la.is_exam, la.exam_status, la.exam_code,
 		       TO_CHAR(la.start_at, 'YYYY-MM-DD HH24:MI:SS') AS start_at_raw,
 		       TO_CHAR(la.due_date, 'YYYY-MM-DD HH24:MI:SS') AS due_date_raw,
+		       COALESCE(la.question_duration_mode, 'PER_QUESTION') AS question_duration_mode,
 		       la.question_duration_seconds,
 		       COALESCE(la.quiz_payload::text, '[]') AS quiz_payload_text
 		FROM learning_assignments la
@@ -290,14 +292,14 @@ func (a *AppContext) StartLearningQuizAttempt(c *fiber.Ctx) error {
 			return utils.Error(c, 400, "Exam has not started yet")
 		}
 	}
-	if dueDate != nil && dueDate.Before(now) {
-		return utils.Error(c, 400, "Quiz deadline has passed")
-	}
-
 	var existing map[string]interface{}
 	a.DB.Raw(`SELECT * FROM learning_submissions WHERE assignment_id = ? AND student_id = ? LIMIT 1`, assignmentID, studentID).Scan(&existing)
 	if isSubmitted(existing) {
 		return utils.Error(c, 400, "Quiz has already been submitted")
+	}
+	existingStartedAt := parseTimeAny(existing["started_at"])
+	if dueDate != nil && dueDate.Before(now) && existingStartedAt == nil {
+		return utils.Error(c, 400, "Quiz deadline has passed")
 	}
 	if assignment.IsExam {
 		accessBlocked := boolFromAny(existing["access_blocked"])
@@ -343,24 +345,39 @@ func (a *AppContext) StartLearningQuizAttempt(c *fiber.Ctx) error {
 		FROM learning_quiz_violation_logs
 		WHERE submission_id = ?
 	`, row["id"]).Scan(&violationCount)
-	startedAt := parseTimeAny(row["started_at"])
+	var submissionClock struct {
+		StartedAtRaw string `gorm:"column:started_at_raw"`
+	}
+	a.DB.Raw(`
+		SELECT TO_CHAR(started_at, 'YYYY-MM-DD HH24:MI:SS') AS started_at_raw
+		FROM learning_submissions
+		WHERE id = ?
+		LIMIT 1
+	`, row["id"]).Scan(&submissionClock)
+	startedAt := parseJakartaTimestamp(submissionClock.StartedAtRaw)
 	questionCount := countQuizQuestionsFromText(assignment.QuizPayloadText)
+	normalizedDurationSeconds := normalizeStudentAssignmentDurationSeconds(
+		assignment.IsExam,
+		assignment.QuestionDurationMode,
+		intPtrValue(assignment.QuestionDurationSeconds),
+	)
 	expiresAt := interface{}(nil)
-	if startedAt != nil && assignment.QuestionDurationSeconds != nil && *assignment.QuestionDurationSeconds > 0 {
-		windowSeconds := *assignment.QuestionDurationSeconds
-		if !assignment.IsExam {
+	if startedAt != nil && normalizedDurationSeconds > 0 {
+		windowSeconds := normalizedDurationSeconds
+		if !assignment.IsExam && strings.ToUpper(strings.TrimSpace(assignment.QuestionDurationMode)) != "GLOBAL" {
 			if questionCount > 0 {
 				windowSeconds = windowSeconds * questionCount
 			}
 		}
 		exp := startedAt.Add(time.Duration(windowSeconds) * time.Second)
-		expiresAt = exp.UTC().Format(time.RFC3339)
+		expiresAt = exp.Format(time.RFC3339)
 	}
 	return utils.Success(c, 200, "Success Start Quiz Attempt", fiber.Map{
 		"assignment_id":             assignment.ID,
-		"started_at":                startedAt.UTC().Format(time.RFC3339),
+		"started_at":                startedAt.Format(time.RFC3339),
 		"expires_at":                expiresAt,
-		"question_duration_seconds": assignment.QuestionDurationSeconds,
+		"question_duration_mode":    strings.ToUpper(strings.TrimSpace(assignment.QuestionDurationMode)),
+		"question_duration_seconds": normalizedDurationSeconds,
 		"question_count":            questionCount,
 		"violation_count":           violationCount,
 		"access_blocked":            boolFromAny(row["access_blocked"]),
@@ -411,12 +428,11 @@ func (a *AppContext) SubmitLearningAssignment(c *fiber.Ctx) error {
 	if assignment.AssignmentType == "MANUAL" {
 		return utils.Error(c, 400, "Manual assessment is graded directly by the teacher")
 	}
-	if assignment.DueDate != nil && assignment.DueDate.Before(time.Now()) {
-		return utils.Error(c, 400, "Quiz deadline has passed")
-	}
-
 	var existing map[string]interface{}
 	a.DB.Raw(`SELECT * FROM learning_submissions WHERE assignment_id=? AND student_id=? LIMIT 1`, assignmentID, studentID).Scan(&existing)
+	if assignment.DueDate != nil && assignment.DueDate.Before(time.Now()) && parseTimeAny(existing["started_at"]) == nil {
+		return utils.Error(c, 400, "Quiz deadline has passed")
+	}
 	if assignment.AssignmentType != "FILE" {
 		if isSubmitted(existing) {
 			return utils.Error(c, 400, "Quiz has already been submitted")
@@ -657,6 +673,26 @@ func fallbackStr(v, def string) string {
 	return v
 }
 
+func intPtrValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func normalizeStudentAssignmentDurationSeconds(isExam bool, mode string, rawSeconds int) int {
+	if rawSeconds <= 0 {
+		return 0
+	}
+
+	isSessionTimed := isExam || strings.ToUpper(strings.TrimSpace(mode)) == "GLOBAL"
+	if isSessionTimed && rawSeconds <= maxGlobalQuizDurationMinutes {
+		return rawSeconds * 60
+	}
+
+	return rawSeconds
+}
+
 func nullIfEmptyJSON(v string) interface{} {
 	if strings.TrimSpace(v) == "" {
 		return nil
@@ -701,7 +737,7 @@ func parseTimeAny(v interface{}) *time.Time {
 		if parsed, err := time.Parse(time.RFC3339, t); err == nil {
 			return &parsed
 		}
-		if parsed, err := time.Parse("2006-01-02 15:04:05", t); err == nil {
+		if parsed, err := time.ParseInLocation("2006-01-02 15:04:05", t, jakartaLocation()); err == nil {
 			return &parsed
 		}
 	}

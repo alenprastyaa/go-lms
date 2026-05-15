@@ -277,7 +277,7 @@ func schoolListQuery(whereClause string) string {
 		LEFT JOIN learning_subjects ls ON ls.school_id = s.id
 		LEFT JOIN academic_years ay ON ay.school_id = s.id
 		%s
-		GROUP BY s.id, s.name, s.logo_url
+		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.official_exam_module_enabled
 	`, whereClause)
 }
 

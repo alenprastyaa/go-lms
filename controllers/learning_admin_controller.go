@@ -11,6 +11,33 @@ import (
 	"lms/utils"
 )
 
+const maxGlobalQuizDurationMinutes = 180
+
+func normalizeLearningQuestionDurationSeconds(mode string, secondsRaw string, minutesRaw string) (int, error) {
+	secondsValue := utils.ToInt(secondsRaw, 0)
+	if mode != "GLOBAL" {
+		return secondsValue, nil
+	}
+
+	minutesValue := utils.ToInt(minutesRaw, 0)
+	if minutesValue <= 0 {
+		if secondsValue > maxGlobalQuizDurationMinutes*60 {
+			return 0, fmt.Errorf("Durasi quiz global maksimal %d menit", maxGlobalQuizDurationMinutes)
+		}
+		return secondsValue, nil
+	}
+
+	if minutesValue > maxGlobalQuizDurationMinutes {
+		// Guard old/stale clients that accidentally send seconds in the minutes field.
+		if minutesValue <= maxGlobalQuizDurationMinutes*60 {
+			return minutesValue, nil
+		}
+		return 0, fmt.Errorf("Durasi quiz global maksimal %d menit", maxGlobalQuizDurationMinutes)
+	}
+
+	return minutesValue * 60, nil
+}
+
 func (a *AppContext) GetAdminSubjects(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 	page := utils.ToInt(c.Query("page", "1"), 1)
@@ -198,8 +225,8 @@ func (a *AppContext) GetSubjectAssignments(c *fiber.Ctx) error {
 			  COALESCE(sub.answer_payload::text, '[]') AS answer_payload,
 			  COALESCE(sub.access_blocked, false) AS access_blocked,
 			  sub.access_block_reason,
-			  sub.started_at AS attempt_started_at,
-			  sub.submitted_at,
+			  TO_CHAR(sub.started_at, 'YYYY-MM-DD"T"HH24:MI:SS') AS attempt_started_at,
+			  TO_CHAR(sub.submitted_at, 'YYYY-MM-DD"T"HH24:MI:SS') AS submitted_at,
 			  sub.is_submitted
 			FROM learning_assignments la
 			INNER JOIN learning_subjects ls ON ls.id = la.subject_id
@@ -238,6 +265,16 @@ func (a *AppContext) GetSubjectAssignments(c *fiber.Ctx) error {
 			  )
 			ORDER BY la.created_at DESC
 		`, userID, subjectID, schoolID).Scan(&rows)
+		for idx := range rows {
+			normalizedDuration := normalizeStudentAssignmentDurationSeconds(
+				boolFromAny(rows[idx]["is_exam"]),
+				fmt.Sprint(rows[idx]["question_duration_mode"]),
+				utils.ToInt(fmt.Sprint(rows[idx]["question_duration_seconds"]), 0),
+			)
+			if normalizedDuration > 0 {
+				rows[idx]["question_duration_seconds"] = normalizedDuration
+			}
+		}
 		a.syncAutoGradedMcqScores(rows)
 		return utils.Success(c, 200, "Success Get Assignments", rows)
 	}
@@ -285,12 +322,24 @@ func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 	examCode := strings.ToUpper(strings.TrimSpace(c.FormValue("exam_code")))
 	startAt := c.FormValue("start_at")
 	qDur := c.FormValue("question_duration_seconds")
+	qDurMinutes := c.FormValue("question_duration_minutes")
+	qDurMode := strings.ToUpper(strings.TrimSpace(c.FormValue("question_duration_mode")))
 	examCount := c.FormValue("exam_target_question_count")
 	questionBankIDsRaw := strings.TrimSpace(c.FormValue("question_bank_ids"))
 	shuffleQuestions := strings.ToLower(strings.TrimSpace(c.FormValue("shuffle_questions"))) == "true"
 
 	if assignmentType == "" {
 		assignmentType = "FILE"
+	}
+	if qDurMode == "" {
+		qDurMode = "PER_QUESTION"
+	}
+	if qDurMode != "PER_QUESTION" && qDurMode != "GLOBAL" {
+		qDurMode = "PER_QUESTION"
+	}
+	qDurValue, durationErr := normalizeLearningQuestionDurationSeconds(qDurMode, qDur, qDurMinutes)
+	if durationErr != nil {
+		return utils.Error(c, 400, durationErr.Error())
 	}
 	if title == "" || subjectID == "" {
 		return utils.Error(c, 400, "subject_id and title are required")
@@ -401,14 +450,14 @@ func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 		  subject_id, title, description, assignment_type, is_exam, exam_category, exam_code, exam_status,
 		  question_bank_ids, shuffle_questions, quiz_payload,
 		  start_at, managed_by_admin, exam_target_question_count, academic_year_id, semester_id,
-		  question_duration_seconds, attachment_url, due_date, created_by, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+		  question_duration_mode, question_duration_seconds, attachment_url, due_date, created_by, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
 		RETURNING *
 	`,
 		subjectID, title, description, assignmentType, isExam, nullIfEmpty(examCategory), nullIfEmpty(examCode),
 		ternaryString(isExam, "REQUESTED", ""), toJSONRaw(questionBankIDs), shuffleQuestions, toJSONRaw(quizPayload),
 		normalizeDateTimeLocalToWIB(startAt), true, nullIfEmpty(examCount),
-		nullIfZero(academicYearID), nullIfZero(semesterID), nullIfEmpty(qDur), nullIfEmpty(attachmentURL),
+		nullIfZero(academicYearID), nullIfZero(semesterID), qDurMode, nullIfZero(qDurValue), nullIfEmpty(attachmentURL),
 		normalizeDateTimeLocalToWIB(dueDate), userID,
 	).Scan(&row)
 
@@ -426,20 +475,32 @@ func (a *AppContext) UpdateExamRequestByAdmin(c *fiber.Ctx) error {
 	examCode := strings.ToUpper(strings.TrimSpace(c.FormValue("exam_code")))
 	startAt := c.FormValue("start_at")
 	qDur := c.FormValue("question_duration_seconds")
+	qDurMinutes := c.FormValue("question_duration_minutes")
+	qDurMode := strings.ToUpper(strings.TrimSpace(c.FormValue("question_duration_mode")))
 	examCount := c.FormValue("exam_target_question_count")
 	if assignmentType == "" {
 		assignmentType = "MCQ"
+	}
+	if qDurMode == "" {
+		qDurMode = "PER_QUESTION"
+	}
+	if qDurMode != "PER_QUESTION" && qDurMode != "GLOBAL" {
+		qDurMode = "PER_QUESTION"
+	}
+	qDurValue, durationErr := normalizeLearningQuestionDurationSeconds(qDurMode, qDur, qDurMinutes)
+	if durationErr != nil {
+		return utils.Error(c, 400, durationErr.Error())
 	}
 	var row map[string]interface{}
 	a.DB.Raw(`
 		UPDATE learning_assignments
 		SET subject_id = ?, title = ?, description = ?, due_date = ?, assignment_type = ?,
-		    exam_category = ?, exam_code = ?, start_at = ?, question_duration_seconds = ?,
+		    exam_category = ?, exam_code = ?, start_at = ?, question_duration_mode = ?, question_duration_seconds = ?,
 		    exam_target_question_count = ?
 		WHERE id = ? AND is_exam = true
 		RETURNING *
 	`, subjectID, title, description, normalizeDateTimeLocalToWIB(dueDate), assignmentType, nullIfEmpty(examCategory),
-		nullIfEmpty(examCode), normalizeDateTimeLocalToWIB(startAt), nullIfEmpty(qDur), nullIfEmpty(examCount), id).Scan(&row)
+		nullIfEmpty(examCode), normalizeDateTimeLocalToWIB(startAt), qDurMode, nullIfZero(qDurValue), nullIfEmpty(examCount), id).Scan(&row)
 	if len(row) == 0 {
 		return utils.Error(c, 404, "Assignment not found")
 	}

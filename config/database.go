@@ -87,6 +87,9 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE learning_submissions ADD COLUMN IF NOT EXISTS access_block_reason TEXT`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE learning_assignments ADD COLUMN IF NOT EXISTS question_duration_mode TEXT NOT NULL DEFAULT 'PER_QUESTION'`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE learning_subjects ADD COLUMN IF NOT EXISTS curriculum_subject_id BIGINT NULL`).Error; err != nil {
 		return nil, err
 	}
