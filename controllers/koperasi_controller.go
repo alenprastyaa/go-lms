@@ -728,6 +728,8 @@ func (a *AppContext) GetKoperasiProducts(c *fiber.Ctx) error {
 	role := koperasiRoleOrEmpty(c.Locals("userRole"))
 	includeInactive := c.Query("include_inactive") == "1" && koperasiCanManage(role)
 	search := strings.TrimSpace(c.Query("search"))
+	category := strings.TrimSpace(c.Query("category"))
+	activeFilter := strings.ToLower(strings.TrimSpace(c.Query("active")))
 	page, limit := parseInventoryPagination(c)
 	offset := (page - 1) * limit
 
@@ -752,6 +754,12 @@ func (a *AppContext) GetKoperasiProducts(c *fiber.Ctx) error {
 	if !includeInactive {
 		query = query.Where("kp.is_active = true")
 	}
+	switch activeFilter {
+	case "1", "true", "active":
+		query = query.Where("kp.is_active = true")
+	case "0", "false", "inactive":
+		query = query.Where("kp.is_active = false")
+	}
 	if search != "" {
 		pattern := "%" + strings.ToLower(search) + "%"
 		query = query.Where(`
@@ -760,6 +768,9 @@ func (a *AppContext) GetKoperasiProducts(c *fiber.Ctx) error {
 			LOWER(COALESCE(kp.category, '')) LIKE ? OR
 			LOWER(COALESCE(kp.description, '')) LIKE ?
 		`, pattern, pattern, pattern, pattern)
+	}
+	if category != "" {
+		query = query.Where("LOWER(COALESCE(kp.category, '')) = ?", strings.ToLower(category))
 	}
 
 	var items []map[string]interface{}
@@ -932,10 +943,112 @@ func (a *AppContext) DeleteKoperasiProduct(c *fiber.Ctx) error {
 	})
 }
 
+func (a *AppContext) GetKoperasiCart(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	buyerID := c.Locals("userID").(uint)
+	return a.respondKoperasiCart(c, schoolID, buyerID, 200, "Success Get Koperasi Cart")
+}
+
+func (a *AppContext) UpsertKoperasiCartItem(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	buyerID := c.Locals("userID").(uint)
+
+	var body struct {
+		ProductID uint `json:"product_id"`
+		Quantity  int  `json:"quantity"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return utils.Error(c, 400, "Invalid request")
+	}
+	if body.ProductID == 0 {
+		return utils.Error(c, 400, "Produk tidak valid")
+	}
+	if body.Quantity <= 0 {
+		return a.DeleteKoperasiCartItem(c)
+	}
+
+	var product models.KoperasiProduct
+	if err := a.DB.Where("id = ? AND school_id = ? AND is_active = true", body.ProductID, schoolID).First(&product).Error; err != nil {
+		return utils.Error(c, 404, "Produk tidak ditemukan atau tidak aktif")
+	}
+	if body.Quantity > product.Stock {
+		return utils.Error(c, 400, fmt.Sprintf("Stok produk %s tidak mencukupi", product.Name))
+	}
+
+	item := models.KoperasiCartItem{
+		SchoolID:  schoolID,
+		BuyerID:   buyerID,
+		ProductID: product.ID,
+		Quantity:  body.Quantity,
+	}
+	if err := a.DB.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "school_id"}, {Name: "buyer_id"}, {Name: "product_id"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"quantity":   body.Quantity,
+			"updated_at": time.Now().UTC(),
+		}),
+	}).Create(&item).Error; err != nil {
+		return utils.Error(c, 500, "Gagal menyimpan keranjang", err.Error())
+	}
+
+	return a.respondKoperasiCart(c, schoolID, buyerID, 200, "Keranjang diperbarui")
+}
+
+func (a *AppContext) DeleteKoperasiCartItem(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	buyerID := c.Locals("userID").(uint)
+
+	var productID uint
+	if raw := strings.TrimSpace(c.Params("productId")); raw != "" {
+		parsed, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil || parsed == 0 {
+			return utils.Error(c, 400, "Produk tidak valid")
+		}
+		productID = uint(parsed)
+	} else {
+		var body struct {
+			ProductID uint `json:"product_id"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return utils.Error(c, 400, "Invalid request")
+		}
+		productID = body.ProductID
+	}
+	if productID == 0 {
+		return utils.Error(c, 400, "Produk tidak valid")
+	}
+
+	if err := a.DB.Where("school_id = ? AND buyer_id = ? AND product_id = ?", schoolID, buyerID, productID).
+		Delete(&models.KoperasiCartItem{}).Error; err != nil {
+		return utils.Error(c, 500, "Gagal menghapus item keranjang", err.Error())
+	}
+
+	return a.respondKoperasiCart(c, schoolID, buyerID, 200, "Item keranjang dihapus")
+}
+
+func (a *AppContext) ClearKoperasiCart(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	buyerID := c.Locals("userID").(uint)
+
+	if err := a.DB.Where("school_id = ? AND buyer_id = ?", schoolID, buyerID).
+		Delete(&models.KoperasiCartItem{}).Error; err != nil {
+		return utils.Error(c, 500, "Gagal mengosongkan keranjang", err.Error())
+	}
+
+	return utils.Success(c, 200, "Keranjang dikosongkan", fiber.Map{"items": []interface{}{}})
+}
+
 func (a *AppContext) GetKoperasiOrders(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 	role := koperasiRoleOrEmpty(c.Locals("userRole"))
 	userID := c.Locals("userID").(uint)
+	search := strings.TrimSpace(c.Query("search"))
+	statusFilter := koperasiNormalizeStatus(c.Query("status"))
+	paymentStatusFilter := koperasiNormalizeStatus(c.Query("payment_status"))
+	paymentMethodFilter := ""
+	if rawPaymentMethod := strings.TrimSpace(c.Query("payment_method")); rawPaymentMethod != "" {
+		paymentMethodFilter = koperasiNormalizePaymentMethodValue(rawPaymentMethod)
+	}
 	page, limit := parseInventoryPagination(c)
 	offset := (page - 1) * limit
 	canManage := koperasiCanManage(role)
@@ -971,6 +1084,23 @@ func (a *AppContext) GetKoperasiOrders(c *fiber.Ctx) error {
 		Where("ko.school_id = ?", schoolID)
 	if !canManage {
 		query = query.Where("ko.buyer_id = ?", userID)
+	}
+	if statusFilter != "" && koperasiAllowedStatus(statusFilter) {
+		query = query.Where("ko.status = ?", statusFilter)
+	}
+	if paymentStatusFilter != "" {
+		query = query.Where("UPPER(COALESCE(ko.payment_status, '')) = ?", paymentStatusFilter)
+	}
+	if paymentMethodFilter != "" {
+		query = query.Where("UPPER(COALESCE(ko.payment_method, '')) = ?", paymentMethodFilter)
+	}
+	if search != "" {
+		pattern := "%" + strings.ToLower(search) + "%"
+		query = query.Where(`
+			LOWER(COALESCE(ko.order_number, '')) LIKE ? OR
+			LOWER(COALESCE(b.full_name, '')) LIKE ? OR
+			LOWER(COALESCE(cl.class_name, '')) LIKE ?
+		`, pattern, pattern, pattern)
 	}
 
 	var total int64
@@ -1184,6 +1314,10 @@ func (a *AppContext) CreateKoperasiOrder(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Gagal membuat pesanan koperasi", err.Error())
 	}
 
+	clearCartItems := func() {
+		_ = a.DB.Where("school_id = ? AND buyer_id = ?", schoolID, buyerID).Delete(&models.KoperasiCartItem{}).Error
+	}
+
 	if paymentMethod == koperasiPaymentMethodNonCash {
 		qrisResp, qrisErr := createXenditKoperasiQrisPayment(createdOrder.OrderNumber, createdOrder.TotalAmount, schoolID)
 		if qrisErr != nil {
@@ -1286,6 +1420,7 @@ func (a *AppContext) CreateKoperasiOrder(c *fiber.Ctx) error {
 			return utils.Error(c, 500, "Gagal mencatat log pembayaran koperasi", err.Error())
 		}
 
+		clearCartItems()
 		a.broadcastKoperasiOrderEvent("koperasi:order-created", createdOrder.ID, "CREATED", schoolID)
 
 		return a.respondKoperasiOrder(c, createdOrder.ID, 201, "Pesanan koperasi berhasil dibuat")
@@ -1297,6 +1432,7 @@ func (a *AppContext) CreateKoperasiOrder(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Gagal mencatat log pembayaran koperasi", err.Error())
 	}
 
+	clearCartItems()
 	a.broadcastKoperasiOrderEvent("koperasi:order-created", createdOrder.ID, "CREATED", schoolID)
 
 	return a.respondKoperasiOrder(c, createdOrder.ID, 201, "Pesanan koperasi berhasil dibuat")
@@ -1884,6 +2020,74 @@ func (a *AppContext) respondKoperasiProduct(c *fiber.Ctx, productID uint, code i
 	}
 
 	return utils.Success(c, code, message, item)
+}
+
+func (a *AppContext) respondKoperasiCart(c *fiber.Ctx, schoolID, buyerID uint, code int, message string) error {
+	var items []map[string]interface{}
+	if err := a.DB.Table("koperasi_cart_items c").
+		Select(`
+			c.id,
+			c.school_id,
+			c.buyer_id,
+			c.product_id,
+			c.quantity,
+			c.created_at,
+			c.updated_at,
+			p.id AS product__id,
+			p.school_id AS product__school_id,
+			p.name AS product__name,
+			p.code AS product__code,
+			p.category AS product__category,
+			p.description AS product__description,
+			p.image_url AS product__image_url,
+			p.price AS product__price,
+			p.stock AS product__stock,
+			p.is_active AS product__is_active
+		`).
+		Joins("INNER JOIN koperasi_products p ON p.id = c.product_id AND p.school_id = c.school_id").
+		Where("c.school_id = ? AND c.buyer_id = ?", schoolID, buyerID).
+		Order("c.updated_at DESC, c.id DESC").
+		Scan(&items).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memuat keranjang koperasi", err.Error())
+	}
+
+	for _, item := range items {
+		for _, key := range []string{"created_at", "updated_at"} {
+			if value, ok := item[key]; ok {
+				item[key] = normalizeKoperasiJakartaDateTimeValue(value)
+			}
+		}
+		item["product"] = map[string]interface{}{
+			"id":          item["product__id"],
+			"school_id":   item["product__school_id"],
+			"name":        item["product__name"],
+			"code":        item["product__code"],
+			"category":    item["product__category"],
+			"description": item["product__description"],
+			"image_url":   item["product__image_url"],
+			"price":       item["product__price"],
+			"stock":       item["product__stock"],
+			"is_active":   item["product__is_active"],
+		}
+		for _, key := range []string{
+			"product__id",
+			"product__school_id",
+			"product__name",
+			"product__code",
+			"product__category",
+			"product__description",
+			"product__image_url",
+			"product__price",
+			"product__stock",
+			"product__is_active",
+		} {
+			delete(item, key)
+		}
+	}
+
+	return utils.Success(c, code, message, fiber.Map{
+		"items": recentOrEmpty(items),
+	})
 }
 
 func (a *AppContext) respondKoperasiOrder(c *fiber.Ctx, orderID uint, code int, message string) error {

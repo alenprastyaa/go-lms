@@ -54,6 +54,12 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS current_session_login_at TIMESTAMP NULL`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INT NOT NULL DEFAULT 0`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_locked_until TIMESTAMP NULL`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS logo_url TEXT`).Error; err != nil {
 		return nil, err
 	}
@@ -70,6 +76,9 @@ func NewDatabase() (*gorm.DB, error) {
 		return nil, err
 	}
 	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS face_reference_descriptor TEXT`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS initial_password_ciphertext TEXT`).Error; err != nil {
 		return nil, err
 	}
 	if err := db.Exec(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check`).Error; err != nil {
@@ -273,6 +282,16 @@ func NewDatabase() (*gorm.DB, error) {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
+		`CREATE TABLE IF NOT EXISTS koperasi_cart_items (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			buyer_id BIGINT NOT NULL,
+			product_id BIGINT NOT NULL,
+			quantity INT NOT NULL DEFAULT 1,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			UNIQUE (school_id, buyer_id, product_id)
+		)`,
 		`CREATE TABLE IF NOT EXISTS koperasi_payment_logs (
 			id BIGSERIAL PRIMARY KEY,
 			school_id BIGINT NOT NULL,
@@ -298,6 +317,10 @@ func NewDatabase() (*gorm.DB, error) {
 		`ALTER TABLE koperasi_orders ADD COLUMN IF NOT EXISTS payment_qr_string TEXT NULL`,
 		`ALTER TABLE koperasi_orders ADD COLUMN IF NOT EXISTS payment_expires_at TIMESTAMP NULL`,
 		`ALTER TABLE koperasi_orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP NULL`,
+		`ALTER TABLE koperasi_cart_items ADD COLUMN IF NOT EXISTS school_id BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE koperasi_cart_items ADD COLUMN IF NOT EXISTS buyer_id BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE koperasi_cart_items ADD COLUMN IF NOT EXISTS product_id BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE koperasi_cart_items ADD COLUMN IF NOT EXISTS quantity INT NOT NULL DEFAULT 1`,
 	}
 	for _, stmt := range koperasiAlterStatements {
 		if err := db.Exec(stmt).Error; err != nil {
@@ -327,6 +350,7 @@ func NewDatabase() (*gorm.DB, error) {
 		`CREATE INDEX IF NOT EXISTS idx_private_chat_messages_school_pair_created ON private_chat_messages (school_id, sender_id, recipient_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_private_chat_messages_recipient_created ON private_chat_messages (recipient_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_private_chat_reads_owner_peer ON private_chat_reads (owner_user_id, peer_user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_koperasi_cart_items_school_buyer ON koperasi_cart_items (school_id, buyer_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_student_class_enrollments_school_class ON student_class_enrollments (school_id, class_id, is_active)`,
 		`CREATE INDEX IF NOT EXISTS idx_student_class_enrollments_student ON student_class_enrollments (student_id, start_date, end_date)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_student_class_enrollments_one_active ON student_class_enrollments (student_id) WHERE is_active = true`,

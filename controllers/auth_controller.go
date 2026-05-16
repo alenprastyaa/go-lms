@@ -3,9 +3,15 @@ package controllers
 import (
 	archivezip "archive/zip"
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/xml"
 	"fmt"
 	"io"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +23,17 @@ import (
 	"gorm.io/gorm"
 	"lms/models"
 	"lms/utils"
+)
+
+type studentAccountExportRow struct {
+	FullName string
+	Username string
+	Password string
+}
+
+const (
+	failedLoginAttemptLimit = 5
+	failedLoginLockDuration = time.Minute
 )
 
 func (a *AppContext) RegisterUser(c *fiber.Ctx) error {
@@ -31,8 +48,21 @@ func (a *AppContext) RegisterUser(c *fiber.Ctx) error {
 		return utils.Error(c, 400, "Invalid request")
 	}
 
+	username := strings.TrimSpace(body.Username)
+	if username == "" {
+		return utils.Error(c, 400, "Username wajib diisi")
+	}
+	if err := ensureUsernameAvailable(a.DB, username, 0); err != nil {
+		return utils.Error(c, 400, "Username sudah digunakan", err.Error())
+	}
+
 	hash, _ := bcrypt.GenerateFromPassword([]byte(body.Password), 8)
-	user := models.User{FullName: utils.StringPtr(body.FullName), Username: body.Username, Password: string(hash), Role: body.Role, SchoolID: body.SchoolID}
+	user := models.User{FullName: utils.StringPtr(body.FullName), Username: username, Password: string(hash), Role: body.Role, SchoolID: body.SchoolID}
+	if strings.EqualFold(strings.TrimSpace(body.Role), "SISWA") {
+		if encrypted, err := encryptAccountPassword(body.Password); err == nil {
+			user.InitialPasswordCiphertext = utils.StringPtr(encrypted)
+		}
+	}
 	if err := a.DB.Create(&user).Error; err != nil {
 		return utils.Error(c, 500, "Registration failed", err.Error())
 	}
@@ -52,8 +82,31 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 	if err := a.DB.Where("username = ?", body.Username).First(&user).Error; err != nil {
 		return utils.Error(c, 404, "User not found")
 	}
+
+	now := time.Now().UTC()
+	if user.FailedLoginLockedUntil != nil {
+		if user.FailedLoginLockedUntil.After(now) {
+			return utils.ErrorData(c, 403, "Akun terkunci sementara karena 5 kali gagal login. Coba lagi setelah 1 menit.", fiber.Map{
+				"locked_until": user.FailedLoginLockedUntil.UTC().Format(time.RFC3339),
+			})
+		}
+		if err := a.clearFailedLoginState(user.ID); err != nil {
+			return utils.Error(c, 500, "Gagal memperbarui status login", err.Error())
+		}
+	}
+
 	if bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(body.Password)) != nil {
-		return utils.Error(c, 401, "Invalid Password")
+		locked, remaining, err := a.registerFailedLoginAttempt(user.ID, now)
+		if err != nil {
+			return utils.Error(c, 500, "Gagal memperbarui status login", err.Error())
+		}
+		if locked {
+			lockedUntil := now.Add(failedLoginLockDuration).UTC().Format(time.RFC3339)
+			return utils.ErrorData(c, 403, "Akun terkunci sementara karena 5 kali gagal login. Coba lagi setelah 1 menit.", fiber.Map{
+				"locked_until": lockedUntil,
+			})
+		}
+		return utils.Error(c, 401, fmt.Sprintf("Invalid Password. Sisa percobaan: %d", remaining))
 	}
 
 	if strings.ToUpper(strings.TrimSpace(user.Role)) != "ADMIN" && strings.ToUpper(strings.TrimSpace(user.Role)) != "SUPER_ADMIN" {
@@ -64,6 +117,10 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 		if locked {
 			return utils.Error(c, 403, "Status akun terkunci, silakan hubungi admin untuk membuka akses")
 		}
+	}
+
+	if err := a.clearFailedLoginState(user.ID); err != nil {
+		return utils.Error(c, 500, "Gagal memperbarui status login", err.Error())
 	}
 
 	sessionDevice := detectLoginDevice(c.Get("User-Agent"))
@@ -103,11 +160,54 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 
 	return utils.Success(c, 200, "Login successful", fiber.Map{
 		"role": user.Role, "username": user.Username, "school_id": user.SchoolID, "school_name": schoolName, "school_logo": schoolLogo, "school_features": fiber.Map{
-			"inventory_module_enabled": school.InventoryModuleEnabled,
+			"inventory_module_enabled":     school.InventoryModuleEnabled,
 			"official_exam_module_enabled": school.OfficialExamModuleEnabled,
-			"koperasi_module_enabled": school.KoperasiModuleEnabled,
+			"koperasi_module_enabled":      school.KoperasiModuleEnabled,
 		}, "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
 	})
+}
+
+func (a *AppContext) registerFailedLoginAttempt(userID uint, now time.Time) (bool, int, error) {
+	var row struct {
+		FailedLoginAttempts    int        `gorm:"column:failed_login_attempts"`
+		FailedLoginLockedUntil *time.Time `gorm:"column:failed_login_locked_until"`
+	}
+
+	if err := a.DB.Raw(`
+		UPDATE users
+		SET
+			failed_login_attempts = CASE
+				WHEN COALESCE(failed_login_attempts, 0) + 1 >= ? THEN 0
+				ELSE COALESCE(failed_login_attempts, 0) + 1
+			END,
+			failed_login_locked_until = CASE
+				WHEN COALESCE(failed_login_attempts, 0) + 1 >= ? THEN ?
+				ELSE failed_login_locked_until
+			END
+		WHERE id = ?
+		RETURNING failed_login_attempts, failed_login_locked_until
+	`, failedLoginAttemptLimit, failedLoginAttemptLimit, now.Add(failedLoginLockDuration), userID).Scan(&row).Error; err != nil {
+		return false, 0, err
+	}
+
+	if row.FailedLoginLockedUntil != nil && row.FailedLoginLockedUntil.After(now) {
+		return true, 0, nil
+	}
+
+	remaining := failedLoginAttemptLimit - row.FailedLoginAttempts
+	if remaining < 1 {
+		remaining = 1
+	}
+	return false, remaining, nil
+}
+
+func (a *AppContext) clearFailedLoginState(userID uint) error {
+	return a.DB.Exec(`
+		UPDATE users
+		SET failed_login_attempts = 0,
+		    failed_login_locked_until = NULL
+		WHERE id = ?
+	`, userID).Error
 }
 
 func (a *AppContext) isSchoolAccountLocked(schoolID *uint) (bool, error) {
@@ -188,7 +288,7 @@ func (a *AppContext) ImportUserSchoolTeachers(c *fiber.Ctx) error {
 		return utils.Error(c, 400, "Header template tidak dikenali, unduh ulang template terbaru")
 	}
 
-	requiredColumns := []string{"username", "password"}
+	requiredColumns := []string{"full_name"}
 	for _, column := range requiredColumns {
 		if _, ok := columnIndex[column]; !ok {
 			return utils.Error(c, 400, "Header template tidak lengkap")
@@ -202,34 +302,12 @@ func (a *AppContext) ImportUserSchoolTeachers(c *fiber.Ctx) error {
 
 	imported := 0
 	failedRows := make([]fiber.Map, 0)
-	usernameSet := make([]string, 0, len(rows))
-	for rowIndex := headerIndex + 1; rowIndex < len(rows); rowIndex++ {
-		row := rows[rowIndex]
-		if isExcelRowEmpty(row) {
-			continue
-		}
-		username := strings.TrimSpace(cellValue(row, columnIndex["username"]))
-		if username != "" {
-			usernameSet = append(usernameSet, username)
-		}
+	existingUsernames, err := loadUsernameSet(tx)
+	if err != nil {
+		tx.Rollback()
+		return utils.Error(c, 500, "Gagal memeriksa data user", err.Error())
 	}
-
-	existingUsernames := make(map[string]struct{}, len(usernameSet))
-	if len(usernameSet) > 0 {
-		var existingRows []struct {
-			Username string `gorm:"column:username"`
-		}
-		if err := tx.Table("users").
-			Select("username").
-			Where("school_id = ? AND username IN ?", schoolID, usernameSet).
-			Scan(&existingRows).Error; err != nil {
-			tx.Rollback()
-			return utils.Error(c, 500, "Gagal memeriksa data user", err.Error())
-		}
-		for _, item := range existingRows {
-			existingUsernames[item.Username] = struct{}{}
-		}
-	}
+	importedItems := make([]fiber.Map, 0)
 
 	for rowIndex := headerIndex + 1; rowIndex < len(rows); rowIndex++ {
 		row := rows[rowIndex]
@@ -238,38 +316,35 @@ func (a *AppContext) ImportUserSchoolTeachers(c *fiber.Ctx) error {
 		}
 
 		record := map[string]string{
-			"full_name":    cellValue(row, columnIndex["full_name"]),
-			"username":     strings.TrimSpace(cellValue(row, columnIndex["username"])),
-			"password":     strings.TrimSpace(cellValue(row, columnIndex["password"])),
-			"parent_email": strings.TrimSpace(cellValue(row, columnIndex["parent_email"])),
-			"phone_number": strings.TrimSpace(cellValue(row, columnIndex["phone_number"])),
+			"full_name": cellValueByKey(row, columnIndex, "full_name"),
 		}
 
-		if record["username"] == "" || record["password"] == "" {
+		if record["full_name"] == "" {
 			failedRows = append(failedRows, fiber.Map{
 				"row":     rowIndex + 1,
-				"message": "username dan password wajib diisi",
+				"message": "nama lengkap wajib diisi",
 			})
 			continue
 		}
 
-		if _, exists := existingUsernames[record["username"]]; exists {
+		username := nextAvailableUsername(record["full_name"], "", existingUsernames)
+		rawPassword := generateStudentPassword()
+		hashedPassword, encryptedPassword, err := hashAndStoreRawPassword(rawPassword)
+		if err != nil {
 			failedRows = append(failedRows, fiber.Map{
 				"row":     rowIndex + 1,
-				"message": fmt.Sprintf("username %s sudah ada", record["username"]),
+				"message": err.Error(),
 			})
 			continue
 		}
 
-		hash, _ := bcrypt.GenerateFromPassword([]byte(record["password"]), 8)
 		user := models.User{
-			FullName:    utils.StringPtr(record["full_name"]),
-			Username:    record["username"],
-			Password:    string(hash),
-			Role:        "GURU",
-			SchoolID:    &schoolID,
-			ParentEmail: utils.StringPtr(record["parent_email"]),
-			PhoneNumber: utils.StringPtr(record["phone_number"]),
+			FullName:                  utils.StringPtr(record["full_name"]),
+			Username:                  username,
+			Password:                  hashedPassword,
+			Role:                      "GURU",
+			SchoolID:                  &schoolID,
+			InitialPasswordCiphertext: utils.StringPtr(encryptedPassword),
 		}
 
 		if err := tx.Create(&user).Error; err != nil {
@@ -279,7 +354,15 @@ func (a *AppContext) ImportUserSchoolTeachers(c *fiber.Ctx) error {
 			})
 			continue
 		}
-		existingUsernames[record["username"]] = struct{}{}
+		existingUsernames[strings.ToLower(username)] = struct{}{}
+		importedItems = append(importedItems, fiber.Map{
+			"row":       rowIndex + 1,
+			"full_name": record["full_name"],
+			"username":  username,
+			"password":  rawPassword,
+			"role":      "GURU",
+			"school_id": schoolID,
+		})
 		imported += 1
 	}
 
@@ -291,6 +374,7 @@ func (a *AppContext) ImportUserSchoolTeachers(c *fiber.Ctx) error {
 		"imported": imported,
 		"failed":   len(failedRows),
 		"errors":   failedRows,
+		"items":    importedItems,
 	})
 }
 
@@ -332,6 +416,33 @@ func (a *AppContext) DownloadStudentTemplate(c *fiber.Ctx) error {
 	return c.Send(xlsxBytes)
 }
 
+func (a *AppContext) DownloadStudentAccountsByClass(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	classID := strings.TrimSpace(c.Query("class_id"))
+	if classID == "" {
+		return utils.Error(c, 400, "Pilih kelas terlebih dahulu")
+	}
+
+	var selectedClass models.Class
+	if err := a.DB.Where("id = ? AND school_id = ?", classID, schoolID).First(&selectedClass).Error; err != nil {
+		return utils.Error(c, 404, "Kelas tidak ditemukan")
+	}
+
+	rows, err := a.loadStudentAccountRowsByClass(schoolID, selectedClass.ID)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal membaca akun siswa", err.Error())
+	}
+
+	xlsxBytes, err := buildStudentAccountsXLSX(selectedClass.ClassName, rows)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal membuat file akun siswa", err.Error())
+	}
+
+	c.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="akun-siswa-%s.xlsx"`, safeFilenamePart(selectedClass.ClassName)))
+	return c.Send(xlsxBytes)
+}
+
 func (a *AppContext) ImportStudents(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 	file, err := c.FormFile("file")
@@ -354,6 +465,23 @@ func (a *AppContext) ImportStudents(c *fiber.Ctx) error {
 		return utils.Error(c, 400, err.Error())
 	}
 
+	classID := strings.TrimSpace(c.FormValue("class_id"))
+	var selectedClass *models.Class
+	if classID != "" {
+		var classItem models.Class
+		if err := a.DB.Where("id = ? AND school_id = ?", classID, schoolID).First(&classItem).Error; err != nil {
+			return utils.Error(c, 404, "Kelas tidak ditemukan")
+		}
+		selectedClass = &classItem
+	}
+	if selectedClass == nil {
+		return utils.Error(c, 400, "Pilih kelas terlebih dahulu sebelum import")
+	}
+
+	if err := validateStudentTemplateClass(rows, selectedClass); err != nil {
+		return utils.Error(c, 400, "Template siswa tidak sesuai", err.Error())
+	}
+
 	headerIndex := -1
 	columnIndex := map[string]int{}
 	for rowIndex, row := range rows {
@@ -363,8 +491,6 @@ func (a *AppContext) ImportStudents(c *fiber.Ctx) error {
 			switch {
 			case strings.Contains(normalized, "username"):
 				columnIndex["username"] = cellIndex
-			case strings.Contains(normalized, "password"):
-				columnIndex["password"] = cellIndex
 			case strings.Contains(normalized, "nama lengkap") || strings.Contains(normalized, "full name") || strings.EqualFold(normalized, "nama") || strings.EqualFold(normalized, "name"):
 				columnIndex["full_name"] = cellIndex
 			case strings.Contains(normalized, "kelas") || strings.Contains(normalized, "class"):
@@ -385,15 +511,8 @@ func (a *AppContext) ImportStudents(c *fiber.Ctx) error {
 		return utils.Error(c, 400, "Header template siswa tidak dikenali, unduh ulang template terbaru")
 	}
 
-	var classRows []models.Class
-	if err := a.DB.Where("school_id = ?", schoolID).Find(&classRows).Error; err != nil {
-		return utils.Error(c, 500, "Gagal membaca data kelas", err.Error())
-	}
-	classByName := map[string]models.Class{}
-	classByID := map[string]models.Class{}
-	for _, classItem := range classRows {
-		classByName[normalizeExcelHeader(classItem.ClassName)] = classItem
-		classByID[fmt.Sprint(classItem.ID)] = classItem
+	if selectedClass == nil {
+		return utils.Error(c, 400, "Pilih kelas terlebih dahulu sebelum import")
 	}
 
 	tx := a.DB.Begin()
@@ -403,34 +522,12 @@ func (a *AppContext) ImportStudents(c *fiber.Ctx) error {
 
 	imported := 0
 	failedRows := make([]fiber.Map, 0)
-	usernameSet := make([]string, 0, len(rows))
-	for rowIndex := headerIndex + 1; rowIndex < len(rows); rowIndex++ {
-		row := rows[rowIndex]
-		if isStudentImportRowEmpty(row, columnIndex) {
-			continue
-		}
-		username := strings.TrimSpace(cellValue(row, columnIndex["username"]))
-		if username != "" {
-			usernameSet = append(usernameSet, username)
-		}
+	existingUsernames, err := loadUsernameSet(tx)
+	if err != nil {
+		tx.Rollback()
+		return utils.Error(c, 500, "Gagal memeriksa data siswa", err.Error())
 	}
-
-	existingUsernames := make(map[string]struct{}, len(usernameSet))
-	if len(usernameSet) > 0 {
-		var existingRows []struct {
-			Username string `gorm:"column:username"`
-		}
-		if err := tx.Table("users").
-			Select("username").
-			Where("school_id = ? AND username IN ?", schoolID, usernameSet).
-			Scan(&existingRows).Error; err != nil {
-			tx.Rollback()
-			return utils.Error(c, 500, "Gagal memeriksa data siswa", err.Error())
-		}
-		for _, item := range existingRows {
-			existingUsernames[item.Username] = struct{}{}
-		}
-	}
+	importedItems := make([]fiber.Map, 0)
 
 	for rowIndex := headerIndex + 1; rowIndex < len(rows); rowIndex++ {
 		row := rows[rowIndex]
@@ -439,51 +536,40 @@ func (a *AppContext) ImportStudents(c *fiber.Ctx) error {
 		}
 
 		record := map[string]string{
-			"full_name":    cellValue(row, columnIndex["full_name"]),
-			"username":     strings.TrimSpace(cellValue(row, columnIndex["username"])),
-			"password":     strings.TrimSpace(cellValue(row, columnIndex["password"])),
-			"class_name":   strings.TrimSpace(cellValue(row, columnIndex["class_name"])),
-			"parent_email": strings.TrimSpace(cellValue(row, columnIndex["parent_email"])),
-			"phone_number": strings.TrimSpace(cellValue(row, columnIndex["phone_number"])),
+			"full_name":    cellValueByKey(row, columnIndex, "full_name"),
+			"parent_email": cellValueByKey(row, columnIndex, "parent_email"),
+			"phone_number": cellValueByKey(row, columnIndex, "phone_number"),
 		}
 
-		if record["username"] == "" || record["password"] == "" || record["class_name"] == "" {
+		if record["full_name"] == "" {
 			failedRows = append(failedRows, fiber.Map{
 				"row":     rowIndex + 1,
-				"message": "username, password, dan kelas wajib diisi",
-			})
-			continue
-		}
-		if _, exists := existingUsernames[record["username"]]; exists {
-			failedRows = append(failedRows, fiber.Map{
-				"row":     rowIndex + 1,
-				"message": fmt.Sprintf("username %s sudah ada", record["username"]),
+				"message": "nama lengkap wajib diisi",
 			})
 			continue
 		}
 
-		classItem, ok := classByID[record["class_name"]]
-		if !ok {
-			classItem, ok = classByName[normalizeExcelHeader(record["class_name"])]
-		}
-		if !ok {
+		username := nextAvailableUsername(record["full_name"], "", existingUsernames)
+		rawPassword := generateStudentPassword()
+		hashedPassword, encryptedPassword, err := hashAndStoreRawPassword(rawPassword)
+		if err != nil {
 			failedRows = append(failedRows, fiber.Map{
 				"row":     rowIndex + 1,
-				"message": fmt.Sprintf("kelas %s tidak ditemukan", record["class_name"]),
+				"message": err.Error(),
 			})
 			continue
 		}
 
-		hash, _ := bcrypt.GenerateFromPassword([]byte(record["password"]), 8)
 		user := models.User{
-			FullName:    utils.StringPtr(record["full_name"]),
-			Username:    record["username"],
-			Password:    string(hash),
-			Role:        "SISWA",
-			SchoolID:    &schoolID,
-			ClassID:     &classItem.ID,
-			ParentEmail: utils.StringPtr(record["parent_email"]),
-			PhoneNumber: utils.StringPtr(record["phone_number"]),
+			FullName:                  utils.StringPtr(record["full_name"]),
+			Username:                  username,
+			Password:                  hashedPassword,
+			InitialPasswordCiphertext: utils.StringPtr(encryptedPassword),
+			Role:                      "SISWA",
+			SchoolID:                  &schoolID,
+			ClassID:                   &selectedClass.ID,
+			ParentEmail:               utils.StringPtr(record["parent_email"]),
+			PhoneNumber:               utils.StringPtr(record["phone_number"]),
 		}
 
 		if err := tx.Create(&user).Error; err != nil {
@@ -493,14 +579,22 @@ func (a *AppContext) ImportStudents(c *fiber.Ctx) error {
 			})
 			continue
 		}
-		if err := ensureInitialStudentClassEnrollmentTx(tx, schoolID, user.ID, classItem.ID, uintPointerFromLocal(c, "userID")); err != nil {
+		if err := ensureInitialStudentClassEnrollmentTx(tx, schoolID, user.ID, selectedClass.ID, uintPointerFromLocal(c, "userID")); err != nil {
 			failedRows = append(failedRows, fiber.Map{
 				"row":     rowIndex + 1,
 				"message": err.Error(),
 			})
 			continue
 		}
-		existingUsernames[record["username"]] = struct{}{}
+		existingUsernames[strings.ToLower(username)] = struct{}{}
+		importedItems = append(importedItems, fiber.Map{
+			"row":        rowIndex + 1,
+			"full_name":  record["full_name"],
+			"username":   username,
+			"role":       "SISWA",
+			"class_name": selectedClass.ClassName,
+			"school_id":  schoolID,
+		})
 		imported += 1
 	}
 
@@ -512,6 +606,7 @@ func (a *AppContext) ImportStudents(c *fiber.Ctx) error {
 		"imported": imported,
 		"failed":   len(failedRows),
 		"errors":   failedRows,
+		"items":    importedItems,
 	})
 }
 
@@ -525,10 +620,40 @@ func (a *AppContext) registerScopedUser(c *fiber.Ctx, asStudent bool) error {
 		role = "SISWA"
 	}
 
-	hash, _ := bcrypt.GenerateFromPassword([]byte(utils.ToString(body["password"])), 8)
+	normalizedRole := strings.ToUpper(strings.TrimSpace(role))
+	fullName := strings.TrimSpace(utils.ToString(body["full_name"]))
+	if fullName == "" {
+		return utils.Error(c, 400, "Nama lengkap wajib diisi")
+	}
+	rawPassword := strings.TrimSpace(utils.ToString(body["password"]))
+	existingUsernames := map[string]struct{}{}
+	if asStudent || normalizedRole == "GURU" {
+		if usernames, err := loadUsernameSet(a.DB); err == nil {
+			existingUsernames = usernames
+		}
+	}
+
+	username := strings.TrimSpace(utils.ToString(body["username"]))
+	if (asStudent || normalizedRole == "GURU") && username == "" {
+		username = nextAvailableUsername(fullName, "", existingUsernames)
+	}
+	if username == "" {
+		return utils.Error(c, 400, "Username wajib diisi")
+	}
+	if err := ensureUsernameAvailable(a.DB, username, 0); err != nil {
+		return utils.Error(c, 400, "Username sudah digunakan", err.Error())
+	}
+	if (asStudent || normalizedRole == "GURU") && rawPassword == "" {
+		rawPassword = generateStudentPassword()
+	}
+	if rawPassword == "" {
+		return utils.Error(c, 400, "Password wajib diisi")
+	}
+
+	hash, _ := bcrypt.GenerateFromPassword([]byte(rawPassword), 8)
 	user := models.User{
-		FullName:    utils.StringPtr(body["full_name"]),
-		Username:    utils.ToString(body["username"]),
+		FullName:    utils.StringPtr(fullName),
+		Username:    username,
 		Password:    string(hash),
 		Role:        role,
 		SchoolID:    &schoolID,
@@ -538,6 +663,13 @@ func (a *AppContext) registerScopedUser(c *fiber.Ctx, asStudent bool) error {
 	if asStudent {
 		classID := uint(utils.ToInt(utils.ToString(body["class_id"]), 0))
 		user.ClassID = &classID
+		if encrypted, err := encryptAccountPassword(rawPassword); err == nil {
+			user.InitialPasswordCiphertext = utils.StringPtr(encrypted)
+		}
+	} else if normalizedRole == "GURU" {
+		if encrypted, err := encryptAccountPassword(rawPassword); err == nil {
+			user.InitialPasswordCiphertext = utils.StringPtr(encrypted)
+		}
 	}
 
 	if err := a.DB.Transaction(func(tx *gorm.DB) error {
@@ -551,7 +683,22 @@ func (a *AppContext) registerScopedUser(c *fiber.Ctx, asStudent bool) error {
 	}); err != nil {
 		return utils.Error(c, 500, "Registration failed", err.Error())
 	}
-	return utils.Success(c, 201, "User registered successfully", user)
+	response := fiber.Map{
+		"id":        user.ID,
+		"username":  user.Username,
+		"role":      user.Role,
+		"school_id": user.SchoolID,
+		"class_id":  user.ClassID,
+		"full_name": user.FullName,
+	}
+	if asStudent || normalizedRole == "GURU" {
+		response["password"] = rawPassword
+	}
+	message := "User registered successfully"
+	if normalizedRole == "GURU" {
+		message = fmt.Sprintf("User guru berhasil dibuat. Username: %s. Password: %s", user.Username, rawPassword)
+	}
+	return utils.Success(c, 201, message, response)
 }
 
 func buildTeacherTemplateXLSX() ([]byte, error) {
@@ -616,6 +763,77 @@ func buildStudentTemplateXLSX(classes []models.Class, selectedClass *models.Clas
 	}
 
 	return buffer.Bytes(), nil
+}
+
+func buildStudentAccountsXLSX(className string, rows []studentAccountExportRow) ([]byte, error) {
+	var buffer bytes.Buffer
+	zipWriter := archivezip.NewWriter(&buffer)
+
+	files := map[string]string{
+		"[Content_Types].xml":        xlsxContentTypesXML(),
+		"_rels/.rels":                xlsxRootRelsXML(),
+		"xl/workbook.xml":            xlsxWorkbookXML("Akun Siswa"),
+		"xl/_rels/workbook.xml.rels": xlsxWorkbookRelsXML(),
+		"xl/styles.xml":              xlsxStylesXML(),
+		"xl/worksheets/sheet1.xml":   xlsxStudentAccountsSheetXML(className, rows),
+	}
+
+	for name, content := range files {
+		writer, err := zipWriter.Create(name)
+		if err != nil {
+			_ = zipWriter.Close()
+			return nil, err
+		}
+		if _, err := writer.Write([]byte(content)); err != nil {
+			_ = zipWriter.Close()
+			return nil, err
+		}
+	}
+
+	if err := zipWriter.Close(); err != nil {
+		return nil, err
+	}
+
+	return buffer.Bytes(), nil
+}
+
+func studentTemplateClassNameFromRows(rows [][]string) string {
+	const prefix = "Template ini khusus untuk kelas "
+	const suffix = ". Username dan password dibuat otomatis oleh sistem."
+	for _, row := range rows {
+		for _, cell := range row {
+			value := strings.TrimSpace(cell)
+			if value == "" || !strings.Contains(value, prefix) || !strings.Contains(value, suffix) {
+				continue
+			}
+			start := strings.Index(value, prefix)
+			if start < 0 {
+				continue
+			}
+			start += len(prefix)
+			end := strings.Index(value[start:], suffix)
+			if end < 0 {
+				continue
+			}
+			return strings.TrimSpace(value[start : start+end])
+		}
+	}
+	return ""
+}
+
+func validateStudentTemplateClass(rows [][]string, selectedClass *models.Class) error {
+	if selectedClass == nil {
+		return fmt.Errorf("kelas harus dipilih terlebih dahulu")
+	}
+
+	templateClassName := studentTemplateClassNameFromRows(rows)
+	if templateClassName == "" {
+		return fmt.Errorf("kelas pada template siswa tidak ditemukan, unduh ulang template terbaru")
+	}
+	if !strings.EqualFold(strings.TrimSpace(templateClassName), strings.TrimSpace(selectedClass.ClassName)) {
+		return fmt.Errorf("template untuk kelas %s tidak cocok dengan kelas %s", templateClassName, selectedClass.ClassName)
+	}
+	return nil
 }
 
 func xlsxContentTypesXML() string {
@@ -708,53 +926,44 @@ func xlsxTeacherTemplateSheetXML() string {
 	var builder strings.Builder
 	builder.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <dimension ref="A1:E40"/>
+  <dimension ref="A1:B40"/>
   <sheetViews>
-    <sheetView workbookViewId="0">
+    <sheetView workbookViewId="0" showGridLines="0">
       <pane ySplit="11" topLeftCell="A12" activePane="bottomLeft" state="frozen"/>
       <selection pane="bottomLeft" activeCell="A12" sqref="A12"/>
     </sheetView>
   </sheetViews>
-  <sheetFormatPr defaultRowHeight="18"/>
+  <sheetFormatPr defaultRowHeight="22"/>
   <cols>
-    <col min="1" max="1" width="30" customWidth="1"/>
-    <col min="2" max="2" width="24" customWidth="1"/>
-    <col min="3" max="3" width="20" customWidth="1"/>
-    <col min="4" max="4" width="32" customWidth="1"/>
-    <col min="5" max="5" width="22" style="8" customWidth="1"/>
+    <col min="1" max="1" width="10" customWidth="1"/>
+    <col min="2" max="2" width="44" customWidth="1"/>
   </cols>
   <sheetData>
-    <row r="1" ht="28" customHeight="1">` + xlsxStyledCell("A1", "Template Import Data Guru", 1) + `</row>
-    <row r="2" ht="22" customHeight="1">` + xlsxStyledCell("A2", "Gunakan template ini untuk menambahkan akun guru secara massal.", 2) + `</row>
+    <row r="1" ht="34" customHeight="1">` + xlsxStyledCell("A1", "Template Import Data Guru", 1) + `</row>
+    <row r="2" ht="30" customHeight="1">` + xlsxStyledCell("A2", "Gunakan template ini untuk menambahkan akun guru secara massal. Username dan password dibuat otomatis oleh sistem.", 3) + `</row>
     <row r="4" ht="24" customHeight="1">` + xlsxStyledCell("A4", "Petunjuk Pengisian", 3) + `</row>
-    <row r="5" ht="22" customHeight="1">` + xlsxStyledCell("A5", "1. Kolom Username dan Password wajib diisi. Nama Lengkap, Email, dan No. HP bersifat opsional.", 3) + `</row>
-    <row r="6" ht="22" customHeight="1">` + xlsxStyledCell("A6", "2. Role akan otomatis dibuat sebagai GURU. Jangan mengubah nama kolom pada baris header.", 3) + `</row>
-    <row r="7" ht="22" customHeight="1">` + xlsxStyledCell("A7", "3. Isi data guru mulai baris 12. Baris contoh hanya sebagai referensi format.", 3) + `</row>
-    <row r="9" ht="22" customHeight="1">` + xlsxStyledCell("A9", "Contoh Format", 7) + xlsxStyledCell("B9", "guru_matematika", 7) + xlsxStyledCell("C9", "GantiPassword123", 7) + xlsxStyledCell("D9", "guru@example.sch.id", 7) + xlsxStyledCell("E9", "081234567890", 8) + `</row>
-    <row r="11" ht="24" customHeight="1">` + xlsxStyledCell("A11", "Nama Lengkap", 4) + xlsxStyledCell("B11", "Username", 4) + xlsxStyledCell("C11", "Password", 4) + xlsxStyledCell("D11", "Email", 4) + xlsxStyledCell("E11", "No. HP", 4) + `</row>
+    <row r="5" ht="40" customHeight="1">` + xlsxStyledCell("A5", "1", 4) + xlsxStyledCell("B5", "Template ini hanya membutuhkan Nama Lengkap. Username dan password akan dibuat otomatis oleh sistem.", 3) + `</row>
+    <row r="6" ht="30" customHeight="1">` + xlsxStyledCell("A6", "2", 4) + xlsxStyledCell("B6", "Role akan otomatis dibuat sebagai GURU. Jangan mengubah nama kolom pada baris header.", 3) + `</row>
+    <row r="7" ht="28" customHeight="1">` + xlsxStyledCell("A7", "3", 4) + xlsxStyledCell("B7", "Isi data guru mulai baris 12. Baris contoh hanya sebagai referensi format.", 3) + `</row>
+    <row r="9" ht="24" customHeight="1">` + xlsxStyledCell("A9", "Contoh Format", 4) + `</row>
+    <row r="10" ht="24" customHeight="1">` + xlsxStyledCell("A10", "1", 4) + xlsxStyledCell("B10", "Ahmad Fajri", 7) + `</row>
+    <row r="11" ht="24" customHeight="1">` + xlsxStyledCell("A11", "No.", 4) + xlsxStyledCell("B11", "Nama Lengkap", 4) + `</row>
 `)
 
 	for row := 12; row <= 40; row++ {
 		builder.WriteString(fmt.Sprintf(`    <row r="%d" ht="22" customHeight="1">`, row))
-		for _, col := range []string{"A", "B", "C", "D", "E"} {
-			styleID := 5
-			if col == "E" {
-				styleID = 8
-			}
-			builder.WriteString(xlsxStyledCell(fmt.Sprintf("%s%d", col, row), "", styleID))
-		}
+		builder.WriteString(xlsxStyledCell(fmt.Sprintf("A%d", row), fmt.Sprintf("%d", row-11), 4))
+		builder.WriteString(xlsxStyledCell(fmt.Sprintf("B%d", row), "", 5))
 		builder.WriteString("</row>\n")
 	}
 
 	builder.WriteString(`  </sheetData>
-  <autoFilter ref="A11:E40"/>
-  <mergeCells count="6">
-    <mergeCell ref="A1:E1"/>
-    <mergeCell ref="A2:E2"/>
-    <mergeCell ref="A4:E4"/>
-    <mergeCell ref="A5:E5"/>
-    <mergeCell ref="A6:E6"/>
-    <mergeCell ref="A7:E7"/>
+  <autoFilter ref="A11:B40"/>
+  <mergeCells count="4">
+    <mergeCell ref="A1:B1"/>
+    <mergeCell ref="A2:B2"/>
+    <mergeCell ref="A4:B4"/>
+    <mergeCell ref="A9:B9"/>
   </mergeCells>
   <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
 </worksheet>`)
@@ -763,71 +972,98 @@ func xlsxTeacherTemplateSheetXML() string {
 
 func xlsxStudentTemplateSheetXML(classes []models.Class, selectedClass *models.Class) string {
 	className := selectedStudentTemplateClassName(classes, selectedClass)
-	instructionText := fmt.Sprintf("1. Template ini khusus untuk kelas %s. Kolom Kelas sudah terisi otomatis, admin cukup mengisi data siswa.", className)
+	instructionText := fmt.Sprintf("1. Template ini khusus untuk kelas %s. Username dan password dibuat otomatis oleh sistem.", className)
 	var builder strings.Builder
 	builder.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <dimension ref="A1:H40"/>
+  <dimension ref="A1:F40"/>
   <sheetViews>
-    <sheetView workbookViewId="0">
+    <sheetView workbookViewId="0" showGridLines="0">
       <pane ySplit="11" topLeftCell="A12" activePane="bottomLeft" state="frozen"/>
       <selection pane="bottomLeft" activeCell="A12" sqref="A12"/>
     </sheetView>
   </sheetViews>
-  <sheetFormatPr defaultRowHeight="18"/>
+  <sheetFormatPr defaultRowHeight="22"/>
   <cols>
-    <col min="1" max="1" width="30" customWidth="1"/>
-    <col min="2" max="2" width="24" customWidth="1"/>
-    <col min="3" max="3" width="20" customWidth="1"/>
-    <col min="4" max="4" width="24" customWidth="1"/>
-    <col min="5" max="5" width="32" customWidth="1"/>
-    <col min="6" max="6" width="22" style="8" customWidth="1"/>
-    <col min="7" max="7" width="4" customWidth="1"/>
-    <col min="8" max="8" width="32" customWidth="1"/>
+    <col min="1" max="1" width="10" customWidth="1"/>
+    <col min="2" max="2" width="44" customWidth="1"/>
+    <col min="3" max="6" width="6" customWidth="1"/>
   </cols>
   <sheetData>
-    <row r="1" ht="28" customHeight="1">` + xlsxStyledCell("A1", "Template Import Data Siswa", 1) + `</row>
-    <row r="2" ht="22" customHeight="1">` + xlsxStyledCell("A2", "Gunakan template ini untuk menambahkan akun siswa secara massal.", 2) + `</row>
+    <row r="1" ht="34" customHeight="1">` + xlsxStyledCell("A1", "Template Import Data Siswa", 1) + `</row>
+    <row r="2" ht="30" customHeight="1">` + xlsxStyledCell("A2", "Gunakan template ini untuk menambahkan akun siswa secara massal. Username dan password dibuat otomatis oleh sistem.", 3) + `</row>
     <row r="4" ht="24" customHeight="1">` + xlsxStyledCell("A4", "Petunjuk Pengisian", 3) + `</row>
-    <row r="5" ht="22" customHeight="1">` + xlsxStyledCell("A5", instructionText, 3) + `</row>
-    <row r="6" ht="22" customHeight="1">` + xlsxStyledCell("A6", "2. Role akan otomatis dibuat sebagai SISWA. Jangan mengubah nama kolom pada baris header.", 3) + `</row>
-    <row r="7" ht="22" customHeight="1">` + xlsxStyledCell("A7", "3. Isi data siswa mulai baris 12. Kolom No. HP sudah diformat sebagai teks agar angka 0 di depan tidak hilang.", 3) + `</row>
-    <row r="9" ht="22" customHeight="1">` + xlsxStyledCell("A9", "Contoh Format", 7) + xlsxStyledCell("B9", "siswa_andi", 7) + xlsxStyledCell("C9", "GantiPassword123", 7) + xlsxStyledCell("D9", className, 7) + xlsxStyledCell("E9", "wali@example.com", 7) + xlsxStyledCell("F9", "081234567890", 8) + `</row>
-    <row r="11" ht="24" customHeight="1">` + xlsxStyledCell("A11", "Nama Lengkap", 4) + xlsxStyledCell("B11", "Username", 4) + xlsxStyledCell("C11", "Password", 4) + xlsxStyledCell("D11", "Kelas", 4) + xlsxStyledCell("E11", "Email Orang Tua", 4) + xlsxStyledCell("F11", "No. HP", 4) + xlsxStyledCell("H11", "Daftar Kelas Tersedia", 4) + `</row>
+    <row r="5" ht="40" customHeight="1">` + xlsxStyledCell("A5", "1", 4) + xlsxStyledCell("B5", instructionText, 3) + `</row>
+    <row r="6" ht="30" customHeight="1">` + xlsxStyledCell("A6", "2", 4) + xlsxStyledCell("B6", "Role akan otomatis dibuat sebagai SISWA. Kontak wali bisa dilengkapi nanti dari profil siswa.", 3) + `</row>
+    <row r="7" ht="28" customHeight="1">` + xlsxStyledCell("A7", "3", 4) + xlsxStyledCell("B7", "Segera minta siswa mengganti password setelah login pertama.", 3) + `</row>
+    <row r="9" ht="24" customHeight="1">` + xlsxStyledCell("A9", "Contoh Format", 4) + `</row>
+    <row r="10" ht="24" customHeight="1">` + xlsxStyledCell("A10", "1", 4) + xlsxStyledCell("B10", "Ahmad Fajri", 7) + `</row>
+    <row r="11" ht="24" customHeight="1">` + xlsxStyledCell("A11", "No.", 4) + xlsxStyledCell("B11", "Nama Lengkap", 4) + `</row>
 `)
 
 	for row := 12; row <= 40; row++ {
 		builder.WriteString(fmt.Sprintf(`    <row r="%d" ht="22" customHeight="1">`, row))
-		for _, col := range []string{"A", "B", "C", "D", "E", "F"} {
-			styleID := 5
-			if col == "F" {
-				styleID = 8
-			}
-			value := ""
-			if col == "D" {
-				value = className
-			}
-			builder.WriteString(xlsxStyledCell(fmt.Sprintf("%s%d", col, row), value, styleID))
-		}
-		classIndex := row - 12
-		if classIndex >= 0 && classIndex < len(classes) {
-			builder.WriteString(xlsxStyledCell(fmt.Sprintf("H%d", row), classes[classIndex].ClassName, 6))
-		}
+		builder.WriteString(xlsxStyledCell(fmt.Sprintf("A%d", row), fmt.Sprintf("%d", row-11), 4))
+		builder.WriteString(xlsxStyledCell(fmt.Sprintf("B%d", row), "", 5))
 		builder.WriteString("</row>\n")
 	}
 
 	builder.WriteString(`  </sheetData>
-  <autoFilter ref="A11:F40"/>
-  <mergeCells count="6">
+  <autoFilter ref="A11:B40"/>
+  <mergeCells count="10">
     <mergeCell ref="A1:F1"/>
     <mergeCell ref="A2:F2"/>
     <mergeCell ref="A4:F4"/>
-    <mergeCell ref="A5:F5"/>
-    <mergeCell ref="A6:F6"/>
-    <mergeCell ref="A7:F7"/>
+    <mergeCell ref="B5:F5"/>
+    <mergeCell ref="B6:F6"/>
+    <mergeCell ref="B7:F7"/>
+    <mergeCell ref="A9:F9"/>
+    <mergeCell ref="A10:F10"/>
   </mergeCells>
   <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
 </worksheet>`)
+	return builder.String()
+}
+
+func xlsxStudentAccountsSheetXML(className string, rows []studentAccountExportRow) string {
+	if strings.TrimSpace(className) == "" {
+		className = "Semua Kelas"
+	}
+	var builder strings.Builder
+	builder.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:C1000"/>
+  <sheetViews>
+    <sheetView workbookViewId="0">
+      <pane ySplit="4" topLeftCell="A5" activePane="bottomLeft" state="frozen"/>
+      <selection pane="bottomLeft" activeCell="A5" sqref="A5"/>
+    </sheetView>
+  </sheetViews>
+  <sheetFormatPr defaultRowHeight="18"/>
+  <cols>
+    <col min="1" max="1" width="32" customWidth="1"/>
+    <col min="2" max="2" width="26" customWidth="1"/>
+    <col min="3" max="3" width="20" style="8" customWidth="1"/>
+  </cols>
+  <sheetData>
+    <row r="1" ht="28" customHeight="1">` + xlsxStyledCell("A1", "Daftar Akun Siswa - "+className, 1) + `</row>
+    <row r="2" ht="22" customHeight="1">` + xlsxStyledCell("A2", "Gunakan file ini untuk membagikan akun login siswa. Segera minta siswa mengganti password setelah login pertama.", 2) + `</row>
+    <row r="4" ht="24" customHeight="1">` + xlsxStyledCell("A4", "Nama Lengkap", 4) + xlsxStyledCell("B4", "Username", 4) + xlsxStyledCell("C4", "Password", 4) + `</row>
+`)
+
+	for index, row := range rows {
+		rowNumber := index + 5
+		builder.WriteString(fmt.Sprintf(`    <row r="%d" ht="22" customHeight="1">`, rowNumber))
+		builder.WriteString(xlsxStyledCell(fmt.Sprintf("A%d", rowNumber), row.FullName, 5))
+		builder.WriteString(xlsxStyledCell(fmt.Sprintf("B%d", rowNumber), row.Username, 5))
+		builder.WriteString(xlsxStyledCell(fmt.Sprintf("C%d", rowNumber), row.Password, 8))
+		builder.WriteString("</row>\n")
+	}
+
+	builder.WriteString(fmt.Sprintf(`  </sheetData>
+  <autoFilter ref="A4:C%d"/>
+  <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+</worksheet>`, len(rows)+4))
 	return builder.String()
 }
 
@@ -1155,16 +1391,13 @@ func normalizeExcelHeader(value string) string {
 }
 
 func hasRequiredGuruHeaders(columnIndex map[string]int) bool {
-	_, hasUsername := columnIndex["username"]
-	_, hasPassword := columnIndex["password"]
-	return hasUsername && hasPassword
+	_, hasFullName := columnIndex["full_name"]
+	return hasFullName
 }
 
 func hasRequiredStudentHeaders(columnIndex map[string]int) bool {
-	_, hasUsername := columnIndex["username"]
-	_, hasPassword := columnIndex["password"]
-	_, hasClass := columnIndex["class_name"]
-	return hasUsername && hasPassword && hasClass
+	_, hasFullName := columnIndex["full_name"]
+	return hasFullName
 }
 
 func isExcelRowEmpty(row []string) bool {
@@ -1177,12 +1410,19 @@ func isExcelRowEmpty(row []string) bool {
 }
 
 func isStudentImportRowEmpty(row []string, columnIndex map[string]int) bool {
-	for _, key := range []string{"full_name", "username", "password", "class_name", "parent_email", "phone_number"} {
-		if strings.TrimSpace(cellValue(row, columnIndex[key])) != "" {
-			return false
+	nonEmpty := 0
+	for _, key := range []string{"full_name", "username", "class_name", "parent_email", "phone_number"} {
+		if strings.TrimSpace(cellValueByKey(row, columnIndex, key)) != "" {
+			nonEmpty++
 		}
 	}
-	return true
+	if nonEmpty == 0 {
+		return true
+	}
+	if nonEmpty == 1 && strings.TrimSpace(cellValueByKey(row, columnIndex, "class_name")) != "" {
+		return true
+	}
+	return false
 }
 
 func cellValue(row []string, index int) string {
@@ -1190,6 +1430,260 @@ func cellValue(row []string, index int) string {
 		return ""
 	}
 	return strings.TrimSpace(row[index])
+}
+
+func cellValueByKey(row []string, columnIndex map[string]int, key string) string {
+	index, ok := columnIndex[key]
+	if !ok {
+		return ""
+	}
+	return cellValue(row, index)
+}
+
+func loadUsernameSet(tx *gorm.DB) (map[string]struct{}, error) {
+	var existingRows []struct {
+		Username string `gorm:"column:username"`
+	}
+	if err := tx.Table("users").
+		Select("username").
+		Scan(&existingRows).Error; err != nil {
+		return nil, err
+	}
+
+	existing := make(map[string]struct{}, len(existingRows))
+	for _, item := range existingRows {
+		key := strings.ToLower(strings.TrimSpace(item.Username))
+		if key == "" {
+			continue
+		}
+		existing[key] = struct{}{}
+	}
+
+	return existing, nil
+}
+
+func attachDecodedInitialPassword(user map[string]interface{}) {
+	if user == nil {
+		return
+	}
+	raw, _ := user["initial_password_ciphertext"].(string)
+	if strings.TrimSpace(raw) == "" {
+		user["initial_password"] = ""
+		return
+	}
+	password, err := decryptAccountPassword(raw)
+	if err != nil {
+		user["initial_password"] = "-"
+		return
+	}
+	user["initial_password"] = password
+}
+
+func (a *AppContext) loadStudentAccountRowsByClass(schoolID, classID uint) ([]studentAccountExportRow, error) {
+	var rows []struct {
+		FullName                  string `gorm:"column:full_name"`
+		Username                  string `gorm:"column:username"`
+		InitialPasswordCiphertext string `gorm:"column:initial_password_ciphertext"`
+	}
+
+	if err := a.DB.Table("users").
+		Select("COALESCE(full_name, '') AS full_name, username, COALESCE(initial_password_ciphertext, '') AS initial_password_ciphertext").
+		Where("school_id = ? AND class_id = ? AND role = 'SISWA'", schoolID, classID).
+		Order("full_name ASC, username ASC").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	exportRows := make([]studentAccountExportRow, 0, len(rows))
+	for _, row := range rows {
+		password := ""
+		if strings.TrimSpace(row.InitialPasswordCiphertext) != "" {
+			decrypted, err := decryptAccountPassword(row.InitialPasswordCiphertext)
+			if err != nil {
+				password = "-"
+			} else {
+				password = decrypted
+			}
+		}
+		exportRows = append(exportRows, studentAccountExportRow{
+			FullName: strings.TrimSpace(row.FullName),
+			Username: row.Username,
+			Password: password,
+		})
+	}
+
+	return exportRows, nil
+}
+
+func generateStudentPassword() string {
+	const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+	const lowers = "abcdefghijkmnpqrstuvwxyz"
+	const digits = "23456789"
+	const totalLength = 10
+
+	segments := make([]byte, 0, totalLength)
+	segments = append(segments, randomCharsetChar(letters))
+	segments = append(segments, randomCharsetChar(lowers))
+	segments = append(segments, randomCharsetChar(digits))
+
+	combined := letters + lowers + digits
+	for len(segments) < totalLength {
+		segments = append(segments, randomCharsetChar(combined))
+	}
+
+	for i := len(segments) - 1; i > 0; i-- {
+		j := randomInt(i + 1)
+		segments[i], segments[j] = segments[j], segments[i]
+	}
+
+	return string(segments)
+}
+
+func hashAndStoreRawPassword(rawPassword string) (string, string, error) {
+	rawPassword = strings.TrimSpace(rawPassword)
+	if rawPassword == "" {
+		return "", "", fmt.Errorf("password tidak boleh kosong")
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(rawPassword), 8)
+	if err != nil {
+		return "", "", err
+	}
+	encrypted, err := encryptAccountPassword(rawPassword)
+	if err != nil {
+		return "", "", err
+	}
+	return string(hash), encrypted, nil
+}
+
+func encryptAccountPassword(rawPassword string) (string, error) {
+	key := sha256.Sum256([]byte(accountPasswordSecret()))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return "", err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+
+	ciphertext := gcm.Seal(nil, nonce, []byte(rawPassword), nil)
+	payload := append(nonce, ciphertext...)
+	return base64.StdEncoding.EncodeToString(payload), nil
+}
+
+func decryptAccountPassword(encoded string) (string, error) {
+	payload, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+	if err != nil {
+		return "", err
+	}
+
+	key := sha256.Sum256([]byte(accountPasswordSecret()))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return "", err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(payload) < nonceSize {
+		return "", fmt.Errorf("password terenkripsi tidak valid")
+	}
+
+	nonce, ciphertext := payload[:nonceSize], payload[nonceSize:]
+	plain, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", err
+	}
+	return string(plain), nil
+}
+
+func accountPasswordSecret() string {
+	secret := strings.TrimSpace(os.Getenv("ACCOUNT_PASSWORD_SECRET"))
+	if secret != "" {
+		return secret
+	}
+	secret = strings.TrimSpace(os.Getenv("JWT_SECRET"))
+	if secret != "" {
+		return secret
+	}
+	return "school-system-account-password-secret"
+}
+
+func randomCharsetChar(charset string) byte {
+	if charset == "" {
+		return 'x'
+	}
+	return charset[randomInt(len(charset))]
+}
+
+func randomInt(max int) int {
+	if max <= 1 {
+		return 0
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	if err != nil {
+		return 0
+	}
+	return int(n.Int64())
+}
+
+func nextAvailableUsername(fullName, fallback string, existing map[string]struct{}) string {
+	seed := strings.TrimSpace(fullName)
+	if seed == "" {
+		seed = strings.TrimSpace(fallback)
+	}
+
+	base := normalizeUsernameSeed(seed)
+	if base == "" {
+		base = "user"
+	}
+
+	candidate := base
+	for suffix := 0; ; suffix++ {
+		if _, exists := existing[strings.ToLower(candidate)]; !exists {
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s_%d", base, suffix+1)
+	}
+}
+
+func normalizeUsernameSeed(value string) string {
+	lowered := strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	lastWasUnderscore := false
+
+	for _, char := range lowered {
+		switch {
+		case char >= 'a' && char <= 'z':
+			builder.WriteRune(char)
+			lastWasUnderscore = false
+		case char >= '0' && char <= '9':
+			builder.WriteRune(char)
+			lastWasUnderscore = false
+		default:
+			if builder.Len() > 0 && !lastWasUnderscore {
+				builder.WriteByte('_')
+				lastWasUnderscore = true
+			}
+		}
+	}
+
+	normalized := strings.Trim(builder.String(), "_")
+	if normalized == "" {
+		return "user"
+	}
+	return normalized
 }
 
 func (a *AppContext) GetUserSchoolList(c *fiber.Ctx) error {
@@ -1207,7 +1701,7 @@ func (a *AppContext) GetUserSchoolList(c *fiber.Ctx) error {
 	usePagination := c.Query("paginate") == "1"
 
 	var users []map[string]interface{}
-	q := a.DB.Table("users").Select("id, full_name, username, role, school_id, parent_email, phone_number, profile_image").Where("school_id = ?", schoolID)
+	q := a.DB.Table("users").Select("id, full_name, username, role, school_id, parent_email, phone_number, profile_image, COALESCE(initial_password_ciphertext, '') AS initial_password_ciphertext").Where("school_id = ?", schoolID)
 	if role != "" {
 		q = q.Where("role = ?", role)
 	}
@@ -1219,6 +1713,9 @@ func (a *AppContext) GetUserSchoolList(c *fiber.Ctx) error {
 		if err := q.Order("username asc").Limit(limit).Offset(offset).Scan(&users).Error; err != nil {
 			return utils.Error(c, 500, "Failed Get User School", err.Error())
 		}
+		for _, user := range users {
+			attachDecodedInitialPassword(user)
+		}
 		return utils.Success(c, 200, "Success Get User School", fiber.Map{
 			"page":  page,
 			"limit": limit,
@@ -1229,6 +1726,9 @@ func (a *AppContext) GetUserSchoolList(c *fiber.Ctx) error {
 
 	if err := q.Order("username asc").Scan(&users).Error; err != nil {
 		return utils.Error(c, 500, "Failed Get User School", err.Error())
+	}
+	for _, user := range users {
+		attachDecodedInitialPassword(user)
 	}
 	return utils.Success(c, 200, "Success Get User School", users)
 }
@@ -1374,15 +1874,67 @@ func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 		"parent_email": coalesceStrPtr(body.ParentEmail, current.ParentEmail),
 		"phone_number": coalesceStrPtr(body.PhoneNumber, current.PhoneNumber),
 	}
+	if body.Username != nil {
+		nextUsernameTrimmed := strings.TrimSpace(*body.Username)
+		if nextUsernameTrimmed == "" {
+			return utils.Error(c, 400, "Username wajib diisi")
+		}
+		if err := ensureUsernameAvailable(a.DB, nextUsernameTrimmed, current.ID); err != nil {
+			return utils.Error(c, 400, "Username sudah digunakan", err.Error())
+		}
+		nextUsername = nextUsernameTrimmed
+	}
 	if body.Password != nil && *body.Password != "" {
 		hash, _ := bcrypt.GenerateFromPassword([]byte(*body.Password), 8)
 		updates["password"] = string(hash)
+		if encrypted, err := encryptAccountPassword(*body.Password); err == nil {
+			updates["initial_password_ciphertext"] = encrypted
+		}
 		updates["session_version"] = gorm.Expr("COALESCE(session_version, 0) + 1")
 	}
-	a.DB.Table("users").Where("id = ? AND school_id = ?", id, schoolID).Updates(updates)
+	if err := a.DB.Table("users").Where("id = ? AND school_id = ?", id, schoolID).Updates(updates).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memperbarui user sekolah", err.Error())
+	}
 	var updated map[string]interface{}
-	a.DB.Table("users").Select("id, full_name, username, role, school_id, parent_email, phone_number, profile_image").Where("id = ?", id).Scan(&updated)
+	a.DB.Table("users").Select("id, full_name, username, role, school_id, parent_email, phone_number, profile_image, COALESCE(initial_password_ciphertext, '') AS initial_password_ciphertext").Where("id = ?", id).Scan(&updated)
+	attachDecodedInitialPassword(updated)
 	return utils.Success(c, 200, "User school updated successfully", updated)
+}
+
+func (a *AppContext) ResetUserSchoolPassword(c *fiber.Ctx) error {
+	id := c.Params("id")
+	schoolID := c.Locals("schoolID").(uint)
+
+	var current models.User
+	if err := a.DB.Where("id = ? AND school_id = ?", id, schoolID).First(&current).Error; err != nil {
+		return utils.Error(c, 404, "User school not found")
+	}
+
+	rawPassword := generateStudentPassword()
+	hashedPassword, encryptedPassword, err := hashAndStoreRawPassword(rawPassword)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal membuat password baru", err.Error())
+	}
+
+	updates := map[string]interface{}{
+		"password":                    hashedPassword,
+		"initial_password_ciphertext": encryptedPassword,
+		"session_version":             gorm.Expr("COALESCE(session_version, 0) + 1"),
+	}
+	if err := a.DB.Table("users").Where("id = ? AND school_id = ?", id, schoolID).Updates(updates).Error; err != nil {
+		return utils.Error(c, 500, "Gagal mereset password user sekolah", err.Error())
+	}
+
+	return utils.Success(c, 200, "Password berhasil direset", fiber.Map{
+		"id":               current.ID,
+		"username":         current.Username,
+		"role":             current.Role,
+		"full_name":        current.FullName,
+		"password":         rawPassword,
+		"school_id":        current.SchoolID,
+		"initial_password":  rawPassword,
+		"reset_by_username": c.Locals("username"),
+	})
 }
 func (a *AppContext) DeleteUserSchool(c *fiber.Ctx) error {
 	id := c.Params("id")
@@ -1401,16 +1953,16 @@ func (a *AppContext) DeleteUserSchool(c *fiber.Ctx) error {
 func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 	userID := c.Locals("userID").(uint)
 	var profile struct {
-		ID                      uint    `json:"id"`
-		FullName                *string `json:"full_name"`
-		Username                string  `json:"username"`
-		Role                    string  `json:"role"`
-		SchoolID                *uint   `json:"school_id"`
-		ParentEmail             *string `json:"parent_email"`
-		PhoneNumber             *string `json:"phone_number"`
-		ProfileImage            *string `json:"profile_image"`
-		FaceReferenceImage      *string `json:"face_reference_image"`
-		FaceReferenceDescriptor *string `json:"face_reference_descriptor"`
+		ID                        uint    `json:"id"`
+		FullName                  *string `json:"full_name"`
+		Username                  string  `json:"username"`
+		Role                      string  `json:"role"`
+		SchoolID                  *uint   `json:"school_id"`
+		ParentEmail               *string `json:"parent_email"`
+		PhoneNumber               *string `json:"phone_number"`
+		ProfileImage              *string `json:"profile_image"`
+		FaceReferenceImage        *string `json:"face_reference_image"`
+		FaceReferenceDescriptor   *string `json:"face_reference_descriptor"`
 		SchoolName                *string `json:"school_name"`
 		SchoolLogo                *string `json:"school_logo"`
 		InventoryModuleEnabled    bool    `json:"inventory_module_enabled"`
@@ -1591,8 +2143,9 @@ func (a *AppContext) CheckUsernameAvailability(c *fiber.Ctx) error {
 		return utils.Error(c, 400, "Username minimal 3 karakter")
 	}
 
+	query := a.DB.Table("users").Where("LOWER(username) = LOWER(?)", username)
 	var count int64
-	if err := a.DB.Table("users").Where("LOWER(username) = LOWER(?)", username).Count(&count).Error; err != nil {
+	if err := query.Count(&count).Error; err != nil {
 		return utils.Error(c, 500, "Gagal memeriksa username", err.Error())
 	}
 

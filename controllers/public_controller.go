@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"strings"
+
 	"github.com/gofiber/fiber/v2"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -47,20 +49,30 @@ func (a *AppContext) RegisterStudentPublic(c *fiber.Ctx) error {
 		return utils.Error(c, 401, "Link pendaftaran tidak valid atau sudah kadaluarsa")
 	}
 
+	username := strings.TrimSpace(body.Username)
+	if username == "" {
+		return utils.Error(c, 400, "Username wajib diisi")
+	}
+	if err := ensureUsernameAvailable(a.DB, username, 0); err != nil {
+		return utils.Error(c, 400, "Username sudah digunakan", err.Error())
+	}
+
 	var classItem models.Class
 	if err := a.DB.Where("id = ? AND school_id = ?", body.ClassID, schoolID).First(&classItem).Error; err != nil {
 		return utils.Error(c, 404, "Class not found")
 	}
 
 	hash, _ := bcrypt.GenerateFromPassword([]byte(body.Password), 8)
+	encryptedPassword, _ := encryptAccountPassword(body.Password)
 	user := models.User{
-		Username:    body.Username,
-		Password:    string(hash),
-		Role:        "SISWA",
-		SchoolID:    &schoolID,
-		ClassID:     &body.ClassID,
-		ParentEmail: body.ParentEmail,
-		PhoneNumber: body.PhoneNumber,
+		Username:                  username,
+		Password:                  string(hash),
+		InitialPasswordCiphertext: utils.StringPtr(encryptedPassword),
+		Role:                      "SISWA",
+		SchoolID:                  &schoolID,
+		ClassID:                   &body.ClassID,
+		ParentEmail:               body.ParentEmail,
+		PhoneNumber:               body.PhoneNumber,
 	}
 	if err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&user).Error; err != nil {

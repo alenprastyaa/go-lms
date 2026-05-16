@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -28,6 +29,103 @@ func (a *AppContext) GetStudents(c *fiber.Ctx) error {
 	q.Limit(limit).Offset(offset).Scan(&rows)
 
 	return utils.Success(c, 200, "Success Get Data Student", fiber.Map{"page": page, "limit": limit, "data": rows})
+}
+
+func (a *AppContext) GetStudentDetail(c *fiber.Ctx) error {
+	id := c.Params("id")
+	schoolID := c.Locals("schoolID").(uint)
+
+	var row struct {
+		ID                        uint    `gorm:"column:id"`
+		FullName                  string  `gorm:"column:full_name"`
+		Username                  string  `gorm:"column:username"`
+		ClassName                 string  `gorm:"column:class_name"`
+		ParentEmail               *string `gorm:"column:parent_email"`
+		PhoneNumber               *string `gorm:"column:phone_number"`
+		InitialPasswordCiphertext string  `gorm:"column:initial_password_ciphertext"`
+	}
+
+	if err := a.DB.Raw(`
+		SELECT
+			u.id,
+			COALESCE(u.full_name, '') AS full_name,
+			u.username,
+			COALESCE(cn.class_name, '') AS class_name,
+			u.parent_email,
+			u.phone_number,
+			COALESCE(u.initial_password_ciphertext, '') AS initial_password_ciphertext
+		FROM users u
+		LEFT JOIN class cn ON u.class_id = cn.id
+		WHERE u.id = ? AND u.school_id = ? AND u.role = 'SISWA'
+	`, id, schoolID).Scan(&row).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memuat detail siswa", err.Error())
+	}
+	if row.ID == 0 {
+		return utils.Error(c, 404, "Student not found")
+	}
+
+	password := "-"
+	passwordAvailable := false
+	if row.InitialPasswordCiphertext != "" {
+		if decrypted, err := decryptAccountPassword(row.InitialPasswordCiphertext); err == nil {
+			password = decrypted
+			passwordAvailable = true
+		}
+	}
+
+	return utils.Success(c, 200, "Success Get Student Detail", fiber.Map{
+		"id":                 row.ID,
+		"full_name":          row.FullName,
+		"username":           row.Username,
+		"class_name":         row.ClassName,
+		"parent_email":       row.ParentEmail,
+		"phone_number":       row.PhoneNumber,
+		"password":           password,
+		"password_available": passwordAvailable,
+	})
+}
+
+func (a *AppContext) ResetStudentPassword(c *fiber.Ctx) error {
+	id := c.Params("id")
+	schoolID := c.Locals("schoolID").(uint)
+
+	var current struct {
+		ID        uint    `gorm:"column:id"`
+		FullName  *string `gorm:"column:full_name"`
+		Username  string  `gorm:"column:username"`
+		SchoolID  *uint   `gorm:"column:school_id"`
+		Role      string  `gorm:"column:role"`
+	}
+	if err := a.DB.Raw(`SELECT id, full_name, username, school_id, role FROM users WHERE id = ? AND school_id = ? AND role = 'SISWA'`, id, schoolID).Scan(&current).Error; err != nil {
+		return utils.Error(c, 500, "Gagal memuat data siswa", err.Error())
+	}
+	if current.ID == 0 {
+		return utils.Error(c, 404, "Student not found")
+	}
+
+	rawPassword := generateStudentPassword()
+	hashedPassword, encryptedPassword, err := hashAndStoreRawPassword(rawPassword)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal membuat password baru", err.Error())
+	}
+
+	updates := map[string]interface{}{
+		"password":                    hashedPassword,
+		"initial_password_ciphertext": encryptedPassword,
+		"session_version":             gorm.Expr("COALESCE(session_version, 0) + 1"),
+	}
+	if err := a.DB.Table("users").Where("id = ? AND school_id = ? AND role = 'SISWA'", id, schoolID).Updates(updates).Error; err != nil {
+		return utils.Error(c, 500, "Gagal mereset password siswa", err.Error())
+	}
+
+	return utils.Success(c, 200, "Password siswa berhasil direset", fiber.Map{
+		"id":               current.ID,
+		"full_name":        current.FullName,
+		"username":         current.Username,
+		"password":         rawPassword,
+		"initial_password": rawPassword,
+		"password_available": true,
+	})
 }
 
 func (a *AppContext) EditStudent(c *fiber.Ctx) error {
@@ -57,7 +155,13 @@ func (a *AppContext) EditStudent(c *fiber.Ctx) error {
 	}
 	username := current.Username
 	if body.Username != nil {
-		username = *body.Username
+		username = strings.TrimSpace(*body.Username)
+		if username == "" {
+			return utils.Error(c, 400, "Username wajib diisi")
+		}
+		if err := ensureUsernameAvailable(a.DB, username, current.ID); err != nil {
+			return utils.Error(c, 400, "Username sudah digunakan", err.Error())
+		}
 	}
 	role := current.Role
 	if body.Role != nil {
@@ -126,14 +230,37 @@ func (a *AppContext) RegisterStudentByAdmin(c *fiber.Ctx) error {
 	if body.Role == "" {
 		body.Role = "SISWA"
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte(body.Password), 8)
+	existingUsernames, err := loadUsernameSet(a.DB)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal memeriksa username", err.Error())
+	}
+	fullName := ""
+	if body.FullName != nil {
+		fullName = strings.TrimSpace(*body.FullName)
+	}
+	username := strings.TrimSpace(body.Username)
+	if username == "" {
+		username = nextAvailableUsername(fullName, "", existingUsernames)
+	}
+	if username == "" {
+		return utils.Error(c, 400, "Username wajib diisi")
+	}
+	if err := ensureUsernameAvailable(a.DB, username, 0); err != nil {
+		return utils.Error(c, 400, "Username sudah digunakan", err.Error())
+	}
+	rawPassword := strings.TrimSpace(body.Password)
+	if rawPassword == "" {
+		rawPassword = generateStudentPassword()
+	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte(rawPassword), 8)
+	encryptedPassword, _ := encryptAccountPassword(rawPassword)
 	var row map[string]interface{}
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Raw(`
-			INSERT INTO users (full_name, username, password, role, school_id, class_id, parent_email, phone_number)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO users (full_name, username, password, role, school_id, class_id, parent_email, phone_number, initial_password_ciphertext)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			RETURNING id, full_name, username, role, school_id, class_id, parent_email, phone_number, profile_image
-		`, body.FullName, body.Username, string(hash), body.Role, schoolID, body.ClassID, body.ParentEmail, body.PhoneNumber).Scan(&row).Error; err != nil {
+		`, body.FullName, username, string(hash), body.Role, schoolID, body.ClassID, body.ParentEmail, body.PhoneNumber, encryptedPassword).Scan(&row).Error; err != nil {
 			return err
 		}
 		studentID := uint(utils.ToInt(fmt.Sprint(row["id"]), 0))
@@ -142,5 +269,6 @@ func (a *AppContext) RegisterStudentByAdmin(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.Error(c, 500, "Registration failed", err.Error())
 	}
+	row["password"] = rawPassword
 	return utils.Success(c, 201, "User registered successfully", row)
 }

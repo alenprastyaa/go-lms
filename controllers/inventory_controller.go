@@ -113,12 +113,13 @@ func (a *AppContext) GetSarprasDashboard(c *fiber.Ctx) error {
 			COALESCE(ii.code, '-') AS item_code,
 			COALESCE(u.full_name, u.username) AS borrower_name,
 			u.role AS borrower_role,
-			COALESCE(u.class_id::text, '-') AS borrower_class_id,
+			COALESCE(cl.class_name, '-') AS borrower_class_name,
 			COALESCE(t.full_name, t.username) AS teacher_name,
 			COALESCE(h.full_name, h.username) AS handled_by_name
 		FROM inventory_loans il
 		INNER JOIN inventory_items ii ON ii.id = il.item_id
 		INNER JOIN users u ON u.id = il.borrower_id
+		LEFT JOIN class cl ON cl.id = u.class_id
 		LEFT JOIN users t ON t.id = il.teacher_id
 		LEFT JOIN users h ON h.id = il.handled_by
 		WHERE il.school_id = ?

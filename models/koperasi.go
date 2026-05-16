@@ -73,3 +73,15 @@ type KoperasiOrderItem struct {
 }
 
 func (KoperasiOrderItem) TableName() string { return "koperasi_order_items" }
+
+type KoperasiCartItem struct {
+	ID        uint      `gorm:"column:id;primaryKey" json:"id"`
+	SchoolID  uint      `gorm:"column:school_id" json:"school_id"`
+	BuyerID   uint      `gorm:"column:buyer_id" json:"buyer_id"`
+	ProductID uint      `gorm:"column:product_id" json:"product_id"`
+	Quantity  int       `gorm:"column:quantity" json:"quantity"`
+	CreatedAt  time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt  time.Time `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (KoperasiCartItem) TableName() string { return "koperasi_cart_items" }
