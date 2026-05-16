@@ -37,7 +37,7 @@ func (a *AppContext) ensurePrivateChatPeer(schoolID uint, userID uint, peerID ui
 		SELECT u.id, u.username, u.full_name, u.role, u.profile_image, c.class_name
 		FROM users u
 		LEFT JOIN class c ON c.id = u.class_id
-		WHERE u.id = ? AND u.school_id = ? AND u.role IN ('ADMIN', 'GURU', 'SISWA')
+		WHERE u.id = ? AND u.school_id = ? AND u.role IN ('ADMIN', 'KOPERASI', 'GURU', 'SISWA')
 		LIMIT 1
 	`, peerID, schoolID).Scan(&peer)
 	if len(peer) == 0 {
@@ -118,7 +118,7 @@ func (a *AppContext) GetPrivateChatSummary(c *fiber.Ctx) error {
 				(m.sender_id = u.id AND m.recipient_id = @userID)
 			)
 		WHERE u.school_id = @schoolID
-		  AND u.role IN ('ADMIN', 'GURU', 'SISWA')
+		  AND u.role IN ('ADMIN', 'KOPERASI', 'GURU', 'SISWA')
 		GROUP BY u.id, u.username, u.full_name, u.role, u.profile_image, cls.class_name, pcr.last_read_message_id
 		ORDER BY last_message_at DESC NULLS LAST, COALESCE(NULLIF(u.full_name, ''), u.username) ASC
 		`, sql.Named("userID", userID), sql.Named("schoolID", schoolID)).Scan(&rows)
@@ -169,7 +169,7 @@ func (a *AppContext) SearchPrivateChatContacts(c *fiber.Ctx) error {
 		LEFT JOIN class c ON c.id = u.class_id
 		WHERE u.school_id = ?
 		  AND u.id <> ?
-		  AND u.role IN ('ADMIN', 'GURU', 'SISWA')
+		  AND u.role IN ('ADMIN', 'KOPERASI', 'GURU', 'SISWA')
 	`
 	args := []interface{}{schoolID, userID}
 	if keyword != "" {

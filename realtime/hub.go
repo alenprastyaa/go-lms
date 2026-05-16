@@ -32,6 +32,7 @@ type subscriber struct {
 	id        uint64
 	userID    uint
 	schoolID  uint
+	role      string
 	subjects  map[uint]struct{}
 	ch        chan sseEvent
 	closeOnce sync.Once
@@ -83,6 +84,7 @@ func (h *Hub) FiberHandler(c *fiber.Ctx) error {
 		id:       h.nextID.Add(1),
 		userID:   claims.UserID,
 		schoolID: claims.SchoolID,
+		role:     strings.ToUpper(strings.TrimSpace(claims.Role)),
 		subjects: subjects,
 		ch:       make(chan sseEvent, 64),
 	}
@@ -173,6 +175,46 @@ func (h *Hub) BroadcastPrivateChatReadUpdated(schoolID uint, ownerUserID uint, p
 	h.broadcastUserEvent("private-chat:read-updated", schoolID, []uint{ownerUserID, peerUserID}, payload)
 }
 
+func (h *Hub) BroadcastSchoolRoleEvent(eventName string, schoolID uint, roles []string, payload any) {
+	if h == nil || schoolID == 0 || len(roles) == 0 {
+		return
+	}
+
+	allowedRoles := make(map[string]struct{}, len(roles))
+	for _, role := range roles {
+		normalized := strings.ToUpper(strings.TrimSpace(role))
+		if normalized == "" {
+			continue
+		}
+		allowedRoles[normalized] = struct{}{}
+	}
+	if len(allowedRoles) == 0 {
+		return
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, sub := range h.subscribers {
+		if sub.schoolID != schoolID || sub.userID == 0 {
+			continue
+		}
+		if _, ok := allowedRoles[strings.ToUpper(strings.TrimSpace(sub.role))]; !ok {
+			continue
+		}
+
+		select {
+		case sub.ch <- sseEvent{Name: eventName, Data: data}:
+		default:
+		}
+	}
+}
+
 func (h *Hub) broadcastSubjectEvent(eventName string, subjectID any, payload any) {
 	if h == nil {
 		return
@@ -257,6 +299,7 @@ func (h *Hub) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		id:       h.nextID.Add(1),
 		userID:   claims.UserID,
 		schoolID: claims.SchoolID,
+		role:     strings.ToUpper(strings.TrimSpace(claims.Role)),
 		subjects: subjects,
 		ch:       make(chan sseEvent, 64),
 	}

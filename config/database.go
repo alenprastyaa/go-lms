@@ -63,6 +63,9 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS official_exam_module_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS koperasi_module_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS face_reference_image TEXT`).Error; err != nil {
 		return nil, err
 	}
@@ -72,7 +75,7 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check`).Error; err != nil {
 		return nil, err
 	}
-	if err := db.Exec(`ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('SUPER_ADMIN', 'ADMIN', 'SARPRAS', 'GURU', 'SISWA'))`).Error; err != nil {
+	if err := db.Exec(`ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('SUPER_ADMIN', 'ADMIN', 'SARPRAS', 'KOPERASI', 'GURU', 'SISWA'))`).Error; err != nil {
 		return nil, err
 	}
 	if err := db.Exec(`ALTER TABLE learning_submissions ADD COLUMN IF NOT EXISTS access_blocked BOOLEAN NOT NULL DEFAULT FALSE`).Error; err != nil {
@@ -221,8 +224,82 @@ func NewDatabase() (*gorm.DB, error) {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
+		`CREATE TABLE IF NOT EXISTS koperasi_products (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			name TEXT NOT NULL,
+			code TEXT NULL,
+			category TEXT NULL,
+			description TEXT NULL,
+			image_url TEXT NULL,
+			price BIGINT NOT NULL DEFAULT 0,
+			stock INT NOT NULL DEFAULT 0,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_by BIGINT NULL,
+			updated_by BIGINT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS koperasi_orders (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			order_number TEXT NOT NULL UNIQUE,
+			buyer_id BIGINT NOT NULL,
+			buyer_role TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'PENDING',
+			payment_method TEXT NULL,
+			payment_provider TEXT NULL,
+			payment_status TEXT NOT NULL DEFAULT 'CASH_DUE',
+			payment_request_id TEXT NULL,
+			payment_qr_string TEXT NULL,
+			payment_expires_at TIMESTAMP NULL,
+			note TEXT NULL,
+			total_amount BIGINT NOT NULL DEFAULT 0,
+			handled_by BIGINT NULL,
+			paid_at TIMESTAMP NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS koperasi_order_items (
+			id BIGSERIAL PRIMARY KEY,
+			order_id BIGINT NOT NULL,
+			product_id BIGINT NOT NULL,
+			quantity INT NOT NULL DEFAULT 1,
+			price BIGINT NOT NULL DEFAULT 0,
+			subtotal BIGINT NOT NULL DEFAULT 0,
+			product_name_snapshot TEXT NOT NULL,
+			product_code_snapshot TEXT NULL,
+			product_category_snapshot TEXT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS koperasi_payment_logs (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			order_id BIGINT NOT NULL,
+			event_type TEXT NOT NULL,
+			status TEXT NOT NULL,
+			payment_request_id TEXT NULL,
+			note TEXT NULL,
+			metadata TEXT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
 	}
 	for _, stmt := range curriculumStatements {
+		if err := db.Exec(stmt).Error; err != nil {
+			return nil, err
+		}
+	}
+
+	koperasiAlterStatements := []string{
+		`ALTER TABLE koperasi_orders ADD COLUMN IF NOT EXISTS payment_provider TEXT NULL`,
+		`ALTER TABLE koperasi_orders ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'CASH_DUE'`,
+		`ALTER TABLE koperasi_orders ADD COLUMN IF NOT EXISTS payment_request_id TEXT NULL`,
+		`ALTER TABLE koperasi_orders ADD COLUMN IF NOT EXISTS payment_qr_string TEXT NULL`,
+		`ALTER TABLE koperasi_orders ADD COLUMN IF NOT EXISTS payment_expires_at TIMESTAMP NULL`,
+		`ALTER TABLE koperasi_orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP NULL`,
+	}
+	for _, stmt := range koperasiAlterStatements {
 		if err := db.Exec(stmt).Error; err != nil {
 			return nil, err
 		}
@@ -259,6 +336,13 @@ func NewDatabase() (*gorm.DB, error) {
 		`CREATE INDEX IF NOT EXISTS idx_inventory_loans_item_status ON inventory_loans (item_id, status, borrowed_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_inventory_loans_borrower ON inventory_loans (borrower_id, borrowed_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_inventory_loans_teacher ON inventory_loans (teacher_id, borrowed_at)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_koperasi_products_school_code ON koperasi_products (school_id, code) WHERE code IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_koperasi_products_school_active ON koperasi_products (school_id, is_active, name)`,
+		`CREATE INDEX IF NOT EXISTS idx_koperasi_products_school_stock ON koperasi_products (school_id, stock, is_active)`,
+		`CREATE INDEX IF NOT EXISTS idx_koperasi_orders_school_status ON koperasi_orders (school_id, status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_koperasi_orders_buyer_created ON koperasi_orders (buyer_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_koperasi_payment_logs_school_order_created ON koperasi_payment_logs (school_id, order_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_koperasi_order_items_order ON koperasi_order_items (order_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance (user_id, attendance_date)`,
 		`CREATE INDEX IF NOT EXISTS idx_attendance_date_user ON attendance (attendance_date, user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_payment_receipt_user_created ON payment_receipt (user_id, created_at)`,

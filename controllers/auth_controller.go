@@ -96,7 +96,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 	var schoolName interface{} = nil
 	var schoolLogo interface{} = nil
 	if user.SchoolID != nil {
-		_ = a.DB.Select("name", "logo_url", "inventory_module_enabled", "official_exam_module_enabled").Where("id = ?", *user.SchoolID).First(&school).Error
+		_ = a.DB.Select("name", "logo_url", "inventory_module_enabled", "official_exam_module_enabled", "koperasi_module_enabled").Where("id = ?", *user.SchoolID).First(&school).Error
 		schoolName = school.Name
 		schoolLogo = school.LogoURL
 	}
@@ -105,6 +105,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 		"role": user.Role, "username": user.Username, "school_id": user.SchoolID, "school_name": schoolName, "school_logo": schoolLogo, "school_features": fiber.Map{
 			"inventory_module_enabled": school.InventoryModuleEnabled,
 			"official_exam_module_enabled": school.OfficialExamModuleEnabled,
+			"koperasi_module_enabled": school.KoperasiModuleEnabled,
 		}, "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
 	})
 }
@@ -1355,8 +1356,8 @@ func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ? AND school_id = ?", id, schoolID).First(&current).Error; err != nil {
 		return utils.Error(c, 404, "User school not found")
 	}
-	if current.Role != "ADMIN" && current.Role != "GURU" && current.Role != "SARPRAS" {
-		return utils.Error(c, 400, "Only school admin, teacher, and sarpras can be updated here")
+	if current.Role != "ADMIN" && current.Role != "GURU" && current.Role != "SARPRAS" && current.Role != "KOPERASI" {
+		return utils.Error(c, 400, "Only school admin, teacher, sarpras, and koperasi can be updated here")
 	}
 	nextUsername := current.Username
 	if body.Username != nil {
@@ -1390,8 +1391,8 @@ func (a *AppContext) DeleteUserSchool(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ? AND school_id = ?", id, schoolID).First(&current).Error; err != nil {
 		return utils.Error(c, 404, "User school not found")
 	}
-	if current.Role != "ADMIN" && current.Role != "GURU" && current.Role != "SARPRAS" {
-		return utils.Error(c, 400, "Only school admin, teacher, and sarpras can be deleted here")
+	if current.Role != "ADMIN" && current.Role != "GURU" && current.Role != "SARPRAS" && current.Role != "KOPERASI" {
+		return utils.Error(c, 400, "Only school admin, teacher, sarpras, and koperasi can be deleted here")
 	}
 	a.DB.Exec(`DELETE FROM users WHERE id = ? AND school_id = ?`, id, schoolID)
 	return utils.Success(c, 200, fmt.Sprintf(`User "%s" berhasil dihapus`, current.Username), nil)
@@ -1410,13 +1411,14 @@ func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 		ProfileImage            *string `json:"profile_image"`
 		FaceReferenceImage      *string `json:"face_reference_image"`
 		FaceReferenceDescriptor *string `json:"face_reference_descriptor"`
-		SchoolName              *string `json:"school_name"`
-		SchoolLogo              *string `json:"school_logo"`
-		InventoryModuleEnabled   bool    `json:"inventory_module_enabled"`
-		OfficialExamModuleEnabled bool   `json:"official_exam_module_enabled"`
+		SchoolName                *string `json:"school_name"`
+		SchoolLogo                *string `json:"school_logo"`
+		InventoryModuleEnabled    bool    `json:"inventory_module_enabled"`
+		OfficialExamModuleEnabled bool    `json:"official_exam_module_enabled"`
+		KoperasiModuleEnabled     bool    `json:"koperasi_module_enabled"`
 	}
 	err := a.DB.Table("users u").
-		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo, COALESCE(s.inventory_module_enabled, true) as inventory_module_enabled, COALESCE(s.official_exam_module_enabled, true) as official_exam_module_enabled").
+		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo, COALESCE(s.inventory_module_enabled, true) as inventory_module_enabled, COALESCE(s.official_exam_module_enabled, true) as official_exam_module_enabled, COALESCE(s.koperasi_module_enabled, true) as koperasi_module_enabled").
 		Joins("left join schools s on s.id = u.school_id").
 		Where("u.id = ?", userID).
 		Scan(&profile).Error

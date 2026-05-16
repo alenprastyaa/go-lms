@@ -26,6 +26,7 @@ func Register(app *fiber.App, db *gorm.DB, hub *realtime.Hub) {
 	registerGuru(api, ctx)
 	registerSiswa(api, ctx)
 	registerInventory(api, ctx)
+	registerKoperasi(api, ctx)
 }
 
 func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
@@ -111,7 +112,7 @@ func registerReceipt(api fiber.Router, ctx *controllers.AppContext) {
 }
 
 func registerPrivateChat(api fiber.Router, ctx *controllers.AppContext) {
-	r := api.Group("/private-chat", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "GURU", "SISWA"))
+	r := api.Group("/private-chat", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "KOPERASI", "GURU", "SISWA"))
 	r.Get("/summary", ctx.GetPrivateChatSummary)
 	r.Get("/contacts", ctx.SearchPrivateChatContacts)
 	r.Get("/:peerUserId/messages", ctx.GetPrivateChatMessages)
@@ -190,6 +191,25 @@ func registerInventory(api fiber.Router, ctx *controllers.AppContext) {
 	r.Post("/loans/:id/return", middlewares.RoleAllowed("ADMIN", "SARPRAS", "SISWA"), ctx.ReturnInventoryLoan)
 }
 
+func registerKoperasi(api fiber.Router, ctx *controllers.AppContext) {
+	d := api.Group("/dashboard", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
+	d.Get("/koperasi", middlewares.RoleAllowed("ADMIN", "KOPERASI", "GURU", "SARPRAS", "SISWA"), ctx.GetKoperasiDashboard)
+
+	r := api.Group("/koperasi", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "KOPERASI", "GURU", "SARPRAS", "SISWA"))
+	r.Get("/dashboard", ctx.GetKoperasiDashboard)
+	r.Get("/products", ctx.GetKoperasiProducts)
+	r.Post("/products", middlewares.RoleAllowed("ADMIN", "KOPERASI"), ctx.CreateKoperasiProduct)
+	r.Put("/products/:id", middlewares.RoleAllowed("ADMIN", "KOPERASI"), ctx.UpdateKoperasiProduct)
+	r.Delete("/products/:id", middlewares.RoleAllowed("ADMIN", "KOPERASI"), ctx.DeleteKoperasiProduct)
+	r.Get("/orders", ctx.GetKoperasiOrders)
+	r.Get("/orders/:id", ctx.GetKoperasiOrderByID)
+	r.Post("/orders", ctx.CreateKoperasiOrder)
+	r.Post("/orders/:id/simulate-payment", ctx.SimulateKoperasiSandboxPayment)
+	r.Post("/orders/:id/reissue-payment", ctx.ReissueKoperasiPayment)
+	r.Put("/orders/:id/status", ctx.UpdateKoperasiOrderStatus)
+	r.Get("/reports/summary", middlewares.RoleAllowed("ADMIN", "KOPERASI"), ctx.GetKoperasiReportSummary)
+}
+
 func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	d := api.Group("/dashboard", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	d.Get("/superadmin", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.GetSuperAdminDashboard)
@@ -203,6 +223,7 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	a.Post("/reset", ctx.ResetAdminScope)
 
 	api.Post("/billing/xendit/webhook", ctx.XenditWebhook)
+	api.Post("/koperasi/xendit/webhook", ctx.XenditKoperasiWebhook)
 
 	b := api.Group("/billing", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	b.Get("/current", middlewares.RoleAllowed("ADMIN"), ctx.GetCurrentSchoolBilling)
