@@ -134,7 +134,7 @@ func (a *AppContext) GetPrivateChatSummary(c *fiber.Ctx) error {
 			"class_name":           row.ClassName,
 			"last_read_message_id": row.LastReadMessageID,
 			"unread_count":         row.UnreadCount,
-			"last_message_at":      row.LastMessageAt,
+			"last_message_at":      normalizeJakartaDateTimeValue(row.LastMessageAt),
 			"last_message":         normalizePrivateChatMessagePreview(row.LastMessage, row.LastMessageType, ""),
 			"last_message_type":    row.LastMessageType,
 			"last_sender_id":       row.LastSenderID,
@@ -217,6 +217,7 @@ func (a *AppContext) GetPrivateChatMessages(c *fiber.Ctx) error {
 		ORDER BY m.created_at ASC, m.id ASC
 		LIMIT 150
 	`, schoolID, userID, peerID, peerID, userID).Scan(&rows)
+	normalizeJakartaDateTimeRows(rows, "created_at", "edited_at")
 
 	return utils.Success(c, 200, "Success Get Private Chat Messages", rows)
 }
@@ -270,6 +271,7 @@ func (a *AppContext) CreatePrivateChatMessage(c *fiber.Ctx) error {
 		attachmentSize = utils.ToInt(c.FormValue("attachment_size"), 0)
 	}
 	attachment := strings.TrimSpace(body.AttachmentURL)
+	attachmentPreviewURL := ""
 	if f, err := c.FormFile("attachment"); err == nil && f != nil {
 		uploaded, upErr := utils.SaveUploadedChatAttachment(c, f)
 		if upErr == nil {
@@ -277,6 +279,7 @@ func (a *AppContext) CreatePrivateChatMessage(c *fiber.Ctx) error {
 			attachmentName = strings.TrimSpace(uploaded.FileName)
 			attachmentMimeType = strings.TrimSpace(uploaded.ContentType)
 			attachmentSize = uploaded.Size
+			attachmentPreviewURL = strings.TrimSpace(uploaded.PreviewURL)
 		} else {
 			return utils.Error(c, 400, upErr.Error())
 		}
@@ -301,12 +304,13 @@ func (a *AppContext) CreatePrivateChatMessage(c *fiber.Ctx) error {
 				message,
 				message_type,
 				attachment_url,
+				attachment_preview_url,
 				attachment_name,
 				attachment_mime_type,
 				attachment_size,
 				created_at
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
 			RETURNING *
 		)
 		SELECT
@@ -318,11 +322,12 @@ func (a *AppContext) CreatePrivateChatMessage(c *fiber.Ctx) error {
 		FROM inserted i
 		LEFT JOIN users sender ON sender.id = i.sender_id
 		LIMIT 1
-	`, schoolID, userID, peerID, message, messageType, nullIfEmpty(attachment), nullIfEmpty(attachmentName), nullIfEmpty(attachmentMimeType), nullIfZero(attachmentSize)).Scan(&row)
+	`, schoolID, userID, peerID, message, messageType, nullIfEmpty(attachment), nullIfEmpty(attachmentPreviewURL), nullIfEmpty(attachmentName), nullIfEmpty(attachmentMimeType), nullIfZero(attachmentSize)).Scan(&row)
 	if len(row) == 0 {
 		return utils.Error(c, 500, "Failed to create private chat message")
 	}
 
+	normalizeJakartaDateTimeFields(row, "created_at", "edited_at")
 	row["peer_user_id"] = peerID
 	row["peer_username"] = peer["username"]
 	row["peer_full_name"] = peer["full_name"]
@@ -333,6 +338,75 @@ func (a *AppContext) CreatePrivateChatMessage(c *fiber.Ctx) error {
 	}
 
 	return utils.Success(c, 201, "Success Create Private Chat Message", row)
+}
+
+func (a *AppContext) UpdatePrivateChatMessage(c *fiber.Ctx) error {
+	userID := c.Locals("userID").(uint)
+	schoolID := c.Locals("schoolID").(uint)
+	peerID := uint(utils.ToInt(c.Params("peerUserId"), 0))
+	messageID := uint(utils.ToInt(c.Params("messageId"), 0))
+
+	if _, err := a.ensurePrivateChatPeer(schoolID, userID, peerID); err != nil {
+		return utils.Error(c, err.(*fiber.Error).Code, err.Error())
+	}
+	if messageID == 0 {
+		return utils.Error(c, 400, "message id is required")
+	}
+
+	var body struct {
+		Message string `json:"message"`
+		Text    string `json:"text"`
+	}
+	_ = c.BodyParser(&body)
+
+	message := strings.TrimSpace(body.Message)
+	if message == "" {
+		message = strings.TrimSpace(body.Text)
+	}
+	if message == "" {
+		message = strings.TrimSpace(c.FormValue("message"))
+	}
+	if message == "" {
+		message = strings.TrimSpace(c.FormValue("text"))
+	}
+	if message == "" {
+		return utils.Error(c, 400, "message is required")
+	}
+
+	var row map[string]interface{}
+	a.DB.Raw(`
+		WITH updated AS (
+			UPDATE private_chat_messages
+			SET message = ?, edited_at = NOW()
+			WHERE school_id = ?
+			  AND id = ?
+			  AND sender_id = ?
+			  AND recipient_id = ?
+			RETURNING *
+		)
+		SELECT
+			u.*,
+			sender.username AS sender_name,
+			sender.full_name AS sender_full_name,
+			sender.role AS sender_role,
+			sender.profile_image AS sender_profile_image
+		FROM updated u
+		LEFT JOIN users sender ON sender.id = u.sender_id
+		LIMIT 1
+	`, message, schoolID, messageID, userID, peerID).Scan(&row)
+	if len(row) == 0 {
+		return utils.Error(c, 404, "private chat message not found")
+	}
+
+	normalizeJakartaDateTimeFields(row, "created_at", "edited_at")
+	row["peer_user_id"] = peerID
+	row["origin_client_id"] = strings.TrimSpace(c.FormValue("client_id"))
+
+	if a.Realtime != nil {
+		a.Realtime.BroadcastPrivateChatMessageUpdated(schoolID, userID, peerID, row)
+	}
+
+	return utils.Success(c, 200, "Success Update Private Chat Message", row)
 }
 
 func (a *AppContext) MarkPrivateChatAsRead(c *fiber.Ctx) error {

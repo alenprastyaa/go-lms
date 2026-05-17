@@ -159,6 +159,10 @@ func (h *Hub) BroadcastSubjectChatMessage(subjectID any, payload any) {
 	h.broadcastSubjectEvent("learning-chat:new-message", subjectID, payload)
 }
 
+func (h *Hub) BroadcastSubjectChatMessageUpdated(subjectID any, payload any) {
+	h.broadcastSubjectEvent("learning-chat:message-updated", subjectID, payload)
+}
+
 func (h *Hub) BroadcastSubjectReadUpdated(subjectID any, payload any) {
 	h.broadcastSubjectEvent("learning-chat:read-updated", subjectID, payload)
 }
@@ -169,6 +173,10 @@ func (h *Hub) BroadcastSubjectTyping(subjectID any, payload any) {
 
 func (h *Hub) BroadcastPrivateChatMessage(schoolID uint, senderID uint, recipientID uint, payload any) {
 	h.broadcastUserEvent("private-chat:new-message", schoolID, []uint{senderID, recipientID}, payload)
+}
+
+func (h *Hub) BroadcastPrivateChatMessageUpdated(schoolID uint, senderID uint, recipientID uint, payload any) {
+	h.broadcastUserEvent("private-chat:message-updated", schoolID, []uint{senderID, recipientID}, payload)
 }
 
 func (h *Hub) BroadcastPrivateChatReadUpdated(schoolID uint, ownerUserID uint, peerUserID uint, payload any) {

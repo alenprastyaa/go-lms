@@ -13,6 +13,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -30,6 +31,10 @@ type UploadedAsset struct {
 	FileName    string
 	ContentType string
 	Size        int
+	PreviewURL  string
+	PreviewName string
+	PreviewType string
+	PreviewSize int
 }
 
 func SaveUploadedFile(c *fiber.Ctx, fh *multipart.FileHeader) (string, error) {
@@ -105,12 +110,83 @@ func SaveUploadedChatAttachment(c *fiber.Ctx, fh *multipart.FileHeader) (*Upload
 		return nil, err
 	}
 
-	return &UploadedAsset{
+	asset := &UploadedAsset{
 		URL:         url,
 		FileName:    normalizedName,
 		ContentType: normalizedType,
 		Size:        len(normalizedContent),
-	}, nil
+	}
+
+	if isPDFChatAttachment(normalizedType, normalizedName) {
+		if previewContent, previewName, previewType, previewErr := generatePDFPreview(content, normalizedName); previewErr == nil {
+			if previewURL, uploadErr := uploadBytesToR2(c.Context(), previewContent, previewName, previewType); uploadErr == nil {
+				asset.PreviewURL = previewURL
+				asset.PreviewName = previewName
+				asset.PreviewType = previewType
+				asset.PreviewSize = len(previewContent)
+			}
+		}
+	}
+
+	return asset, nil
+}
+
+func isPDFChatAttachment(contentType, fileName string) bool {
+	if strings.Contains(strings.ToLower(strings.TrimSpace(contentType)), "application/pdf") {
+		return true
+	}
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(fileName)), ".pdf")
+}
+
+func generatePDFPreview(content []byte, originalName string) ([]byte, string, string, error) {
+	if len(content) == 0 {
+		return nil, "", "", fmt.Errorf("pdf content is empty")
+	}
+
+	tempDir, err := os.MkdirTemp("", "chat-pdf-preview-*")
+	if err != nil {
+		return nil, "", "", err
+	}
+	defer os.RemoveAll(tempDir)
+
+	inputPath := filepath.Join(tempDir, "input.pdf")
+	if err := os.WriteFile(inputPath, content, 0o600); err != nil {
+		return nil, "", "", err
+	}
+
+	outputPrefix := filepath.Join(tempDir, "preview")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(
+		ctx,
+		"pdftoppm",
+		"-f", "1",
+		"-l", "1",
+		"-singlefile",
+		"-jpeg",
+		"-scale-to", "480",
+		inputPath,
+		outputPrefix,
+	)
+	if output, runErr := cmd.CombinedOutput(); runErr != nil {
+		return nil, "", "", fmt.Errorf("failed to generate pdf preview: %w", runErr)
+	} else if len(output) == 0 {
+		// no-op
+	}
+
+	previewPath := outputPrefix + ".jpg"
+	previewContent, err := os.ReadFile(previewPath)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	baseName := strings.TrimSuffix(strings.TrimSpace(filepath.Base(originalName)), filepath.Ext(originalName))
+	if baseName == "" {
+		baseName = "pdf-preview"
+	}
+
+	return previewContent, fmt.Sprintf("%s-preview.jpg", baseName), "image/jpeg", nil
 }
 
 func uploadBytesToR2(ctx context.Context, content []byte, originalName, contentType string) (string, error) {

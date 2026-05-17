@@ -41,6 +41,51 @@ type xenditPaymentRequest struct {
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
+func normalizeSchoolBillingModel(billing *models.SchoolBilling) {
+	if billing == nil {
+		return
+	}
+
+	if billing.DueDate != nil {
+		converted := reinterpretAsJakartaClock(*billing.DueDate)
+		billing.DueDate = &converted
+	}
+	if billing.CreatedAt != nil {
+		converted := reinterpretAsJakartaClock(*billing.CreatedAt)
+		billing.CreatedAt = &converted
+	}
+	if billing.UpdatedAt != nil {
+		converted := reinterpretAsJakartaClock(*billing.UpdatedAt)
+		billing.UpdatedAt = &converted
+	}
+}
+
+func normalizeSchoolInvoiceModel(invoice *models.SchoolInvoice) {
+	if invoice == nil {
+		return
+	}
+
+	invoice.DueDate = reinterpretAsJakartaClock(invoice.DueDate)
+	if invoice.PaidAt != nil {
+		converted := reinterpretAsJakartaClock(*invoice.PaidAt)
+		invoice.PaidAt = &converted
+	}
+	if invoice.CreatedAt != nil {
+		converted := reinterpretAsJakartaClock(*invoice.CreatedAt)
+		invoice.CreatedAt = &converted
+	}
+	if invoice.UpdatedAt != nil {
+		converted := reinterpretAsJakartaClock(*invoice.UpdatedAt)
+		invoice.UpdatedAt = &converted
+	}
+}
+
+func normalizeSchoolInvoiceModels(items []models.SchoolInvoice) {
+	for index := range items {
+		normalizeSchoolInvoiceModel(&items[index])
+	}
+}
+
 func (a *AppContext) GetSchoolBillingSettings(c *fiber.Ctx) error {
 	schoolID := uint(utils.ToInt(c.Params("schoolId"), 0))
 	if schoolID == 0 {
@@ -54,6 +99,7 @@ func (a *AppContext) GetSchoolBillingSettings(c *fiber.Ctx) error {
 		}
 		return utils.Error(c, 500, "Gagal memuat billing sekolah", err.Error())
 	}
+	normalizeSchoolBillingModel(&billing)
 	return utils.Success(c, 200, "Success Get Billing Settings", billing)
 }
 
@@ -89,7 +135,7 @@ func (a *AppContext) UpsertSchoolBillingSettings(c *fiber.Ctx) error {
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return utils.Error(c, 500, "Gagal memuat billing sekolah", err.Error())
 	}
-	now := time.Now()
+	now := jakartaNow()
 	if err == gorm.ErrRecordNotFound {
 		billing = models.SchoolBilling{
 			SchoolID:    schoolID,
@@ -105,6 +151,7 @@ func (a *AppContext) UpsertSchoolBillingSettings(c *fiber.Ctx) error {
 		if err := a.DB.Create(&billing).Error; err != nil {
 			return utils.Error(c, 500, "Gagal membuat billing sekolah", err.Error())
 		}
+		normalizeSchoolBillingModel(&billing)
 		return utils.Success(c, 201, "Billing sekolah berhasil dibuat", billing)
 	}
 
@@ -123,6 +170,7 @@ func (a *AppContext) UpsertSchoolBillingSettings(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ?", billing.ID).First(&billing).Error; err != nil {
 		return utils.Error(c, 500, "Gagal memuat billing sekolah", err.Error())
 	}
+	normalizeSchoolBillingModel(&billing)
 	return utils.Success(c, 200, "Billing sekolah berhasil diperbarui", billing)
 }
 
@@ -150,6 +198,7 @@ func (a *AppContext) GetCurrentSchoolBilling(c *fiber.Ctx) error {
 		}
 		return utils.Error(c, 500, "Gagal memuat billing sekolah", err.Error())
 	}
+	normalizeSchoolBillingModel(&billing)
 	return utils.Success(c, 200, "Success Get Current School Billing", billing)
 }
 
@@ -179,6 +228,7 @@ func (a *AppContext) CreateSchoolInvoice(c *fiber.Ctx) error {
 	if err := a.DB.Create(&invoice).Error; err != nil {
 		return utils.Error(c, 500, "Gagal membuat invoice", err.Error())
 	}
+	normalizeSchoolInvoiceModel(&invoice)
 	return utils.Success(c, 201, "Invoice berhasil dibuat", invoice)
 }
 
@@ -188,6 +238,7 @@ func (a *AppContext) GetSchoolInvoices(c *fiber.Ctx) error {
 	if err := a.DB.Where("school_id = ?", schoolID).Order("id desc").Find(&items).Error; err != nil {
 		return utils.Error(c, 500, "Gagal memuat invoice", err.Error())
 	}
+	normalizeSchoolInvoiceModels(items)
 	return utils.Success(c, 200, "Success Get Invoices", items)
 }
 
@@ -213,6 +264,7 @@ func (a *AppContext) GetCurrentSchoolInvoices(c *fiber.Ctx) error {
 	if err := a.DB.Where("school_id = ?", schoolID).Order("id desc").Find(&items).Error; err != nil {
 		return utils.Error(c, 500, "Gagal memuat invoice", err.Error())
 	}
+	normalizeSchoolInvoiceModels(items)
 	return utils.Success(c, 200, "Success Get Current School Invoices", items)
 }
 
@@ -230,7 +282,7 @@ func (a *AppContext) CreateMidtransPaymentForInvoice(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Gagal membuat pembayaran Xendit", err.Error())
 	}
 
-	now := time.Now()
+	now := jakartaNow()
 	updates := map[string]interface{}{
 		"snap_token":        nil,
 		"transaction_id":    xenditResp.SessionID,
@@ -242,6 +294,7 @@ func (a *AppContext) CreateMidtransPaymentForInvoice(c *fiber.Ctx) error {
 	}
 
 	invoice.SnapRedirectURL = &xenditResp.PaymentURL
+	normalizeSchoolInvoiceModel(&invoice)
 	return utils.Success(c, 200, "Success Create Xendit Payment", fiber.Map{
 		"invoice":      invoice,
 		"redirect_url": xenditResp.PaymentURL,
@@ -318,12 +371,12 @@ func (a *AppContext) XenditWebhook(c *fiber.Ctx) error {
 
 	updates := map[string]interface{}{
 		"payment_method": "xendit",
-		"updated_at":     time.Now(),
+		"updated_at":     jakartaNow(),
 	}
 	switch status {
 	case "paid", "completed", "success", "settled", "settlement", "succeeded", "successfully completed", "payment_session.completed":
 		updates["status"] = "PAID"
-		now := time.Now()
+		now := jakartaNow()
 		updates["paid_at"] = &now
 	case "expired", "expire", "failed", "cancel", "cancelled", "canceled", "rejected", "payment_session.expired", "payment_session.canceled":
 		updates["status"] = strings.ToUpper(status)
@@ -460,12 +513,12 @@ func (a *AppContext) SyncXenditInvoiceStatus(c *fiber.Ctx) error {
 	normalized := strings.ToLower(strings.TrimSpace(status))
 	updates := map[string]interface{}{
 		"payment_method": "xendit",
-		"updated_at":     time.Now(),
+		"updated_at":     jakartaNow(),
 	}
 	switch normalized {
 	case "completed", "success", "succeeded", "paid", "settlement", "settled":
 		updates["status"] = "PAID"
-		now := time.Now()
+		now := jakartaNow()
 		updates["paid_at"] = &now
 	case "expired", "expire", "canceled", "cancelled", "failed", "rejected":
 		updates["status"] = strings.ToUpper(normalized)
@@ -480,6 +533,7 @@ func (a *AppContext) SyncXenditInvoiceStatus(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ?", invoice.ID).First(&invoice).Error; err != nil {
 		return utils.Error(c, 500, "Gagal memuat invoice", err.Error())
 	}
+	normalizeSchoolInvoiceModel(&invoice)
 
 	return utils.Success(c, 200, "Invoice berhasil disinkronkan", invoice)
 }
@@ -507,12 +561,12 @@ func (a *AppContext) SyncXenditInvoiceStatusByReference(c *fiber.Ctx) error {
 	normalized := strings.ToLower(strings.TrimSpace(status))
 	updates := map[string]interface{}{
 		"payment_method": "xendit",
-		"updated_at":     time.Now(),
+		"updated_at":     jakartaNow(),
 	}
 	switch normalized {
 	case "completed", "success", "succeeded", "paid", "settlement", "settled":
 		updates["status"] = "PAID"
-		now := time.Now()
+		now := jakartaNow()
 		updates["paid_at"] = &now
 	case "expired", "expire", "canceled", "cancelled", "failed", "rejected":
 		updates["status"] = strings.ToUpper(normalized)
@@ -526,6 +580,7 @@ func (a *AppContext) SyncXenditInvoiceStatusByReference(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ?", invoice.ID).First(&invoice).Error; err != nil {
 		return utils.Error(c, 500, "Gagal memuat invoice", err.Error())
 	}
+	normalizeSchoolInvoiceModel(&invoice)
 
 	return utils.Success(c, 200, "Invoice berhasil disinkronkan", invoice)
 }
@@ -614,9 +669,9 @@ func fetchXenditSessionStatus(sessionID string) (string, error) {
 }
 
 func nextBillingDueDate(dayOfMonth int) time.Time {
-	now := time.Now()
+	now := jakartaNow()
 	year, month, _ := now.Date()
-	location := now.Location()
+	location := jakartaLocation()
 	due := time.Date(year, month, dayOfMonth, 23, 59, 59, 0, location)
 	if !due.After(now) {
 		due = due.AddDate(0, 1, 0)
@@ -629,7 +684,7 @@ func parseBillingDueDate(raw string) (*time.Time, error) {
 	if trimmed == "" {
 		return nil, fmt.Errorf("Tanggal jatuh tempo wajib diisi")
 	}
-	parsed, err := time.ParseInLocation("2006-01-02", trimmed, time.Local)
+	parsed, err := time.ParseInLocation("2006-01-02", trimmed, jakartaLocation())
 	if err != nil {
 		return nil, fmt.Errorf("Format tanggal jatuh tempo tidak valid")
 	}

@@ -28,6 +28,7 @@ func (a *AppContext) CreateSchool(c *fiber.Ctx) error {
 	school := models.School{
 		Name:                      name,
 		InventoryModuleEnabled:    true,
+		AttendanceModuleEnabled:   true,
 		OfficialExamModuleEnabled: true,
 		KoperasiModuleEnabled:     true,
 	}
@@ -83,6 +84,9 @@ func (a *AppContext) UpdateSchool(c *fiber.Ctx) error {
 	if v := strings.TrimSpace(c.FormValue("inventory_module_enabled")); v != "" {
 		updates["inventory_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
 	}
+	if v := strings.TrimSpace(c.FormValue("attendance_module_enabled")); v != "" {
+		updates["attendance_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
+	}
 	if v := strings.TrimSpace(c.FormValue("official_exam_module_enabled")); v != "" {
 		updates["official_exam_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
 	}
@@ -119,6 +123,9 @@ func (a *AppContext) UpdateSchoolModules(c *fiber.Ctx) error {
 	updates := map[string]interface{}{}
 	if v, ok := parseBoolFormValue(c.FormValue("inventory_module_enabled")); ok {
 		updates["inventory_module_enabled"] = v
+	}
+	if v, ok := parseBoolFormValue(c.FormValue("attendance_module_enabled")); ok {
+		updates["attendance_module_enabled"] = v
 	}
 	if v, ok := parseBoolFormValue(c.FormValue("official_exam_module_enabled")); ok {
 		updates["official_exam_module_enabled"] = v
@@ -269,6 +276,7 @@ func schoolListQuery(whereClause string) string {
 			s.name,
 			s.logo_url,
 			COALESCE(s.inventory_module_enabled, true) AS inventory_module_enabled,
+			COALESCE(s.attendance_module_enabled, true) AS attendance_module_enabled,
 			COALESCE(s.official_exam_module_enabled, true) AS official_exam_module_enabled,
 			COALESCE(s.koperasi_module_enabled, true) AS koperasi_module_enabled,
 			COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END)::int AS total_admins,
@@ -285,7 +293,7 @@ func schoolListQuery(whereClause string) string {
 		LEFT JOIN learning_subjects ls ON ls.school_id = s.id
 		LEFT JOIN academic_years ay ON ay.school_id = s.id
 		%s
-		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.official_exam_module_enabled, s.koperasi_module_enabled
+		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.attendance_module_enabled, s.official_exam_module_enabled, s.koperasi_module_enabled
 	`, whereClause)
 }
 

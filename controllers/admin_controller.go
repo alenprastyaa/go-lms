@@ -221,10 +221,25 @@ func (a *AppContext) GetSuperAdminDashboard(c *fiber.Ctx) error {
 	`).Scan(&recentReceipts)
 	normalizeReceiptMaps(recentReceipts)
 
+	var announcements []announcementItem
+	a.DB.Raw(`
+		SELECT
+			sa.id, sa.school_id, sa.title, sa.content, sa.target_audience, sa.status,
+			sa.reviewed_at, sa.published_at, sa.deactivated_at, sa.created_by, sa.updated_by,
+			sa.created_at, sa.updated_at
+		FROM school_announcements sa
+		WHERE sa.status = ?
+		  AND (sa.target_audience = ? OR sa.target_audience = ?)
+		ORDER BY COALESCE(sa.published_at, sa.updated_at, sa.created_at) DESC, sa.id DESC
+		LIMIT 3
+	`, announcementStatusActive, announcementTargetAll, announcementTargetSuperAdmin).Scan(&announcements)
+	normalizeAnnouncementItems(announcements)
+
 	return utils.Success(c, 200, "Success Get Super Admin Dashboard", fiber.Map{
-		"generatedAt":      time.Now().UTC().Format(time.RFC3339),
+		"generatedAt":      jakartaNow().Format(time.RFC3339),
 		"overview":         overview,
 		"schools":          schools,
+		"announcements":    announcements,
 		"schoolAlerts":     recentOrEmpty(schoolAlerts),
 		"recentAdmins":     recentOrEmpty(recentAdmins),
 		"recentAttendance": recentAttendance,
@@ -301,6 +316,12 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 	`, schoolID).Scan(&recentReceipts)
 	normalizeReceiptMaps(recentReceipts)
 
+	announcements, err := a.fetchAnnouncementsForSchool(schoolID, "ADMIN", false, 3)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal memuat pengumuman dashboard", err.Error())
+	}
+	normalizeAnnouncementItems(announcements)
+
 	var lockedSchools []map[string]interface{}
 	a.DB.Raw(`
 		SELECT
@@ -318,9 +339,10 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 	`).Scan(&lockedSchools)
 
 	return utils.Success(c, 200, "Success Get Admin Dashboard", fiber.Map{
-		"generatedAt":      time.Now().UTC().Format(time.RFC3339),
+		"generatedAt":      jakartaNow().Format(time.RFC3339),
 		"school":           school,
 		"overview":         overview,
+		"announcements":    announcements,
 		"classes":          recentOrEmpty(classes),
 		"recentAttendance": recentOrEmpty(recentAttendance),
 		"recentReceipts":   recentOrEmpty(recentReceipts),
@@ -362,7 +384,7 @@ func (a *AppContext) SendHomeroomAttendanceReport(c *fiber.Ctx) error {
 			"target":          target,
 			"success":         ok,
 			"error":           ternary(!ok, "Email wali kelas belum tersedia", nil),
-			"attendance_date": time.Now().Format("2006-01-02"),
+			"attendance_date": currentJakartaDate().Format("2006-01-02"),
 		})
 	}
 
@@ -371,7 +393,7 @@ func (a *AppContext) SendHomeroomAttendanceReport(c *fiber.Ctx) error {
 		"success_count": successCount,
 		"failed_count":  failedCount,
 		"results":       results,
-		"generated_at":  time.Now().UTC().Format(time.RFC3339),
+		"generated_at":  jakartaNow().Format(time.RFC3339),
 	})
 }
 
@@ -446,7 +468,7 @@ func (a *AppContext) SendHomeroomAttendanceWhatsAppReport(c *fiber.Ctx) error {
 		"present_names":   report.PresentNames,
 		"absent_count":    len(report.AbsentNames),
 		"absent_names":    report.AbsentNames,
-		"generated_at":    time.Now().UTC().Format(time.RFC3339),
+		"generated_at":    jakartaNow().Format(time.RFC3339),
 		"provider_data":   sendResp,
 	})
 }
@@ -805,7 +827,7 @@ func (a *AppContext) RunAdminLoadTest(c *fiber.Ctx) error {
 		"max_duration_ms":     math.Round(maxDurationMs*100) / 100,
 		"p95_duration_ms":     math.Round(p95DurationMs*100) / 100,
 		"error_samples":       errorSamples,
-		"executed_at":         time.Now().UTC().Format(time.RFC3339),
+		"executed_at":         jakartaNow().Format(time.RFC3339),
 	})
 }
 
@@ -929,7 +951,7 @@ func (a *AppContext) RunAdminLoginLoadTest(c *fiber.Ctx) error {
 		"max_duration_ms":     math.Round(maxDurationMs*100) / 100,
 		"p95_duration_ms":     math.Round(p95DurationMs*100) / 100,
 		"error_samples":       errorSamples,
-		"executed_at":         time.Now().UTC().Format(time.RFC3339),
+		"executed_at":         jakartaNow().Format(time.RFC3339),
 	})
 }
 

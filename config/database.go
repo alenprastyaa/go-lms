@@ -66,6 +66,9 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS inventory_module_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS attendance_module_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS official_exam_module_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
 		return nil, err
 	}
@@ -186,6 +189,21 @@ func NewDatabase() (*gorm.DB, error) {
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (owner_user_id, peer_user_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS school_announcements (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			title TEXT NOT NULL,
+			content TEXT NOT NULL,
+			target_audience TEXT NOT NULL DEFAULT 'ALL',
+			status TEXT NOT NULL DEFAULT 'DRAFT',
+			reviewed_at TIMESTAMP NULL,
+			published_at TIMESTAMP NULL,
+			deactivated_at TIMESTAMP NULL,
+			created_by BIGINT NULL,
+			updated_by BIGINT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE TABLE IF NOT EXISTS student_class_enrollments (
 			id BIGSERIAL PRIMARY KEY,
 			school_id BIGINT NOT NULL,
@@ -305,6 +323,18 @@ func NewDatabase() (*gorm.DB, error) {
 		)`,
 	}
 	for _, stmt := range curriculumStatements {
+		if err := db.Exec(stmt).Error; err != nil {
+			return nil, err
+		}
+	}
+
+	chatAlterStatements := []string{
+		`ALTER TABLE IF EXISTS private_chat_messages ADD COLUMN IF NOT EXISTS attachment_preview_url TEXT NULL`,
+		`ALTER TABLE IF EXISTS learning_chat_messages ADD COLUMN IF NOT EXISTS attachment_preview_url TEXT NULL`,
+		`ALTER TABLE IF EXISTS private_chat_messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP NULL`,
+		`ALTER TABLE IF EXISTS learning_chat_messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP NULL`,
+	}
+	for _, stmt := range chatAlterStatements {
 		if err := db.Exec(stmt).Error; err != nil {
 			return nil, err
 		}

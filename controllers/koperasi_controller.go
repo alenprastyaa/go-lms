@@ -714,10 +714,16 @@ func (a *AppContext) GetKoperasiDashboard(c *fiber.Ctx) error {
 		koperasiOrderResponseAugment(order)
 	}
 
+	announcements, err := a.fetchAnnouncementsForSchool(schoolID, "KOPERASI", false, 3)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal memuat pengumuman dashboard", err.Error())
+	}
+
 	return utils.Success(c, 200, "Success Get Koperasi Dashboard", fiber.Map{
-		"generatedAt":   time.Now().UTC().Format(time.RFC3339),
+		"generatedAt":   jakartaNow().Format(time.RFC3339),
 		"school":        school,
 		"overview":      overview,
+		"announcements": announcements,
 		"lowStockItems": recentOrEmpty(lowStockProducts),
 		"recentOrders":  recentOrEmpty(recentOrders),
 	})
@@ -1920,7 +1926,7 @@ func (a *AppContext) GetKoperasiReportSummary(c *fiber.Ctx) error {
 	}
 
 	return utils.Success(c, 200, "Success Get Koperasi Report Summary", fiber.Map{
-		"generated_at":             time.Now().UTC().Format(time.RFC3339),
+		"generated_at":             jakartaNow().Format(time.RFC3339),
 		"range":                    fiber.Map{"from": fromLabel, "to": toLabel},
 		"overview":                 overview,
 		"payment_status_breakdown": recentOrEmpty(statusBreakdown),

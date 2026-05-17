@@ -961,6 +961,15 @@ func (a *AppContext) loadCurriculumOverviewData(schoolID uint) ([]curriculumSubj
 		ORDER BY cls.class_name ASC, slot.day_order ASC, slot.session_order ASC, subject_name ASC
 	`, schoolID).Scan(&generatedEntries)
 
+	for idx := range generatedEntries {
+		if generatedEntries[idx].GeneratedAt != "" {
+			parsed := parseJakartaTimestamp(generatedEntries[idx].GeneratedAt)
+			if parsed != nil {
+				generatedEntries[idx].GeneratedAt = parsed.Format(jakartaDateTimeLayout)
+			}
+		}
+	}
+
 	return subjects, teacherLoads, classDistributions, scheduleSlots, generatedEntries
 }
 

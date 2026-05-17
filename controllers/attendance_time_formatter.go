@@ -29,6 +29,24 @@ func normalizeAttendanceMaps(rows []map[string]interface{}) {
 	}
 }
 
+func normalizeJakartaDateTimeFields(row map[string]interface{}, fields ...string) {
+	if len(row) == 0 {
+		return
+	}
+
+	for _, field := range fields {
+		if value, ok := row[field]; ok {
+			row[field] = normalizeJakartaDateTimeValue(value)
+		}
+	}
+}
+
+func normalizeJakartaDateTimeRows(rows []map[string]interface{}, fields ...string) {
+	for _, row := range rows {
+		normalizeJakartaDateTimeFields(row, fields...)
+	}
+}
+
 func normalizeJakartaDateValue(value interface{}) interface{} {
 	switch t := value.(type) {
 	case time.Time:

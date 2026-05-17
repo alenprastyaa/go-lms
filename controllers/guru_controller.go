@@ -422,10 +422,16 @@ func (a *AppContext) GetGuruDashboard(c *fiber.Ctx) error {
 		overview["active_teaching_now"] = 0
 	}
 
+	announcements, err := a.fetchAnnouncementsForSchool(schoolID, "GURU", false, 3)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal memuat pengumuman dashboard", err.Error())
+	}
+
 	return utils.Success(c, 200, "Success Get Guru Dashboard", fiber.Map{
-		"generatedAt":      time.Now().UTC().Format(time.RFC3339),
+		"generatedAt":      jakartaNow().Format(time.RFC3339),
 		"homeroom":         homeroom,
 		"overview":         overview,
+		"announcements":    announcements,
 		"students":         students,
 		"recentAttendance": recentAttendance,
 		"recentReceipts":   recentReceipts,
@@ -550,6 +556,7 @@ func (a *AppContext) GetSubjectMaterials(c *fiber.Ctx) error {
 		WHERE m.subject_id = ?
 		ORDER BY m.created_at DESC
 	`, subjectID).Scan(&rows)
+	normalizeJakartaDateTimeRows(rows, "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Get Materials", rows)
 }
 
@@ -573,6 +580,7 @@ func (a *AppContext) CreateLearningMaterial(c *fiber.Ctx) error {
 		INSERT INTO learning_materials (subject_id,title,content,attachment_url,created_by,created_at)
 		VALUES (?,?,?,?,?,NOW()) RETURNING *
 	`, subjectID, title, content, nullIfEmpty(attachment), userID).Scan(&row)
+	normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
 	return utils.Success(c, 201, "Success Create Material", row)
 }
 
@@ -599,6 +607,7 @@ func (a *AppContext) UpdateLearningMaterial(c *fiber.Ctx) error {
 	a.DB.Raw(`
 		UPDATE learning_materials SET title=?, content=?, attachment_url=? WHERE id=? RETURNING *
 	`, title, content, nullIfEmpty(attachment), id).Scan(&row)
+	normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Update Material", row)
 }
 
@@ -609,6 +618,7 @@ func (a *AppContext) DeleteLearningMaterial(c *fiber.Ctx) error {
 	if len(row) == 0 {
 		return utils.Error(c, 404, "Material not found")
 	}
+	normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Delete Material", row)
 }
 
@@ -657,6 +667,7 @@ func (a *AppContext) GetAssignmentSubmissionsForTeacher(c *fiber.Ctx) error {
 		WHERE s.assignment_id=?
 		ORDER BY u.username ASC, s.id ASC
 	`, assignmentID).Scan(&rows)
+	normalizeJakartaDateTimeRows(rows, "started_at", "submitted_at", "graded_at", "created_at", "updated_at")
 
 	a.syncAutoGradedMcqScores(rows)
 
@@ -682,6 +693,7 @@ func (a *AppContext) GetAssignmentSubmissionsForTeacher(c *fiber.Ctx) error {
 			WHERE submission_id = ?
 			ORDER BY created_at DESC, id DESC
 		`, submissionID).Scan(&violationLogs)
+		normalizeJakartaDateTimeRows(violationLogs, "created_at")
 
 		rows[idx]["violation_count"] = violationCount
 		rows[idx]["violation_logs"] = violationLogs
@@ -923,6 +935,8 @@ func (a *AppContext) GetSubjectGradebookForTeacher(c *fiber.Ctx) error {
 		Limit(limit).
 		Offset(offset).
 		Scan(&rows)
+	normalizeJakartaDateTimeRows(assignments, "due_date")
+	normalizeJakartaDateTimeRows(rows, "started_at", "submitted_at", "graded_at", "due_date", "created_at", "updated_at")
 
 	a.syncAutoGradedMcqScores(rows)
 
@@ -944,6 +958,7 @@ func (a *AppContext) GetSubjectGradebookForTeacher(c *fiber.Ctx) error {
 			WHERE submission_id IN ?
 			ORDER BY created_at DESC, id DESC
 		`, submissionIDs).Scan(&violationLogs)
+		normalizeJakartaDateTimeRows(violationLogs, "created_at")
 
 		logsBySubmission := map[int][]map[string]interface{}{}
 		for _, log := range violationLogs {
@@ -995,6 +1010,7 @@ func (a *AppContext) GradeLearningSubmission(c *fiber.Ctx) error {
 	if len(row) == 0 {
 		return utils.Error(c, 404, "Submission not found")
 	}
+	normalizeJakartaDateTimeFields(row, "started_at", "submitted_at", "graded_at", "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Grade Submission", row)
 }
 
@@ -1048,6 +1064,7 @@ func (a *AppContext) GetLearningChatSummary(c *fiber.Ctx) error {
 			ORDER BY last_message_at DESC NULLS LAST, ls.name ASC
 		`, userID, userID, userID).Scan(&rows)
 	}
+	normalizeJakartaDateTimeRows(rows, "last_message_at")
 	return utils.Success(c, 200, "Success Get Learning Chat Summary", rows)
 }
 
@@ -1061,6 +1078,7 @@ func (a *AppContext) GetSubjectChatMessages(c *fiber.Ctx) error {
 		WHERE m.subject_id=?
 		ORDER BY m.created_at ASC
 	`, subjectID).Scan(&rows)
+	normalizeJakartaDateTimeRows(rows, "created_at", "edited_at")
 	return utils.Success(c, 200, "Success Get Subject Chat Messages", rows)
 }
 
@@ -1107,6 +1125,7 @@ func (a *AppContext) CreateSubjectChatMessage(c *fiber.Ctx) error {
 	}
 
 	attachment := strings.TrimSpace(body.AttachmentURL)
+	attachmentPreviewURL := ""
 	clientID := strings.TrimSpace(body.ClientID)
 	if clientID == "" {
 		clientID = strings.TrimSpace(c.FormValue("client_id"))
@@ -1118,6 +1137,7 @@ func (a *AppContext) CreateSubjectChatMessage(c *fiber.Ctx) error {
 			attachmentName = strings.TrimSpace(uploaded.FileName)
 			attachmentMimeType = strings.TrimSpace(uploaded.ContentType)
 			attachmentSize = uploaded.Size
+			attachmentPreviewURL = strings.TrimSpace(uploaded.PreviewURL)
 		} else {
 			return utils.Error(c, 400, upErr.Error())
 		}
@@ -1136,22 +1156,24 @@ func (a *AppContext) CreateSubjectChatMessage(c *fiber.Ctx) error {
 				message,
 				message_type,
 				attachment_url,
+				attachment_preview_url,
 				attachment_name,
 				attachment_mime_type,
 				attachment_size,
 				created_at
 			)
-			VALUES (?,?,?,?,?,?,?,?,NOW())
+			VALUES (?,?,?,?,?,?,?,?,?,NOW())
 			RETURNING *
 		)
 		SELECT i.*, u.username AS sender_name, u.role AS sender_role, u.profile_image AS sender_profile_image
 		FROM inserted i
 		LEFT JOIN users u ON u.id = i.sender_id
 		LIMIT 1
-	`, subjectID, userID, msg, messageType, nullIfEmpty(attachment), nullIfEmpty(attachmentName), nullIfEmpty(attachmentMimeType), nullIfZero(attachmentSize)).Scan(&fullRow)
+	`, subjectID, userID, msg, messageType, nullIfEmpty(attachment), nullIfEmpty(attachmentPreviewURL), nullIfEmpty(attachmentName), nullIfEmpty(attachmentMimeType), nullIfZero(attachmentSize)).Scan(&fullRow)
 	if len(fullRow) == 0 {
 		return utils.Error(c, 500, "Failed to create chat message")
 	}
+	normalizeJakartaDateTimeFields(fullRow, "created_at", "edited_at")
 	fullRow["origin_client_id"] = clientID
 
 	if a.Realtime != nil {
@@ -1159,6 +1181,63 @@ func (a *AppContext) CreateSubjectChatMessage(c *fiber.Ctx) error {
 	}
 
 	return utils.Success(c, 201, "Success Create Subject Chat Message", fullRow)
+}
+
+func (a *AppContext) UpdateSubjectChatMessage(c *fiber.Ctx) error {
+	subjectID := c.Params("subjectId")
+	userID := c.Locals("userID").(uint)
+	messageID := utils.ToInt(c.Params("messageId"), 0)
+	if messageID <= 0 {
+		return utils.Error(c, 400, "message id is required")
+	}
+
+	var body struct {
+		Message string `json:"message"`
+		Text    string `json:"text"`
+	}
+	_ = c.BodyParser(&body)
+
+	msg := strings.TrimSpace(body.Message)
+	if msg == "" {
+		msg = strings.TrimSpace(body.Text)
+	}
+	if msg == "" {
+		msg = strings.TrimSpace(c.FormValue("message"))
+	}
+	if msg == "" {
+		msg = strings.TrimSpace(c.FormValue("text"))
+	}
+	if msg == "" {
+		return utils.Error(c, 400, "message is required")
+	}
+
+	var fullRow map[string]interface{}
+	a.DB.Raw(`
+		WITH updated AS (
+			UPDATE learning_chat_messages
+			SET message = ?, edited_at = NOW()
+			WHERE subject_id = ?
+			  AND id = ?
+			  AND sender_id = ?
+			RETURNING *
+		)
+		SELECT i.*, u.username AS sender_name, u.role AS sender_role, u.profile_image AS sender_profile_image
+		FROM updated i
+		LEFT JOIN users u ON u.id = i.sender_id
+		LIMIT 1
+	`, msg, subjectID, messageID, userID).Scan(&fullRow)
+	if len(fullRow) == 0 {
+		return utils.Error(c, 404, "learning chat message not found")
+	}
+
+	normalizeJakartaDateTimeFields(fullRow, "created_at", "edited_at")
+	fullRow["origin_client_id"] = strings.TrimSpace(c.FormValue("client_id"))
+
+	if a.Realtime != nil {
+		a.Realtime.BroadcastSubjectChatMessageUpdated(subjectID, fullRow)
+	}
+
+	return utils.Success(c, 200, "Success Update Subject Chat Message", fullRow)
 }
 
 func (a *AppContext) MarkSubjectChatAsRead(c *fiber.Ctx) error {
@@ -1738,6 +1817,7 @@ func (a *AppContext) GetLearningQuestionBank(c *fiber.Ctx) error {
 	q.Count(&total)
 	var rows []map[string]interface{}
 	q.Order("id DESC").Limit(limit).Offset(offset).Scan(&rows)
+	normalizeJakartaDateTimeRows(rows, "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Get Question Bank", fiber.Map{
 		"data":  rows,
 		"total": total,
@@ -1766,6 +1846,7 @@ func (a *AppContext) CreateLearningQuestionBankItem(c *fiber.Ctx) error {
 		VALUES (?, ?, ?, ?::jsonb, ?, ?, ?, NOW())
 		RETURNING *
 	`, body.SubjectID, strings.ToUpper(body.QuestionType), body.QuestionText, toJSONRaw(body.Options), body.CorrectOption, nullIfEmpty(body.Rubric), userID).Scan(&row)
+	normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
 	return utils.Success(c, 201, "Success Create Question Bank Item", row)
 }
 
@@ -1791,6 +1872,7 @@ func (a *AppContext) UpdateLearningQuestionBankItem(c *fiber.Ctx) error {
 	if len(row) == 0 {
 		return utils.Error(c, 404, "Question bank item not found")
 	}
+	normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Update Question Bank Item", row)
 }
 
@@ -1801,6 +1883,7 @@ func (a *AppContext) DeleteLearningQuestionBankItem(c *fiber.Ctx) error {
 	if len(row) == 0 {
 		return utils.Error(c, 404, "Question bank item not found")
 	}
+	normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Delete Question Bank Item", row)
 }
 
@@ -1909,6 +1992,7 @@ func (a *AppContext) SaveGeneratedLearningQuestionBankItems(c *fiber.Ctx) error 
 		`, subjectID, strings.ToUpper(fmt.Sprint(item["question_type"])), fmt.Sprint(item["question_text"]),
 			toJSONRaw(item["options"]), item["correct_option"], nullIfEmpty(fmt.Sprint(item["rubric"])), userID).Scan(&row)
 		if len(row) > 0 {
+			normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
 			saved = append(saved, row)
 		}
 	}
@@ -2006,6 +2090,7 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 					RETURNING *
 				`, subjectID, questionText, nullIfEmpty(fields["RUBRIK"]), userID).Scan(&inserted)
 				if len(inserted) > 0 {
+					normalizeJakartaDateTimeFields(inserted, "created_at", "updated_at")
 					importedItems = append(importedItems, inserted)
 					essayCount++
 				}
@@ -2041,6 +2126,7 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 				RETURNING *
 			`, subjectID, questionText, toJSONRaw(options), correct, userID).Scan(&inserted)
 			if len(inserted) > 0 {
+				normalizeJakartaDateTimeFields(inserted, "created_at", "updated_at")
 				importedItems = append(importedItems, inserted)
 				mcqCount++
 			}
@@ -2085,11 +2171,12 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 					rubric := getValue(record, "rubric")
 					var inserted map[string]interface{}
 					a.DB.Raw(`
-						INSERT INTO learning_question_bank (subject_id, question_type, question_text, rubric, created_by, created_at)
-						VALUES (?, 'ESSAY', ?, ?, ?, NOW())
-						RETURNING *
-					`, subjectID, questionText, nullIfEmpty(rubric), userID).Scan(&inserted)
+					INSERT INTO learning_question_bank (subject_id, question_type, question_text, rubric, created_by, created_at)
+					VALUES (?, 'ESSAY', ?, ?, ?, NOW())
+					RETURNING *
+				`, subjectID, questionText, nullIfEmpty(rubric), userID).Scan(&inserted)
 					if len(inserted) > 0 {
+						normalizeJakartaDateTimeFields(inserted, "created_at", "updated_at")
 						importedItems = append(importedItems, inserted)
 						essayCount++
 					}
@@ -2124,6 +2211,7 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 					RETURNING *
 				`, subjectID, questionText, toJSONRaw([]string{optionA, optionB, optionC, optionD, optionE}), correct, userID).Scan(&inserted)
 				if len(inserted) > 0 {
+					normalizeJakartaDateTimeFields(inserted, "created_at", "updated_at")
 					importedItems = append(importedItems, inserted)
 					mcqCount++
 				}
@@ -2138,6 +2226,7 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 					RETURNING *
 				`, subjectID, fmt.Sprint(item["question_text"]), toJSONRaw(item["options"]), item["correct_option"], userID).Scan(&inserted)
 				if len(inserted) > 0 {
+					normalizeJakartaDateTimeFields(inserted, "created_at", "updated_at")
 					importedItems = append(importedItems, inserted)
 					mcqCount++
 				}

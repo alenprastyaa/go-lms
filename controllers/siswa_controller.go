@@ -14,6 +14,7 @@ import (
 
 func (a *AppContext) GetSiswaDashboard(c *fiber.Ctx) error {
 	studentID := c.Locals("userID").(uint)
+	schoolID := c.Locals("schoolID").(uint)
 
 	var studentToday map[string]interface{}
 	a.DB.Raw(`
@@ -98,6 +99,7 @@ func (a *AppContext) GetSiswaDashboard(c *fiber.Ctx) error {
 		ORDER BY la.due_date ASC NULLS LAST, la.created_at DESC
 		LIMIT 12
 	`, studentID).Scan(&pendingAssignments)
+	normalizeJakartaDateTimeRows(pendingAssignments, "due_date", "created_at", "updated_at", "submitted_at", "started_at", "assignment_created_at")
 	pendingCount := 0
 	gradedCount := 0
 	filteredPending := make([]map[string]interface{}, 0)
@@ -113,11 +115,17 @@ func (a *AppContext) GetSiswaDashboard(c *fiber.Ctx) error {
 	overview["pending_assignments"] = pendingCount
 	overview["graded_assignments"] = gradedCount
 
+	announcements, err := a.fetchAnnouncementsForSchool(schoolID, "SISWA", false, 3)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal memuat pengumuman dashboard", err.Error())
+	}
+
 	return utils.Success(c, 200, "Success Get Siswa Dashboard", fiber.Map{
-		"generatedAt":        time.Now().UTC().Format(time.RFC3339),
+		"generatedAt":        jakartaNow().Format(time.RFC3339),
 		"student":            student,
 		"todayAttendance":    nilIfEmptyMap(today),
 		"overview":           overview,
+		"announcements":      announcements,
 		"recentAttendance":   recentAttendance,
 		"recentReceipts":     recentReceipts,
 		"pendingAssignments": filteredPending,
@@ -136,6 +144,7 @@ func (a *AppContext) GetStudentSubjects(c *fiber.Ctx) error {
 		WHERE u.id = ?
 		ORDER BY ls.created_at DESC
 	`, studentID).Scan(&rows)
+	normalizeJakartaDateTimeRows(rows, "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Get Student Subjects", rows)
 }
 
@@ -187,6 +196,7 @@ func (a *AppContext) GetStudentGrades(c *fiber.Ctx) error {
 			AND la.assignment_type IN ('FILE', 'MANUAL', 'MCQ', 'ESSAY')
 		ORDER BY ls.name ASC, la.due_date DESC NULLS LAST, la.created_at DESC
 	`, studentID, schoolID, schoolID).Scan(&rows)
+	normalizeJakartaDateTimeRows(rows, "due_date", "assignment_created_at", "started_at", "submitted_at", "graded_at", "created_at", "updated_at")
 
 	gradedCount := 0
 	submittedCount := 0
@@ -480,6 +490,7 @@ func (a *AppContext) SubmitLearningAssignment(c *fiber.Ctx) error {
 		              auto_graded=EXCLUDED.auto_graded
 		RETURNING *
 	`, assignmentID, studentID, nullIfEmpty(submissionText), parsedAnswerJSON, nullIfEmpty(attachmentURL), score, autoGraded).Scan(&row)
+	normalizeJakartaDateTimeFields(row, "started_at", "submitted_at", "graded_at", "created_at", "updated_at", "access_code_generated_at")
 	return utils.Success(c, 201, "Success Submit Assignment", row)
 }
 

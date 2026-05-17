@@ -84,6 +84,7 @@ func (a *AppContext) GetAdminSubjects(c *fiber.Ctx) error {
 		`
 		listArgs := append(args, limit, offset)
 		a.DB.Raw(listQuery, listArgs...).Scan(&rows)
+		normalizeJakartaDateTimeRows(rows, "created_at", "updated_at")
 		return utils.Success(c, 200, "Success Get Subjects", fiber.Map{
 			"page":  page,
 			"limit": limit,
@@ -101,6 +102,7 @@ func (a *AppContext) GetAdminSubjects(c *fiber.Ctx) error {
 	`+whereClause+`
 		ORDER BY ls.created_at DESC
 	`, args...).Scan(&rows)
+	normalizeJakartaDateTimeRows(rows, "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Get Subjects", rows)
 }
 
@@ -127,6 +129,7 @@ func (a *AppContext) CreateLearningSubject(c *fiber.Ctx) error {
 		VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())
 		RETURNING *
 	`, schoolID, classID, teacherID, name, description, nullIfEmpty(chatIconURL)).Scan(&row)
+	normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
 	return utils.Success(c, 201, "Success Create Subject", row)
 }
 
@@ -158,6 +161,7 @@ func (a *AppContext) UpdateLearningSubject(c *fiber.Ctx) error {
 		WHERE id = ? AND school_id = ?
 		RETURNING *
 	`, classID, teacherID, name, description, nullIfEmpty(chatIconURL), id, schoolID).Scan(&row)
+	normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Update Subject", row)
 }
 
@@ -169,6 +173,7 @@ func (a *AppContext) DeleteLearningSubject(c *fiber.Ctx) error {
 	if len(row) == 0 {
 		return utils.Error(c, 404, "Subject not found")
 	}
+	normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Delete Subject", row)
 }
 
@@ -265,6 +270,7 @@ func (a *AppContext) GetSubjectAssignments(c *fiber.Ctx) error {
 			  )
 			ORDER BY la.created_at DESC
 		`, userID, subjectID, schoolID).Scan(&rows)
+		normalizeJakartaDateTimeRows(rows, "start_at", "due_date", "exam_submitted_at", "exam_published_at", "created_at", "updated_at", "attempt_started_at", "submitted_at", "graded_at")
 		for idx := range rows {
 			normalizedDuration := normalizeStudentAssignmentDurationSeconds(
 				boolFromAny(rows[idx]["is_exam"]),
@@ -304,6 +310,7 @@ func (a *AppContext) GetSubjectAssignments(c *fiber.Ctx) error {
 		WHERE la.subject_id = ? AND ls.school_id = ?
 		ORDER BY la.created_at DESC
 	`, subjectID, schoolID).Scan(&rows)
+	normalizeJakartaDateTimeRows(rows, "start_at", "due_date", "exam_submitted_at", "exam_published_at", "created_at", "updated_at", "attempt_started_at", "submitted_at", "graded_at")
 	return utils.Success(c, 200, "Success Get Assignments", rows)
 }
 
@@ -453,13 +460,14 @@ func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 		  question_duration_mode, question_duration_seconds, attachment_url, due_date, created_by, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
 		RETURNING *
-	`,
+	`, 
 		subjectID, title, description, assignmentType, isExam, nullIfEmpty(examCategory), nullIfEmpty(examCode),
 		ternaryString(isExam, "REQUESTED", ""), toJSONRaw(questionBankIDs), shuffleQuestions, toJSONRaw(quizPayload),
 		normalizeDateTimeLocalToWIB(startAt), true, nullIfEmpty(examCount),
 		nullIfZero(academicYearID), nullIfZero(semesterID), qDurMode, nullIfZero(qDurValue), nullIfEmpty(attachmentURL),
 		normalizeDateTimeLocalToWIB(dueDate), userID,
 	).Scan(&row)
+	normalizeJakartaDateTimeFields(row, "start_at", "due_date", "exam_submitted_at", "exam_published_at", "created_at", "updated_at")
 
 	return utils.Success(c, 201, "Success Create Assignment", row)
 }
@@ -504,6 +512,7 @@ func (a *AppContext) UpdateExamRequestByAdmin(c *fiber.Ctx) error {
 	if len(row) == 0 {
 		return utils.Error(c, 404, "Assignment not found")
 	}
+	normalizeJakartaDateTimeFields(row, "start_at", "due_date", "exam_submitted_at", "exam_published_at", "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Update Exam Request", row)
 }
 
@@ -514,6 +523,7 @@ func (a *AppContext) DeleteExamRequestByAdmin(c *fiber.Ctx) error {
 	if len(row) == 0 {
 		return utils.Error(c, 404, "Assignment not found")
 	}
+	normalizeJakartaDateTimeFields(row, "start_at", "due_date", "exam_submitted_at", "exam_published_at", "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Delete Exam Request", row)
 }
 
@@ -548,6 +558,7 @@ func (a *AppContext) PublishExamByAdmin(c *fiber.Ctx) error {
 	if len(row) == 0 {
 		return utils.Error(c, 404, "Assignment not found")
 	}
+	normalizeJakartaDateTimeFields(row, "start_at", "due_date", "exam_submitted_at", "exam_published_at", "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Publish Exam", row)
 }
 
@@ -594,6 +605,7 @@ func (a *AppContext) GenerateStudentExamAccessCodeByAdmin(c *fiber.Ctx) error {
 		WHERE id = ?
 		RETURNING id, assignment_id, student_id, access_blocked, access_code, access_code_generated_at, access_block_reason
 	`, code, submissionID).Scan(&updated)
+	normalizeJakartaDateTimeFields(updated, "access_code_generated_at")
 	return utils.Success(c, 200, "Success Generate Student Exam Access Code", updated)
 }
 

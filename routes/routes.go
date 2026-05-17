@@ -121,6 +121,7 @@ func registerPrivateChat(api fiber.Router, ctx *controllers.AppContext) {
 	r.Get("/contacts", ctx.SearchPrivateChatContacts)
 	r.Get("/:peerUserId/messages", ctx.GetPrivateChatMessages)
 	r.Post("/:peerUserId/messages", ctx.CreatePrivateChatMessage)
+	r.Put("/:peerUserId/messages/:messageId", ctx.UpdatePrivateChatMessage)
 	r.Post("/:peerUserId/read", ctx.MarkPrivateChatAsRead)
 }
 
@@ -154,6 +155,7 @@ func registerGuru(api fiber.Router, ctx *controllers.AppContext) {
 	l.Get("/subjects/:subjectId/chat", middlewares.RoleAllowed("GURU", "SISWA"), ctx.GetSubjectChatMessages)
 	l.Get("/subjects/:subjectId/chat/online", middlewares.RoleAllowed("GURU", "SISWA"), ctx.GetSubjectOnlineUsers)
 	l.Post("/subjects/:subjectId/chat", middlewares.RoleAllowed("GURU", "SISWA"), ctx.CreateSubjectChatMessage)
+	l.Put("/subjects/:subjectId/chat/:messageId", middlewares.RoleAllowed("GURU", "SISWA"), ctx.UpdateSubjectChatMessage)
 	l.Post("/subjects/:subjectId/chat/read", middlewares.RoleAllowed("GURU", "SISWA"), ctx.MarkSubjectChatAsRead)
 	l.Post("/subjects/:subjectId/chat/typing", middlewares.RoleAllowed("GURU", "SISWA"), ctx.BroadcastSubjectTyping)
 	l.Put("/subjects/:subjectId/chat-icon", middlewares.RoleAllowed("GURU"), ctx.UpdateLearningSubjectChatIconByTeacher)
@@ -222,6 +224,17 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	d := api.Group("/dashboard", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	d.Get("/superadmin", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.GetSuperAdminDashboard)
 	d.Get("/admin", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.GetAdminDashboard)
+
+	announcements := api.Group("/announcements", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
+	announcements.Get("/dashboard", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "KOPERASI", "SARPRAS", "GURU", "SISWA"), ctx.GetDashboardAnnouncements)
+
+	adminAnnouncements := api.Group("/announcements", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN"))
+	adminAnnouncements.Get("/", ctx.GetSchoolAnnouncements)
+	adminAnnouncements.Post("/", ctx.CreateSchoolAnnouncement)
+	adminAnnouncements.Put("/:id", ctx.UpdateSchoolAnnouncement)
+	adminAnnouncements.Post("/:id/publish", ctx.PublishSchoolAnnouncement)
+	adminAnnouncements.Post("/:id/toggle", ctx.ToggleSchoolAnnouncementStatus)
+	adminAnnouncements.Delete("/:id", ctx.DeleteSchoolAnnouncement)
 
 	a := api.Group("/admin-settings", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN"))
 	a.Get("/summary", ctx.GetAdminSettingsSummary)

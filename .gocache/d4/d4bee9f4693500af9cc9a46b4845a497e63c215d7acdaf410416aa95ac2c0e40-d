@@ -1,0 +1,8 @@
+./announcement.go
+./billing.go
+./class.go
+./inventory.go
+./koperasi.go
+./receipt.go
+./school.go
+./user.go

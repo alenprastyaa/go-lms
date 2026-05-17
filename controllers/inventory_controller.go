@@ -129,10 +129,16 @@ func (a *AppContext) GetSarprasDashboard(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Gagal memuat riwayat peminjaman", err.Error())
 	}
 
+	announcements, err := a.fetchAnnouncementsForSchool(schoolID, "SARPRAS", false, 3)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal memuat pengumuman dashboard", err.Error())
+	}
+
 	return utils.Success(c, 200, "Success Get Sarpras Dashboard", fiber.Map{
-		"generatedAt":   time.Now().UTC().Format(time.RFC3339),
+		"generatedAt":   jakartaNow().Format(time.RFC3339),
 		"school":        school,
 		"overview":      overview,
+		"announcements": announcements,
 		"lowStockItems": recentOrEmpty(lowStockItems),
 		"recentLoans":   recentOrEmpty(recentLoans),
 	})
@@ -784,6 +790,7 @@ func (a *AppContext) respondInventoryItem(c *fiber.Ctx, itemID uint, code int, m
 		Scan(&item).Error; err != nil {
 		return utils.Error(c, 500, "Gagal memuat data barang", err.Error())
 	}
+	normalizeJakartaDateTimeFields(item, "created_at", "updated_at")
 
 	return utils.Success(c, code, message, item)
 }
@@ -820,6 +827,7 @@ func (a *AppContext) respondInventoryLoan(c *fiber.Ctx, loanID uint, code int, m
 		Scan(&loan).Error; err != nil {
 		return utils.Error(c, 500, "Gagal memuat data peminjaman", err.Error())
 	}
+	normalizeJakartaDateTimeFields(loan, "borrowed_at", "due_date", "returned_at", "created_at", "updated_at")
 
 	return utils.Success(c, code, message, loan)
 }
