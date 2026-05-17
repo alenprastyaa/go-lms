@@ -176,7 +176,7 @@ func (a *AppContext) notifyAnnouncementPublished(announcement models.SchoolAnnou
 		targets = append(targets, pushNotificationTarget{
 			UserID: recipient.UserID,
 			Message: pushNotificationMessage{
-				Title:    announcement.Title,
+				Title:    sanitizePushText(announcement.Title, "Pengumuman Sekolah"),
 				Body:     previewPushText(announcement.Content, 120),
 				Kind:     "announcement",
 				URL:      announcementRouteForRole(recipient.Role, announcement.ID),
@@ -196,7 +196,7 @@ func (a *AppContext) notifyPrivateChatMessage(senderID, recipientID uint, sender
 		{
 			UserID: recipientID,
 			Message: pushNotificationMessage{
-				Title:    senderName,
+				Title:    sanitizePushText(senderName, "Pesan Baru"),
 				Body:     previewPushText(messagePreview, 120),
 				Kind:     "chat",
 				URL:      "/private-chat?user=" + fmt.Sprint(senderID),
@@ -251,7 +251,7 @@ func (a *AppContext) notifySubjectChatMessage(subjectID string, senderID uint, s
 		targets = append(targets, pushNotificationTarget{
 			UserID: recipient.UserID,
 			Message: pushNotificationMessage{
-				Title:    fmt.Sprintf("Chat %s", subject.Name),
+				Title:    sanitizePushText(fmt.Sprintf("Chat %s", subject.Name), "Chat Mapel"),
 				Body:     previewPushText(messagePreview, 120),
 				Kind:     "chat",
 				URL:      subjectChatRoute(recipient.Role, subjectID),
@@ -299,7 +299,7 @@ func (a *AppContext) notifyAssignmentCreated(subjectID string, assignmentID uint
 		targets = append(targets, pushNotificationTarget{
 			UserID: recipient.UserID,
 			Message: pushNotificationMessage{
-				Title:    fmt.Sprintf("Ada %s baru", kind),
+				Title:    sanitizePushText(fmt.Sprintf("Ada %s baru", kind), "Notifikasi Pembelajaran"),
 				Body:     bodyText,
 				Kind:     "assignment",
 				URL:      routes,

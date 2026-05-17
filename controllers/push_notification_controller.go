@@ -160,7 +160,7 @@ func assignmentKindLabel(assignmentType string) string {
 
 func previewPushText(text string, limit int) string {
 	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
+	if trimmed == "" || strings.EqualFold(trimmed, "<nil>") {
 		return "Pesan baru"
 	}
 	if limit <= 0 || len(trimmed) <= limit {
@@ -175,6 +175,14 @@ func previewPushText(text string, limit int) string {
 		cutoff = len(trimmed)
 	}
 	return strings.TrimSpace(trimmed[:cutoff]) + "..."
+}
+
+func sanitizePushText(value, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || strings.EqualFold(trimmed, "<nil>") {
+		return fallback
+	}
+	return trimmed
 }
 
 func subjectChatRoute(role string, subjectID interface{}) string {
