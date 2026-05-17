@@ -27,6 +27,7 @@ func Register(app *fiber.App, db *gorm.DB, hub *realtime.Hub) {
 	registerSiswa(api, ctx)
 	registerInventory(api, ctx)
 	registerKoperasi(api, ctx)
+	registerNotifications(api, ctx)
 }
 
 func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
@@ -218,6 +219,13 @@ func registerKoperasi(api fiber.Router, ctx *controllers.AppContext) {
 	r.Post("/orders/:id/reissue-payment", ctx.ReissueKoperasiPayment)
 	r.Put("/orders/:id/status", ctx.UpdateKoperasiOrderStatus)
 	r.Get("/reports/summary", middlewares.RoleAllowed("ADMIN", "KOPERASI"), ctx.GetKoperasiReportSummary)
+}
+
+func registerNotifications(api fiber.Router, ctx *controllers.AppContext) {
+	api.Get("/notifications/vapid-public-key", ctx.GetVapidPublicKey)
+	r := api.Group("/notifications", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
+	r.Post("/push-subscriptions", ctx.UpsertPushSubscription)
+	r.Delete("/push-subscriptions", ctx.DeletePushSubscription)
 }
 
 func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {

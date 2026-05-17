@@ -1180,6 +1180,17 @@ func (a *AppContext) CreateSubjectChatMessage(c *fiber.Ctx) error {
 		a.Realtime.BroadcastSubjectChatMessage(subjectID, fullRow)
 	}
 
+	senderLabel := strings.TrimSpace(fmt.Sprint(fullRow["sender_full_name"]))
+	if senderLabel == "" {
+		senderLabel = strings.TrimSpace(fmt.Sprint(fullRow["sender_name"]))
+	}
+	if senderLabel == "" {
+		senderLabel = strings.TrimSpace(fmt.Sprint(fullRow["sender_role"]))
+	}
+	go func() {
+		_ = a.notifySubjectChatMessage(subjectID, userID, senderLabel, msg)
+	}()
+
 	return utils.Success(c, 201, "Success Create Subject Chat Message", fullRow)
 }
 

@@ -460,7 +460,7 @@ func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 		  question_duration_mode, question_duration_seconds, attachment_url, due_date, created_by, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
 		RETURNING *
-	`, 
+	`,
 		subjectID, title, description, assignmentType, isExam, nullIfEmpty(examCategory), nullIfEmpty(examCode),
 		ternaryString(isExam, "REQUESTED", ""), toJSONRaw(questionBankIDs), shuffleQuestions, toJSONRaw(quizPayload),
 		normalizeDateTimeLocalToWIB(startAt), true, nullIfEmpty(examCount),
@@ -468,6 +468,13 @@ func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 		normalizeDateTimeLocalToWIB(dueDate), userID,
 	).Scan(&row)
 	normalizeJakartaDateTimeFields(row, "start_at", "due_date", "exam_submitted_at", "exam_published_at", "created_at", "updated_at")
+
+	if !isExam {
+		assignmentID := uint(utils.ToInt(fmt.Sprint(row["id"]), 0))
+		go func() {
+			_ = a.notifyAssignmentCreated(subjectID, assignmentID, assignmentType, title, description)
+		}()
+	}
 
 	return utils.Success(c, 201, "Success Create Assignment", row)
 }
@@ -531,11 +538,15 @@ func (a *AppContext) PublishExamByAdmin(c *fiber.Ctx) error {
 	id := c.Params("assignmentId")
 	var current struct {
 		ID             int    `gorm:"column:id"`
+		SubjectID      string `gorm:"column:subject_id"`
+		AssignmentType string `gorm:"column:assignment_type"`
+		Title          string `gorm:"column:title"`
+		Description    string `gorm:"column:description"`
 		ExamStatus     string `gorm:"column:exam_status"`
 		QuizPayloadRaw string `gorm:"column:quiz_payload_raw"`
 	}
 	a.DB.Raw(`
-		SELECT id, COALESCE(exam_status, '') AS exam_status, COALESCE(quiz_payload::text, '[]') AS quiz_payload_raw
+		SELECT id, subject_id, assignment_type, title, description, COALESCE(exam_status, '') AS exam_status, COALESCE(quiz_payload::text, '[]') AS quiz_payload_raw
 		FROM learning_assignments
 		WHERE id = ? AND is_exam = true
 		LIMIT 1
@@ -559,6 +570,10 @@ func (a *AppContext) PublishExamByAdmin(c *fiber.Ctx) error {
 		return utils.Error(c, 404, "Assignment not found")
 	}
 	normalizeJakartaDateTimeFields(row, "start_at", "due_date", "exam_submitted_at", "exam_published_at", "created_at", "updated_at")
+	assignmentID := uint(utils.ToInt(id, 0))
+	go func() {
+		_ = a.notifyAssignmentCreated(current.SubjectID, assignmentID, current.AssignmentType, current.Title, current.Description)
+	}()
 	return utils.Success(c, 200, "Success Publish Exam", row)
 }
 

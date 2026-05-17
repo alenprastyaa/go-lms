@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 
@@ -336,6 +337,20 @@ func (a *AppContext) CreatePrivateChatMessage(c *fiber.Ctx) error {
 	if a.Realtime != nil {
 		a.Realtime.BroadcastPrivateChatMessage(schoolID, userID, peerID, row)
 	}
+
+	senderLabel := strings.TrimSpace(fmt.Sprint(row["sender_full_name"]))
+	if senderLabel == "" {
+		senderLabel = strings.TrimSpace(fmt.Sprint(row["sender_name"]))
+	}
+	if senderLabel == "" {
+		senderLabel = strings.TrimSpace(fmt.Sprint(row["sender_username"]))
+	}
+	if senderLabel == "" {
+		senderLabel = strings.TrimSpace(fmt.Sprint(row["sender_role"]))
+	}
+	go func() {
+		_ = a.notifyPrivateChatMessage(userID, peerID, senderLabel, normalizePrivateChatMessagePreview(message, messageType, attachmentName))
+	}()
 
 	return utils.Success(c, 201, "Success Create Private Chat Message", row)
 }

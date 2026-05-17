@@ -463,6 +463,12 @@ func (a *AppContext) persistAnnouncementStatus(c *fiber.Ctx, schoolID, announcem
 		return utils.Error(c, 500, "Gagal memuat pengumuman terbaru", err.Error())
 	}
 
+	if status == announcementStatusActive {
+		go func(item models.SchoolAnnouncement) {
+			_ = a.notifyAnnouncementIfActive(item)
+		}(latest)
+	}
+
 	message := "Status pengumuman berhasil diperbarui"
 	if status == announcementStatusActive {
 		message = "Pengumuman berhasil diposting"

@@ -439,7 +439,22 @@ func NewDatabase() (*gorm.DB, error) {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
+		`CREATE TABLE IF NOT EXISTS push_subscriptions (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			user_id BIGINT NOT NULL,
+			endpoint TEXT NOT NULL UNIQUE,
+			p256dh TEXT NOT NULL,
+			auth TEXT NOT NULL,
+			expiration_time TIMESTAMP NULL,
+			subscription_json TEXT NOT NULL,
+			user_agent TEXT NULL,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_school_invoices_school_status ON school_invoices (school_id, status, due_date)`,
+		`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_school_user ON push_subscriptions (school_id, user_id, is_active)`,
 	}
 	for _, stmt := range indexStatements {
 		if err := db.Exec(stmt).Error; err != nil {
