@@ -51,16 +51,7 @@ func loadVapidConfig() (string, string, string, error) {
 		return "", "", "", errors.New("VAPID key belum dikonfigurasi")
 	}
 
-	subject := strings.TrimSpace(os.Getenv("PUSH_VAPID_SUBJECT"))
-	if subject == "" {
-		subject = strings.TrimSpace(os.Getenv("EMAIL_USER"))
-	}
-	if subject == "" {
-		subject = "school-system@localhost"
-	}
-	if !strings.HasPrefix(subject, "mailto:") && !strings.HasPrefix(subject, "https://") {
-		subject = "mailto:" + subject
-	}
+	subject := "https://school-system.my.id"
 
 	return publicKey, privateKey, subject, nil
 }
