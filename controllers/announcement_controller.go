@@ -97,6 +97,43 @@ func announcementNormalizeStatus(value string) string {
 	}
 }
 
+func parseAnnouncementTime(raw string) (*time.Time, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, nil
+	}
+
+	location := jakartaLocation()
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+
+	for _, layout := range layouts {
+		var parsed time.Time
+		var err error
+		if layout == time.RFC3339 || layout == time.RFC3339Nano {
+			parsed, err = time.Parse(layout, trimmed)
+		} else {
+			parsed, err = time.ParseInLocation(layout, trimmed, location)
+		}
+		if err != nil {
+			continue
+		}
+
+		if layout == "2006-01-02" {
+			parsed = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 23, 59, 59, 0, location)
+		}
+
+		return &parsed, nil
+	}
+
+	return nil, fmt.Errorf("Format tanggal expired tidak valid")
+}
+
 func announcementVisibleToRole(targetAudience, role string) bool {
 	target := strings.ToUpper(strings.TrimSpace(targetAudience))
 	role = strings.ToUpper(strings.TrimSpace(role))
@@ -275,6 +312,7 @@ func (a *AppContext) CreateSchoolAnnouncement(c *fiber.Ctx) error {
 		Title          string `json:"title"`
 		Content        string `json:"content"`
 		TargetAudience string `json:"target_audience"`
+		DeactivatedAt  string `json:"deactivated_at"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return utils.Error(c, 400, "Payload pengumuman tidak valid", err.Error())
@@ -293,6 +331,10 @@ func (a *AppContext) CreateSchoolAnnouncement(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.Error(c, 400, err.Error())
 	}
+	deactivatedAt, err := parseAnnouncementTime(body.DeactivatedAt)
+	if err != nil {
+		return utils.Error(c, 400, err.Error())
+	}
 
 	now := jakartaNow()
 	item := models.SchoolAnnouncement{
@@ -301,6 +343,7 @@ func (a *AppContext) CreateSchoolAnnouncement(c *fiber.Ctx) error {
 		Content:        content,
 		TargetAudience: targetAudience,
 		Status:         announcementStatusDraft,
+		DeactivatedAt:  deactivatedAt,
 		CreatedBy:      &userID,
 		UpdatedBy:      &userID,
 		CreatedAt:      now,
@@ -337,6 +380,7 @@ func (a *AppContext) UpdateSchoolAnnouncement(c *fiber.Ctx) error {
 		Title          string `json:"title"`
 		Content        string `json:"content"`
 		TargetAudience string `json:"target_audience"`
+		DeactivatedAt  string `json:"deactivated_at"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return utils.Error(c, 400, "Payload pengumuman tidak valid", err.Error())
@@ -355,11 +399,16 @@ func (a *AppContext) UpdateSchoolAnnouncement(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.Error(c, 400, err.Error())
 	}
+	deactivatedAt, err := parseAnnouncementTime(body.DeactivatedAt)
+	if err != nil {
+		return utils.Error(c, 400, err.Error())
+	}
 
 	update := map[string]interface{}{
 		"title":           title,
 		"content":         content,
 		"target_audience": targetAudience,
+		"deactivated_at":  deactivatedAt,
 		"updated_by":      userID,
 		"updated_at":      jakartaNow(),
 	}

@@ -123,3 +123,39 @@ func RoleAllowed(roles ...string) fiber.Handler {
 		return utils.Error(c, 403, "Forbidden: Insufficient privileges")
 	}
 }
+
+func ModuleAllowed(db *gorm.DB, feature string) fiber.Handler {
+	column := ""
+	switch feature {
+	case "inventory":
+		column = "inventory_module_enabled"
+	case "attendance":
+		column = "attendance_module_enabled"
+	case "official_exam":
+		column = "official_exam_module_enabled"
+	case "koperasi":
+		column = "koperasi_module_enabled"
+	case "private_chat":
+		column = "private_chat_module_enabled"
+	default:
+		return func(c *fiber.Ctx) error {
+			return utils.Error(c, 500, "Unknown module")
+		}
+	}
+
+	return func(c *fiber.Ctx) error {
+		schoolID, ok := c.Locals("schoolID").(uint)
+		if !ok || schoolID == 0 {
+			return utils.Error(c, 403, "Forbidden: School context unavailable")
+		}
+
+		var enabled bool
+		if err := db.Table("schools").Select(column).Where("id = ?", schoolID).Scan(&enabled).Error; err != nil {
+			return utils.Error(c, 500, "Gagal memeriksa status modul", err.Error())
+		}
+		if !enabled {
+			return utils.Error(c, 403, "Modul sedang dinonaktifkan")
+		}
+		return c.Next()
+	}
+}

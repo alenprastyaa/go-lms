@@ -117,7 +117,7 @@ func registerReceipt(api fiber.Router, ctx *controllers.AppContext) {
 }
 
 func registerPrivateChat(api fiber.Router, ctx *controllers.AppContext) {
-	r := api.Group("/private-chat", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "KOPERASI", "GURU", "SISWA"))
+	r := api.Group("/private-chat", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "KOPERASI", "GURU", "SISWA"), middlewares.ModuleAllowed(ctx.DB, "private_chat"))
 	r.Get("/summary", ctx.GetPrivateChatSummary)
 	r.Get("/contacts", ctx.SearchPrivateChatContacts)
 	r.Get("/:peerUserId/messages", ctx.GetPrivateChatMessages)
