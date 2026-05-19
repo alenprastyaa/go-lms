@@ -219,68 +219,9 @@ func fallbackSystemChatbotAnswer(question string, counts struct {
 	Classes  int `json:"classes"`
 	Subjects int `json:"subjects"`
 }) string {
-	intents := []chatbotIntent{
-		{
-			keywords: []string{"dashboard", "ringkasan", "overview"},
-			answer: fmt.Sprintf(
-				"Di Dashboard Anda bisa lihat kondisi sekolah secara cepat. Data saat ini: %d guru, %d siswa, %d kelas, dan %d mata pelajaran aktif.",
-				counts.Teachers, counts.Students, counts.Classes, counts.Subjects,
-			),
-		},
-		{
-			keywords: []string{"kelas", "class"},
-			answer:   "Menu Kelas dipakai untuk membuat dan mengatur rombongan belajar. Setelah kelas dibuat, siswa bisa ditempatkan dan guru bisa terhubung ke kelas terkait.",
-		},
-		{
-			keywords: []string{"siswa", "murid", "student"},
-			answer:   "Menu Siswa dipakai untuk melihat data siswa, memperbarui data yang salah, dan memantau kebutuhan administrasi siswa.",
-		},
-		{
-			keywords: []string{"guru", "wali kelas", "homeroom"},
-			answer:   "Data guru dipakai untuk pembagian beban mengajar dan aktivitas pembelajaran. Pastikan guru sudah terhubung ke mapel dan kelas yang tepat.",
-		},
-		{
-			keywords: []string{"kurikulum", "mapel", "mata pelajaran", "jadwal"},
-			answer:   "Alur kurikulum yang mudah: buat mapel, atur beban guru, distribusi ke kelas, susun jadwal, lalu gunakan generate pembagian jika diperlukan.",
-		},
-		{
-			keywords: []string{"quiz", "ujian", "soal", "bank soal"},
-			answer:   "Untuk ujian/quiz: siapkan Bank Soal dulu, buat tugas quiz/ujian, lalu terbitkan. Setelah siswa mengerjakan, hasil bisa dipantau dari menu penilaian/overview.",
-		},
-		{
-			keywords: []string{"chat", "live chat", "diskusi"},
-			answer:   "Live Chat digunakan untuk komunikasi cepat per mata pelajaran. Pilih mapel, kirim pesan, dan pantau notifikasi pesan baru di sidebar.",
-		},
-		{
-			keywords: []string{"nilai", "penilaian", "rapor", "grade"},
-			answer:   "Penilaian dipakai untuk memberi nilai tugas/ujian siswa. Setelah nilai masuk, ringkasan performa bisa dilihat di laporan/rapor mapel.",
-		},
-		{
-			keywords: []string{"billing", "tagihan", "invoice", "pembayaran"},
-			answer:   "Menu Billing dipakai untuk melihat tagihan sekolah, status bayar, dan sinkronisasi pembayaran. Jika status belum berubah, lakukan sinkronisasi dari halaman invoice.",
-		},
-		{
-			keywords: []string{"setting", "pengaturan", "reset", "logo"},
-			answer:   "Di Setting admin Anda bisa mengatur data sekolah, tautan pendaftaran publik, dan beberapa alat pemeliharaan sistem sesuai kebutuhan operasional.",
-		},
-	}
-
-	for _, intent := range intents {
-		if containsAnyKeyword(question, intent.keywords) {
-			return intent.answer
-		}
-	}
-
-	return "Saya belum menemukan topik spesifik dari pertanyaan itu. Coba sebutkan kata kunci seperti: kelas, siswa, guru, kurikulum, quiz, ujian, chat, nilai, billing, atau setting."
-}
-
-func containsAnyKeyword(question string, keywords []string) bool {
-	for _, keyword := range keywords {
-		if strings.Contains(question, keyword) {
-			return true
-		}
-	}
-	return false
+	_ = counts
+	_ = question
+	return "Maaf, saya belum bisa menjawab dengan yakin saat ini. Coba kirim pertanyaan yang lebih spesifik, atau pecah jadi satu pertanyaan per pesan supaya saya bisa bantu lebih tepat."
 }
 
 func (a *AppContext) AskSystemChatbot(c *fiber.Ctx) error {
@@ -299,49 +240,27 @@ func (a *AppContext) AskSystemChatbot(c *fiber.Ctx) error {
 		return utils.Error(c, 400, "Pertanyaan terlalu panjang, mohon ringkas maksimal 500 karakter")
 	}
 
-	role := strings.ToUpper(strings.TrimSpace(fmt.Sprint(c.Locals("userRole"))))
-	schoolID := c.Locals("schoolID").(uint)
-
-	var counts struct {
-		Teachers int `json:"teachers"`
-		Students int `json:"students"`
-		Classes  int `json:"classes"`
-		Subjects int `json:"subjects"`
-	}
-	a.DB.Raw(`
-		SELECT
-			(SELECT COUNT(*)::int FROM users WHERE school_id = ? AND role = 'GURU') AS teachers,
-			(SELECT COUNT(*)::int FROM users WHERE school_id = ? AND role = 'SISWA') AS students,
-			(SELECT COUNT(*)::int FROM class WHERE school_id = ?) AS classes,
-			(SELECT COUNT(*)::int FROM learning_subjects WHERE school_id = ?) AS subjects
-	`, schoolID, schoolID, schoolID, schoolID).Scan(&counts)
-
-	roleHint := "Sebagai guru, fokus utama Anda biasanya di menu: Pembelajaran, Live Chat, Bank Soal, Quiz, Ujian, Penilaian, dan Rapor."
-	if role == "ADMIN" {
-		roleHint = "Sebagai admin, fokus utama Anda biasanya di menu: User Sekolah, Kelas, Siswa, Tahun Ajaran, Kurikulum, Ujian Resmi, Billing, dan Setting."
-	}
-
 	answer, aiErr := services.GenerateSystemChatbotAnswer(services.SystemChatbotInput{
-		Role:     role,
 		Question: question,
-		Teachers: counts.Teachers,
-		Students: counts.Students,
-		Classes:  counts.Classes,
-		Subjects: counts.Subjects,
 	})
 	answer = cleanAIAnswer(answer)
 	if !isUsableAIAnswer(answer) || aiErr != nil {
-		answer = fallbackSystemChatbotAnswer(question, counts)
+		answer = fallbackSystemChatbotAnswer(question, struct {
+			Teachers int `json:"teachers"`
+			Students int `json:"students"`
+			Classes  int `json:"classes"`
+			Subjects int `json:"subjects"`
+		}{})
 	}
 
 	return utils.Success(c, 200, "Jawaban chatbot berhasil dibuat", fiber.Map{
-		"role_hint": roleHint,
+		"role_hint": "Asisten ini bisa membantu pertanyaan umum lintas topik, bukan hanya topik sekolah.",
 		"answer":    answer,
 		"suggestions": []string{
-			"Cara tambah siswa baru bagaimana?",
-			"Langkah membuat jadwal pembelajaran apa saja?",
-			"Cara kerja Bank Soal dan Quiz bagaimana?",
-			"Bagaimana melihat ringkasan kondisi sekolah?",
+			"Jelaskan topik ini dengan bahasa sederhana.",
+			"Buat langkah-langkah singkat untuk masalah ini.",
+			"Ringkas jawaban ini dalam 3 poin.",
+			"Beri contoh praktis yang mudah diikuti.",
 		},
 	})
 }

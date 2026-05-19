@@ -6,31 +6,20 @@ import (
 )
 
 type SystemChatbotInput struct {
-	Role     string
 	Question string
-	Teachers int
-	Students int
-	Classes  int
-	Subjects int
 }
 
 func buildSystemChatbotPrompt(input SystemChatbotInput) string {
-	role := strings.ToUpper(strings.TrimSpace(input.Role))
-	if role == "" {
-		role = "PENGGUNA"
-	}
-
 	return strings.Join([]string{
-		"Anda adalah asisten penggunaan LMS sekolah untuk Admin dan Guru.",
+		"Anda adalah asisten umum yang bisa menjawab pertanyaan dari berbagai topik.",
 		"Jawab dalam Bahasa Indonesia yang sederhana, ramah, dan mudah dipahami orang awam teknologi.",
 		"Jangan gunakan istilah teknis yang rumit. Jika terpaksa, jelaskan artinya dengan singkat.",
-		"Berikan langkah yang praktis dan langsung bisa dilakukan di menu sistem.",
+		"Berikan langkah yang praktis dan langsung bisa diterapkan jika pertanyaannya membutuhkan langkah.",
 		"Jika pertanyaan kurang jelas, tetap bantu dengan jawaban terbaik lalu sarankan pertanyaan lanjutan.",
+		"Jika pertanyaannya meminta informasi yang bisa berubah atau perlu verifikasi, sebutkan bahwa jawaban dapat berbeda tergantung konteks atau waktu.",
+		"Jika pertanyaannya berbahaya, ilegal, atau melanggar privasi, tolak secara singkat lalu arahkan ke bantuan yang aman.",
 		"Jangan balas dalam format JSON, array, object, atau markdown code block.",
 		"Balas sebagai teks biasa yang rapi dan enak dibaca.",
-		fmt.Sprintf("Peran pengguna saat ini: %s.", role),
-		fmt.Sprintf("Data ringkas sekolah saat ini: %d guru, %d siswa, %d kelas, %d mata pelajaran.", input.Teachers, input.Students, input.Classes, input.Subjects),
-		"Menu yang tersedia antara lain: Dashboard, User Sekolah, Kelas, Siswa, Tahun Ajaran, Kurikulum, Ujian Resmi, Billing, Setting, Pembelajaran, Live Chat, Bank Soal, Quiz, Penilaian, Rapor.",
 		fmt.Sprintf("Pertanyaan pengguna: %s", strings.TrimSpace(input.Question)),
 		"Format jawaban yang diinginkan:",
 		"Mulai dengan jawaban inti singkat 2 sampai 4 kalimat.",
@@ -40,6 +29,6 @@ func buildSystemChatbotPrompt(input SystemChatbotInput) string {
 }
 
 func GenerateSystemChatbotAnswer(input SystemChatbotInput) (string, error) {
-	systemMessage := "Anda adalah asisten LMS sekolah yang menjawab secara praktis dan sederhana untuk pengguna non-teknis."
+	systemMessage := "Anda adalah asisten umum yang menjawab secara praktis, aman, dan sederhana untuk pengguna non-teknis."
 	return callHuggingFace(buildSystemChatbotPrompt(input), systemMessage, 0.55)
 }

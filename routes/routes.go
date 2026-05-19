@@ -244,7 +244,7 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	adminAnnouncements.Post("/:id/toggle", ctx.ToggleSchoolAnnouncementStatus)
 	adminAnnouncements.Delete("/:id", ctx.DeleteSchoolAnnouncement)
 
-	a := api.Group("/admin-settings", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN"))
+	a := api.Group("/admin-settings", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"))
 	a.Get("/summary", ctx.GetAdminSettingsSummary)
 	a.Get("/public-registration-link", ctx.GetPublicStudentRegistrationLink)
 	a.Post("/load-test", ctx.RunAdminLoadTest)

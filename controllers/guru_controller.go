@@ -1919,6 +1919,7 @@ func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
 		Count                  int    `json:"question_count"`
 		LegacyCount            int    `json:"count"`
 		Difficulty             string `json:"difficulty"`
+		IncludeIllustration    bool   `json:"include_illustration"`
 		GradeLabel             string `json:"grade_label"`
 		PhaseName              string `json:"phase_name"`
 		CurriculumName         string `json:"curriculum_name"`
@@ -1968,6 +1969,7 @@ func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
 		QuestionType:           qType,
 		QuestionCount:          body.Count,
 		Difficulty:             difficulty,
+		IncludeIllustration:    body.IncludeIllustration,
 		AdditionalInstructions: strings.TrimSpace(body.AdditionalInstructions),
 	})
 	if err != nil {

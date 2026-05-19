@@ -65,6 +65,10 @@ func UploadLocalFileToAlentest(filePath, fileName, mimeType string) (string, err
 	return uploadBytesToR2(context.Background(), content, baseName, mimeType)
 }
 
+func UploadBytesToR2(ctx context.Context, content []byte, originalName, contentType string) (string, error) {
+	return uploadBytesToR2(ctx, content, originalName, contentType)
+}
+
 func UploadToR2(c *fiber.Ctx, fh *multipart.FileHeader) (string, error) {
 	file, err := fh.Open()
 	if err != nil {

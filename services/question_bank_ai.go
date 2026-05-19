@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+const questionImageMarker = "[[QUESTION_IMAGE_URL]]"
+
 type QuestionBankAIInput struct {
 	SubjectName            string
 	ClassName              string
@@ -16,15 +18,18 @@ type QuestionBankAIInput struct {
 	QuestionType           string
 	QuestionCount          int
 	Difficulty             string
+	IncludeIllustration    bool
 	AdditionalInstructions string
 }
 
 type QuestionBankAIItem struct {
-	QuestionType  string   `json:"question_type"`
-	QuestionText  string   `json:"question_text"`
-	Options       []string `json:"options"`
-	CorrectOption *int     `json:"correct_option"`
-	Rubric        *string  `json:"rubric"`
+	QuestionType       string   `json:"question_type"`
+	QuestionText       string   `json:"question_text"`
+	QuestionImageURL   string   `json:"question_image_url,omitempty"`
+	IllustrationPrompt string   `json:"illustration_prompt,omitempty"`
+	Options            []string `json:"options"`
+	CorrectOption      *int     `json:"correct_option"`
+	Rubric             *string  `json:"rubric"`
 }
 
 func buildQuestionBankPrompt(input QuestionBankAIInput) string {
@@ -56,6 +61,14 @@ func buildQuestionBankPrompt(input QuestionBankAIInput) string {
 
 	if strings.TrimSpace(input.AdditionalInstructions) != "" {
 		parts = append(parts, fmt.Sprintf("Instruksi tambahan: %s.", strings.TrimSpace(input.AdditionalInstructions)))
+	}
+
+	if input.IncludeIllustration {
+		parts = append(parts,
+			"Walaupun ilustrasi dibuat terpisah, question_text harus tetap bahasa Indonesia yang natural, rapi, dan tidak berubah kualitasnya.",
+			"Jangan menulis instruksi ilustrasi, caption gambar, atau prompt visual ke dalam question_text.",
+			"Gunakan notasi matematika yang bersih dan mudah dibaca. Jangan menulis LaTeX mentah seperti \\frac, \\theta, atau bentuk pecahan yang tidak dirender.",
+		)
 	}
 
 	if normalizedType == "MCQ" {
@@ -127,6 +140,8 @@ func GenerateQuestionBankItemsWithHuggingFace(input QuestionBankAIInput) ([]Ques
 	if len(collected) > input.QuestionCount {
 		collected = collected[:input.QuestionCount]
 	}
+
+	collected = populateQuestionBankIllustrations(input, collected)
 
 	return collected, nil
 }
@@ -312,13 +327,16 @@ func normalizeQuestionBankItems(items []map[string]interface{}, questionType str
 
 			correct := correctOption
 			rubric := (*string)(nil)
+			illustrationPrompt := coalesceString(item["illustration_prompt"], item["image_prompt"], item["visual_prompt"])
 
 			normalized = append(normalized, QuestionBankAIItem{
-				QuestionType:  "MCQ",
-				QuestionText:  questionText,
-				Options:       options,
-				CorrectOption: &correct,
-				Rubric:        rubric,
+				QuestionType:       "MCQ",
+				QuestionText:       questionText,
+				QuestionImageURL:   coalesceString(item["question_image_url"], item["image_url"]),
+				IllustrationPrompt: illustrationPrompt,
+				Options:            options,
+				CorrectOption:      &correct,
+				Rubric:             rubric,
 			})
 			continue
 		}
@@ -327,13 +345,16 @@ func normalizeQuestionBankItems(items []map[string]interface{}, questionType str
 		if rubric == "" {
 			rubric = "Jawaban dinilai berdasarkan ketepatan konsep, kelengkapan penjelasan, dan kejelasan alasan."
 		}
+		illustrationPrompt := coalesceString(item["illustration_prompt"], item["image_prompt"], item["visual_prompt"])
 
 		normalized = append(normalized, QuestionBankAIItem{
-			QuestionType:  "ESSAY",
-			QuestionText:  questionText,
-			Options:       nil,
-			CorrectOption: nil,
-			Rubric:        &rubric,
+			QuestionType:       "ESSAY",
+			QuestionText:       questionText,
+			QuestionImageURL:   coalesceString(item["question_image_url"], item["image_url"]),
+			IllustrationPrompt: illustrationPrompt,
+			Options:            nil,
+			CorrectOption:      nil,
+			Rubric:             &rubric,
 		})
 	}
 
