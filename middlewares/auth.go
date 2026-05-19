@@ -101,7 +101,7 @@ func ExtractClaims() fiber.Handler {
 
 		c.Locals("userID", uint(userID))
 		c.Locals("schoolID", uint(schoolID))
-		c.Locals("userRole", fmt.Sprint(claims["role"]))
+		c.Locals("userRole", utils.NormalizeRoleName(fmt.Sprint(claims["role"])))
 		if username, ok := claims["username"].(string); ok {
 			c.Locals("username", username)
 		}
@@ -115,8 +115,9 @@ func ExtractClaims() fiber.Handler {
 func RoleAllowed(roles ...string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		currentRole, _ := c.Locals("userRole").(string)
+		currentRole = utils.NormalizeRoleName(currentRole)
 		for _, role := range roles {
-			if role == currentRole {
+			if utils.NormalizeRoleName(role) == currentRole {
 				return c.Next()
 			}
 		}

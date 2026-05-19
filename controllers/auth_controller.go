@@ -109,7 +109,8 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 		return utils.Error(c, 401, fmt.Sprintf("Invalid Password. Sisa percobaan: %d", remaining))
 	}
 
-	if strings.ToUpper(strings.TrimSpace(user.Role)) != "ADMIN" && strings.ToUpper(strings.TrimSpace(user.Role)) != "SUPER_ADMIN" {
+	normalizedRole := utils.NormalizeRoleName(user.Role)
+	if normalizedRole != "ADMIN" && normalizedRole != "SUPER_ADMIN" {
 		locked, err := a.isSchoolAccountLocked(user.SchoolID)
 		if err != nil {
 			return utils.Error(c, 500, "Gagal memeriksa status akun", err.Error())
@@ -146,7 +147,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 	user.SessionVersion = sessionRow.SessionVersion
 
 	token, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"id": user.ID, "role": user.Role, "schoolId": user.SchoolID, "username": user.Username, "sessionVersion": user.SessionVersion, "exp": time.Now().Add(24 * time.Hour).Unix(),
+		"id": user.ID, "role": normalizedRole, "schoolId": user.SchoolID, "username": user.Username, "sessionVersion": user.SessionVersion, "exp": time.Now().Add(24 * time.Hour).Unix(),
 	}).SignedString([]byte(os.Getenv("JWT_SECRET")))
 
 	var school models.School
@@ -159,7 +160,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 	}
 
 	return utils.Success(c, 200, "Login successful", fiber.Map{
-		"role": user.Role, "username": user.Username, "school_id": user.SchoolID, "school_name": schoolName, "school_logo": schoolLogo, "school_features": fiber.Map{
+		"role": normalizedRole, "username": user.Username, "school_id": user.SchoolID, "school_name": schoolName, "school_logo": schoolLogo, "school_features": fiber.Map{
 			"inventory_module_enabled":     school.InventoryModuleEnabled,
 			"attendance_module_enabled":    school.AttendanceModuleEnabled,
 			"official_exam_module_enabled": school.OfficialExamModuleEnabled,
@@ -1981,6 +1982,7 @@ func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.Error(c, 500, "Failed Get Profile", err.Error())
 	}
+	profile.Role = utils.NormalizeRoleName(profile.Role)
 	return utils.Success(c, 200, "Success Get Profile", profile)
 }
 
