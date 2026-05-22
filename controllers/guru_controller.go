@@ -536,10 +536,11 @@ func (a *AppContext) GetTeacherSubjects(c *fiber.Ctx) error {
 	teacherID := c.Locals("userID").(uint)
 	var rows []map[string]interface{}
 	a.DB.Raw(`
-		SELECT ls.*, c.class_name, t.username AS teacher_name
+		SELECT ls.*, c.class_name, t.username AS teacher_name, COALESCE(cs.code, '') AS subject_code
 		FROM learning_subjects ls
 		LEFT JOIN class c ON c.id=ls.class_id
 		LEFT JOIN users t ON t.id=ls.teacher_id
+		LEFT JOIN curriculum_subjects cs ON cs.id=ls.curriculum_subject_id
 		WHERE ls.school_id=? AND ls.teacher_id=?
 		ORDER BY ls.created_at DESC
 	`, schoolID, teacherID).Scan(&rows)
@@ -1861,6 +1862,22 @@ func (a *AppContext) CreateLearningQuestionBankItem(c *fiber.Ctx) error {
 	return utils.Success(c, 201, "Success Create Question Bank Item", row)
 }
 
+func (a *AppContext) UploadLearningQuestionBankImage(c *fiber.Ctx) error {
+	file, err := c.FormFile("file")
+	if err != nil || file == nil {
+		return utils.Error(c, 400, "File gambar wajib diunggah")
+	}
+
+	imageURL, upErr := utils.SaveUploadedFile(c, file)
+	if upErr != nil {
+		return utils.Error(c, 500, "Gagal upload gambar soal", upErr.Error())
+	}
+
+	return utils.Success(c, 200, "Success Upload Question Bank Image", fiber.Map{
+		"url": imageURL,
+	})
+}
+
 func (a *AppContext) UpdateLearningQuestionBankItem(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var body struct {
@@ -1909,6 +1926,39 @@ func (a *AppContext) DeleteLearningQuestionBankItemsBulk(c *fiber.Ctx) error {
 	}
 	a.DB.Exec(`DELETE FROM learning_question_bank WHERE subject_id=? AND id IN ?`, subjectID, body.IDs)
 	return utils.Success(c, 200, "Success Delete Question Bank Items Bulk", fiber.Map{"deleted_ids": body.IDs})
+}
+
+func (a *AppContext) GetLearningQuestionBankTopicSuggestions(c *fiber.Ctx) error {
+	subjectID := c.Params("subjectId")
+	subject, code, message := a.loadGuruSubjectAccess(c, subjectID)
+	if code != 0 {
+		return utils.Error(c, code, message)
+	}
+
+	gradeLabel := strings.TrimSpace(c.Query("grade_label"))
+	if gradeLabel == "" {
+		gradeLabel = subject.ClassName
+	}
+	phaseName := strings.TrimSpace(c.Query("phase_name"))
+	curriculumName := strings.TrimSpace(c.Query("curriculum_name"))
+	if curriculumName == "" {
+		curriculumName = "Kurikulum Merdeka"
+	}
+
+	topics, err := services.GenerateCurriculumTopicSuggestionsWithHuggingFace(services.CurriculumTopicSuggestionInput{
+		SubjectName:    subject.Name,
+		ClassName:      subject.ClassName,
+		GradeLabel:     gradeLabel,
+		PhaseName:      phaseName,
+		CurriculumName: curriculumName,
+	})
+	if err != nil {
+		return utils.Error(c, 500, "Failed Generate Curriculum Topic Suggestions", err.Error())
+	}
+
+	return utils.Success(c, 200, "Success Generate Curriculum Topic Suggestions", fiber.Map{
+		"topics": topics,
+	})
 }
 
 func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
@@ -2309,6 +2359,308 @@ func (a *AppContext) GenerateLearningMaterialPptWithAI(c *fiber.Ctx) error {
 	})
 }
 
+func (a *AppContext) GenerateTeachingModuleWithAI(c *fiber.Ctx) error {
+	subjectID := c.Params("subjectId")
+	var body teachingModuleRequestBody
+	_ = c.BodyParser(&body)
+
+	subject, code, message := a.loadGuruSubjectAccess(c, subjectID)
+	if code != 0 {
+		return utils.Error(c, code, message)
+	}
+
+	input, validationMessage := buildTeachingModuleAIInput(body, subject)
+	if validationMessage != "" {
+		return utils.Error(c, 400, validationMessage)
+	}
+
+	draft, err := services.GenerateTeachingModuleDraftWithHuggingFace(input)
+	if err != nil {
+		return utils.Error(c, 500, "Failed Generate Teaching Module With AI", err.Error())
+	}
+
+	return utils.Success(c, 200, "Success Generate Teaching Module Draft", draft)
+}
+
+func (a *AppContext) SaveTeachingModuleDraft(c *fiber.Ctx) error {
+	subjectID := c.Params("subjectId")
+	var body struct {
+		teachingModuleRequestBody
+		Draft *services.TeachingModuleAIDraft `json:"draft"`
+	}
+	_ = c.BodyParser(&body)
+
+	subject, code, message := a.loadGuruSubjectAccess(c, subjectID)
+	if code != 0 {
+		return utils.Error(c, code, message)
+	}
+
+	input, validationMessage := buildTeachingModuleAIInput(body.teachingModuleRequestBody, subject)
+	if validationMessage != "" {
+		return utils.Error(c, 400, validationMessage)
+	}
+	if body.Draft == nil {
+		return utils.Error(c, 400, "draft is required")
+	}
+
+	teacherID := c.Locals("userID").(uint)
+	schoolID := c.Locals("schoolID").(uint)
+
+	type savedRow struct {
+		ID             uint      `json:"id" gorm:"column:id"`
+		Title          string    `json:"title" gorm:"column:title"`
+		Topic          string    `json:"topic" gorm:"column:topic"`
+		GradeLabel     string    `json:"grade_label" gorm:"column:grade_label"`
+		PhaseName      string    `json:"phase_name" gorm:"column:phase_name"`
+		CurriculumName string    `json:"curriculum_name" gorm:"column:curriculum_name"`
+		TimeAllocation string    `json:"time_allocation" gorm:"column:time_allocation"`
+		Meetings       int       `json:"meetings" gorm:"column:meetings"`
+		LearningModel  string    `json:"learning_model" gorm:"column:learning_model"`
+		Status         string    `json:"status" gorm:"column:status"`
+		CreatedAt      time.Time `json:"created_at" gorm:"column:created_at"`
+		UpdatedAt      time.Time `json:"updated_at" gorm:"column:updated_at"`
+	}
+
+	var row savedRow
+	if err := a.DB.Raw(`
+		INSERT INTO learning_teaching_modules (
+			school_id,
+			teacher_id,
+			subject_id,
+			title,
+			topic,
+			grade_label,
+			phase_name,
+			curriculum_name,
+			time_allocation,
+			meetings,
+			learning_model,
+			status,
+			input_payload,
+			draft_payload,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?::jsonb, ?::jsonb, NOW(), NOW())
+		RETURNING id, title, topic, grade_label, phase_name, curriculum_name, time_allocation, meetings, learning_model, status, created_at, updated_at
+	`,
+		schoolID,
+		teacherID,
+		subject.ID,
+		input.Title,
+		input.Topic,
+		input.GradeLabel,
+		input.PhaseName,
+		input.CurriculumName,
+		input.TimeAllocation,
+		input.Meetings,
+		input.LearningModel,
+		toJSONRaw(body.teachingModuleRequestBody),
+		toJSONRaw(body.Draft),
+	).Scan(&row).Error; err != nil {
+		return utils.Error(c, 500, "Failed Save Teaching Module Draft", err.Error())
+	}
+
+	return utils.Success(c, 201, "Success Save Teaching Module Draft", row)
+}
+
+func (a *AppContext) GetTeachingModuleDraftList(c *fiber.Ctx) error {
+	subjectID := c.Params("subjectId")
+	subject, code, message := a.loadGuruSubjectAccess(c, subjectID)
+	if code != 0 {
+		return utils.Error(c, code, message)
+	}
+
+	type teachingModuleListRow struct {
+		ID             uint                           `json:"id" gorm:"column:id"`
+		Title          string                         `json:"title" gorm:"column:title"`
+		Topic          string                         `json:"topic" gorm:"column:topic"`
+		GradeLabel     string                         `json:"grade_label" gorm:"column:grade_label"`
+		PhaseName      string                         `json:"phase_name" gorm:"column:phase_name"`
+		CurriculumName string                         `json:"curriculum_name" gorm:"column:curriculum_name"`
+		TimeAllocation string                         `json:"time_allocation" gorm:"column:time_allocation"`
+		Meetings       int                            `json:"meetings" gorm:"column:meetings"`
+		LearningModel  string                         `json:"learning_model" gorm:"column:learning_model"`
+		Status         string                         `json:"status" gorm:"column:status"`
+		CreatedAt      time.Time                      `json:"created_at" gorm:"column:created_at"`
+		UpdatedAt      time.Time                      `json:"updated_at" gorm:"column:updated_at"`
+		InputPayload   teachingModuleRequestBody      `json:"input" gorm:"-"`
+		InputRaw       string                         `json:"-" gorm:"column:input_payload"`
+		DraftPayload   services.TeachingModuleAIDraft `json:"draft" gorm:"-"`
+		DraftRaw       string                         `json:"-" gorm:"column:draft_payload"`
+	}
+
+	rows := make([]teachingModuleListRow, 0)
+	if err := a.DB.Raw(`
+		SELECT
+			id,
+			title,
+			topic,
+			grade_label,
+			phase_name,
+			curriculum_name,
+			time_allocation,
+			meetings,
+			learning_model,
+			status,
+			created_at,
+			updated_at,
+			COALESCE(input_payload::text, '{}') AS input_payload,
+			COALESCE(draft_payload::text, '{}') AS draft_payload
+		FROM learning_teaching_modules
+		WHERE school_id = ?
+		  AND teacher_id = ?
+		  AND subject_id = ?
+		ORDER BY updated_at DESC, id DESC
+		LIMIT 100
+	`, subject.SchoolID, subject.TeacherID, subject.ID).Scan(&rows).Error; err != nil {
+		return utils.Error(c, 500, "Failed Get Teaching Module Draft List", err.Error())
+	}
+
+	for index := range rows {
+		if strings.TrimSpace(rows[index].InputRaw) != "" {
+			_ = json.Unmarshal([]byte(rows[index].InputRaw), &rows[index].InputPayload)
+		}
+		if strings.TrimSpace(rows[index].DraftRaw) == "" {
+			continue
+		}
+		_ = json.Unmarshal([]byte(rows[index].DraftRaw), &rows[index].DraftPayload)
+	}
+
+	return utils.Success(c, 200, "Success Get Teaching Module Draft List", fiber.Map{
+		"items": rows,
+	})
+}
+
+func (a *AppContext) UpdateTeachingModuleDraft(c *fiber.Ctx) error {
+	subjectID := c.Params("subjectId")
+	moduleID := c.Params("moduleId")
+	var body struct {
+		teachingModuleRequestBody
+		Draft *services.TeachingModuleAIDraft `json:"draft"`
+	}
+	_ = c.BodyParser(&body)
+
+	subject, code, message := a.loadGuruSubjectAccess(c, subjectID)
+	if code != 0 {
+		return utils.Error(c, code, message)
+	}
+
+	module, code, message := a.loadTeachingModuleAccess(moduleID, subject)
+	if code != 0 {
+		return utils.Error(c, code, message)
+	}
+
+	input, validationMessage := buildTeachingModuleAIInput(body.teachingModuleRequestBody, subject)
+	if validationMessage != "" {
+		return utils.Error(c, 400, validationMessage)
+	}
+	if body.Draft == nil {
+		return utils.Error(c, 400, "draft is required")
+	}
+
+	type updatedRow struct {
+		ID             uint      `json:"id" gorm:"column:id"`
+		Title          string    `json:"title" gorm:"column:title"`
+		Topic          string    `json:"topic" gorm:"column:topic"`
+		GradeLabel     string    `json:"grade_label" gorm:"column:grade_label"`
+		PhaseName      string    `json:"phase_name" gorm:"column:phase_name"`
+		CurriculumName string    `json:"curriculum_name" gorm:"column:curriculum_name"`
+		TimeAllocation string    `json:"time_allocation" gorm:"column:time_allocation"`
+		Meetings       int       `json:"meetings" gorm:"column:meetings"`
+		LearningModel  string    `json:"learning_model" gorm:"column:learning_model"`
+		Status         string    `json:"status" gorm:"column:status"`
+		CreatedAt      time.Time `json:"created_at" gorm:"column:created_at"`
+		UpdatedAt      time.Time `json:"updated_at" gorm:"column:updated_at"`
+	}
+
+	var row updatedRow
+	if err := a.DB.Raw(`
+		UPDATE learning_teaching_modules
+		SET title = ?,
+		    topic = ?,
+		    grade_label = ?,
+		    phase_name = ?,
+		    curriculum_name = ?,
+		    time_allocation = ?,
+		    meetings = ?,
+		    learning_model = ?,
+		    input_payload = ?::jsonb,
+		    draft_payload = ?::jsonb,
+		    updated_at = NOW()
+		WHERE id = ?
+		RETURNING id, title, topic, grade_label, phase_name, curriculum_name, time_allocation, meetings, learning_model, status, created_at, updated_at
+	`,
+		input.Title,
+		input.Topic,
+		input.GradeLabel,
+		input.PhaseName,
+		input.CurriculumName,
+		input.TimeAllocation,
+		input.Meetings,
+		input.LearningModel,
+		toJSONRaw(body.teachingModuleRequestBody),
+		toJSONRaw(body.Draft),
+		module.ID,
+	).Scan(&row).Error; err != nil {
+		return utils.Error(c, 500, "Failed Update Teaching Module Draft", err.Error())
+	}
+
+	return utils.Success(c, 200, "Success Update Teaching Module Draft", row)
+}
+
+func (a *AppContext) DeleteTeachingModuleDraft(c *fiber.Ctx) error {
+	subjectID := c.Params("subjectId")
+	moduleID := c.Params("moduleId")
+
+	subject, code, message := a.loadGuruSubjectAccess(c, subjectID)
+	if code != 0 {
+		return utils.Error(c, code, message)
+	}
+
+	module, code, message := a.loadTeachingModuleAccess(moduleID, subject)
+	if code != 0 {
+		return utils.Error(c, code, message)
+	}
+
+	var row struct {
+		ID uint `json:"id" gorm:"column:id"`
+	}
+	if err := a.DB.Raw(`DELETE FROM learning_teaching_modules WHERE id = ? RETURNING id`, module.ID).Scan(&row).Error; err != nil {
+		return utils.Error(c, 500, "Failed Delete Teaching Module Draft", err.Error())
+	}
+
+	return utils.Success(c, 200, "Success Delete Teaching Module Draft", fiber.Map{
+		"id": row.ID,
+	})
+}
+
+func (a *AppContext) GetTeachingModuleSuggestions(c *fiber.Ctx) error {
+	subjectID := c.Params("subjectId")
+	subject, code, message := a.loadGuruSubjectAccess(c, subjectID)
+	if code != 0 {
+		return utils.Error(c, code, message)
+	}
+
+	gradeLabel := strings.TrimSpace(c.Query("grade_label"))
+	if gradeLabel == "" {
+		gradeLabel = subject.ClassName
+	}
+
+	suggestions, err := services.GenerateTeachingModuleSuggestionsWithHuggingFace(services.TeachingModuleSuggestionInput{
+		SubjectName:    subject.Name,
+		ClassName:      subject.ClassName,
+		GradeLabel:     gradeLabel,
+		PhaseName:      strings.TrimSpace(c.Query("phase_name")),
+		CurriculumName: strings.TrimSpace(c.Query("curriculum_name")),
+		Topic:          strings.TrimSpace(c.Query("topic")),
+	})
+	if err != nil {
+		return utils.Error(c, 500, "Failed Generate Teaching Module Suggestions", err.Error())
+	}
+
+	return utils.Success(c, 200, "Success Generate Teaching Module Suggestions", suggestions)
+}
+
 func (a *AppContext) PublishLearningMaterialPptWithAI(c *fiber.Ctx) error {
 	subjectID := c.Params("subjectId")
 	userID := c.Locals("userID").(uint)
@@ -2399,6 +2751,65 @@ func fallbackTitle(title, topic string) string {
 	return "Materi " + topic
 }
 
+type teachingModuleRequestBody struct {
+	Title                  string `json:"title"`
+	Topic                  string `json:"topic"`
+	GradeLabel             string `json:"grade_label"`
+	PhaseName              string `json:"phase_name"`
+	CurriculumName         string `json:"curriculum_name"`
+	CPReference            string `json:"cp_reference"`
+	LearningObjectives     string `json:"learning_objectives"`
+	MaterialScope          string `json:"material_scope"`
+	TimeAllocation         string `json:"time_allocation"`
+	Meetings               int    `json:"meetings"`
+	StudentCharacteristics string `json:"student_characteristics"`
+	Facilities             string `json:"facilities"`
+	PancasilaProfile       string `json:"pancasila_profile"`
+	LearningModel          string `json:"learning_model"`
+	AdditionalInstructions string `json:"additional_instructions"`
+}
+
+func buildTeachingModuleAIInput(body teachingModuleRequestBody, subject *guruSubjectAccess) (services.TeachingModuleAIInput, string) {
+	input := services.TeachingModuleAIInput{
+		SubjectName:            strings.TrimSpace(subject.Name),
+		ClassName:              strings.TrimSpace(subject.ClassName),
+		GradeLabel:             strings.TrimSpace(body.GradeLabel),
+		PhaseName:              strings.TrimSpace(body.PhaseName),
+		CurriculumName:         strings.TrimSpace(body.CurriculumName),
+		Title:                  strings.TrimSpace(body.Title),
+		Topic:                  strings.TrimSpace(body.Topic),
+		CPReference:            strings.TrimSpace(body.CPReference),
+		LearningObjectives:     strings.TrimSpace(body.LearningObjectives),
+		MaterialScope:          strings.TrimSpace(body.MaterialScope),
+		TimeAllocation:         strings.TrimSpace(body.TimeAllocation),
+		Meetings:               body.Meetings,
+		StudentCharacteristics: strings.TrimSpace(body.StudentCharacteristics),
+		Facilities:             strings.TrimSpace(body.Facilities),
+		PancasilaProfile:       strings.TrimSpace(body.PancasilaProfile),
+		LearningModel:          strings.TrimSpace(body.LearningModel),
+		AdditionalInstructions: strings.TrimSpace(body.AdditionalInstructions),
+	}
+
+	switch {
+	case input.Title == "":
+		return input, "title is required"
+	case input.Topic == "":
+		return input, "topic is required"
+	case input.CPReference == "":
+		return input, "cp_reference is required"
+	case input.LearningObjectives == "":
+		return input, "learning_objectives is required"
+	case input.MaterialScope == "":
+		return input, "material_scope is required"
+	case input.TimeAllocation == "":
+		return input, "time_allocation is required"
+	case input.Meetings <= 0 || input.Meetings > 12:
+		return input, "meetings must be between 1 and 12"
+	}
+
+	return input, ""
+}
+
 func max(a, b int) int {
 	if a > b {
 		return a
@@ -2435,6 +2846,31 @@ func (a *AppContext) loadGuruSubjectAccess(c *fiber.Ctx, subjectID string) (*gur
 	}
 
 	return &subject, 0, ""
+}
+
+type teachingModuleAccess struct {
+	ID        uint `json:"id"`
+	SchoolID  uint `json:"school_id"`
+	TeacherID uint `json:"teacher_id"`
+	SubjectID uint `json:"subject_id"`
+}
+
+func (a *AppContext) loadTeachingModuleAccess(moduleID string, subject *guruSubjectAccess) (*teachingModuleAccess, int, string) {
+	var module teachingModuleAccess
+	a.DB.Raw(`
+		SELECT id, school_id, teacher_id, subject_id
+		FROM learning_teaching_modules
+		WHERE id = ?
+	`, moduleID).Scan(&module)
+
+	if module.ID == 0 {
+		return nil, 404, "Teaching module not found"
+	}
+	if module.SchoolID != subject.SchoolID || module.TeacherID != subject.TeacherID || module.SubjectID != subject.ID {
+		return nil, 403, "Forbidden teaching module access"
+	}
+
+	return &module, 0, ""
 }
 
 func normalizePowerPointSlidesForGo(raw []map[string]interface{}, fallbackTitle string) []services.PowerPointSlide {

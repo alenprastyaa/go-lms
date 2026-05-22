@@ -129,22 +129,29 @@ func (a *AppContext) DeletePushSubscription(c *fiber.Ctx) error {
 }
 
 func announcementPushRoles(targetAudience string) []string {
-	switch strings.ToUpper(strings.TrimSpace(targetAudience)) {
-	case announcementTargetAll:
-		return []string{"ADMIN", "GURU", "SISWA", "SARPRAS", "KOPERASI"}
-	case announcementTargetAdmin:
-		return []string{"ADMIN"}
-	case announcementTargetGuru:
-		return []string{"GURU"}
-	case announcementTargetSiswa:
-		return []string{"SISWA"}
-	case announcementTargetSarpras:
-		return []string{"SARPRAS"}
-	case announcementTargetKoperasi:
-		return []string{"KOPERASI"}
-	default:
-		return []string{}
+	targets := announcementTargetValues(targetAudience)
+	roles := []string{}
+	seen := map[string]bool{}
+	appendRole := func(role string) {
+		if seen[role] {
+			return
+		}
+		seen[role] = true
+		roles = append(roles, role)
 	}
+
+	for _, target := range targets {
+		switch target {
+		case announcementTargetAll:
+			for _, role := range []string{"ADMIN", "GURU", "SISWA", "SARPRAS", "KOPERASI"} {
+				appendRole(role)
+			}
+		case announcementTargetSuperAdmin, announcementTargetAdmin, announcementTargetGuru, announcementTargetSiswa, announcementTargetSarpras, announcementTargetKoperasi:
+			appendRole(target)
+		}
+	}
+
+	return roles
 }
 
 func assignmentKindLabel(assignmentType string) string {

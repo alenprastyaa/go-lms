@@ -25,24 +25,25 @@ const (
 )
 
 type announcementItem struct {
-	ID             uint       `json:"id"`
-	SchoolID       uint       `json:"school_id"`
-	Title          string     `json:"title"`
-	Content        string     `json:"content"`
-	TargetAudience string     `json:"target_audience"`
-	TargetLabel    string     `json:"target_label"`
-	Status         string     `json:"status"`
-	StatusLabel    string     `json:"status_label"`
-	ReviewedAt     *time.Time `json:"reviewed_at"`
-	PublishedAt    *time.Time `json:"published_at"`
-	DeactivatedAt  *time.Time `json:"deactivated_at"`
-	CreatedBy      *uint      `json:"created_by"`
-	UpdatedBy      *uint      `json:"updated_by"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID              uint       `json:"id"`
+	SchoolID        uint       `json:"school_id"`
+	Title           string     `json:"title"`
+	Content         string     `json:"content"`
+	TargetAudience  string     `json:"target_audience"`
+	TargetAudiences []string   `json:"target_audiences"`
+	TargetLabel     string     `json:"target_label"`
+	Status          string     `json:"status"`
+	StatusLabel     string     `json:"status_label"`
+	ReviewedAt      *time.Time `json:"reviewed_at"`
+	PublishedAt     *time.Time `json:"published_at"`
+	DeactivatedAt   *time.Time `json:"deactivated_at"`
+	CreatedBy       *uint      `json:"created_by"`
+	UpdatedBy       *uint      `json:"updated_by"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
-func announcementTargetLabel(value string) string {
+func announcementTargetSingleLabel(value string) string {
 	switch strings.ToUpper(strings.TrimSpace(value)) {
 	case announcementTargetAll:
 		return "Semua Warga Sekolah"
@@ -63,6 +64,63 @@ func announcementTargetLabel(value string) string {
 	}
 }
 
+func announcementSplitTargets(value string) []string {
+	cleaned := strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(value)), ";", ",")
+	parts := strings.Split(cleaned, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		target := strings.TrimSpace(part)
+		if target != "" {
+			values = append(values, target)
+		}
+	}
+	return values
+}
+
+func announcementValidTarget(value string) bool {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case announcementTargetAll, announcementTargetSuperAdmin, announcementTargetAdmin, announcementTargetGuru, announcementTargetSiswa, announcementTargetSarpras, announcementTargetKoperasi:
+		return true
+	default:
+		return false
+	}
+}
+
+func announcementTargetValues(value string) []string {
+	seen := map[string]bool{}
+	targets := []string{}
+	for _, target := range announcementSplitTargets(value) {
+		if !announcementValidTarget(target) {
+			continue
+		}
+		if target == announcementTargetAll {
+			return []string{announcementTargetAll}
+		}
+		if seen[target] {
+			continue
+		}
+		seen[target] = true
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+func announcementTargetLabel(value string) string {
+	targets := announcementTargetValues(value)
+	if len(targets) == 0 {
+		return "Tidak Dikenal"
+	}
+	if len(targets) == 1 {
+		return announcementTargetSingleLabel(targets[0])
+	}
+
+	labels := make([]string, 0, len(targets))
+	for _, target := range targets {
+		labels = append(labels, announcementTargetSingleLabel(target))
+	}
+	return strings.Join(labels, ", ")
+}
+
 func announcementStatusLabel(value string) string {
 	switch strings.ToUpper(strings.TrimSpace(value)) {
 	case announcementStatusDraft:
@@ -76,14 +134,53 @@ func announcementStatusLabel(value string) string {
 	}
 }
 
-func announcementNormalizeTarget(value string) (string, error) {
-	normalized := strings.ToUpper(strings.TrimSpace(value))
-	switch normalized {
-	case announcementTargetAll, announcementTargetSuperAdmin, announcementTargetAdmin, announcementTargetGuru, announcementTargetSiswa, announcementTargetSarpras, announcementTargetKoperasi:
-		return normalized, nil
-	default:
-		return "", fmt.Errorf("Target pengumuman tidak valid")
+func announcementNormalizeTargets(values []string) (string, error) {
+	seen := map[string]bool{}
+	targets := []string{}
+	for _, value := range values {
+		for _, target := range announcementSplitTargets(value) {
+			if !announcementValidTarget(target) {
+				return "", fmt.Errorf("Target pengumuman tidak valid")
+			}
+			if target == announcementTargetAll {
+				return announcementTargetAll, nil
+			}
+			if seen[target] {
+				continue
+			}
+			seen[target] = true
+			targets = append(targets, target)
+		}
 	}
+
+	if len(targets) == 0 {
+		return "", fmt.Errorf("Target pengumuman wajib dipilih")
+	}
+
+	return strings.Join(targets, ","), nil
+}
+
+func announcementNormalizeTargetPayload(targetAudience string, targetAudiences []string) (string, error) {
+	values := []string{}
+	if strings.TrimSpace(targetAudience) != "" {
+		values = append(values, targetAudience)
+	}
+	values = append(values, targetAudiences...)
+	return announcementNormalizeTargets(values)
+}
+
+func announcementVisibleToRole(targetAudience, role string) bool {
+	role = strings.ToUpper(strings.TrimSpace(role))
+	if role == "" {
+		return false
+	}
+
+	for _, target := range announcementTargetValues(targetAudience) {
+		if target == announcementTargetAll || target == role {
+			return true
+		}
+	}
+	return false
 }
 
 func announcementNormalizeStatus(value string) string {
@@ -134,12 +231,6 @@ func parseAnnouncementTime(raw string) (*time.Time, error) {
 	return nil, fmt.Errorf("Format tanggal expired tidak valid")
 }
 
-func announcementVisibleToRole(targetAudience, role string) bool {
-	target := strings.ToUpper(strings.TrimSpace(targetAudience))
-	role = strings.ToUpper(strings.TrimSpace(role))
-	return target == announcementTargetAll || target == role
-}
-
 func normalizeAnnouncementItem(item *announcementItem) {
 	if item == nil {
 		return
@@ -169,21 +260,22 @@ func normalizeAnnouncementItems(items []announcementItem) {
 
 func announcementToResponse(item models.SchoolAnnouncement) announcementItem {
 	response := announcementItem{
-		ID:             item.ID,
-		SchoolID:       item.SchoolID,
-		Title:          item.Title,
-		Content:        item.Content,
-		TargetAudience: item.TargetAudience,
-		TargetLabel:    announcementTargetLabel(item.TargetAudience),
-		Status:         item.Status,
-		StatusLabel:    announcementStatusLabel(item.Status),
-		ReviewedAt:     item.ReviewedAt,
-		PublishedAt:    item.PublishedAt,
-		DeactivatedAt:  item.DeactivatedAt,
-		CreatedBy:      item.CreatedBy,
-		UpdatedBy:      item.UpdatedBy,
-		CreatedAt:      item.CreatedAt,
-		UpdatedAt:      item.UpdatedAt,
+		ID:              item.ID,
+		SchoolID:        item.SchoolID,
+		Title:           item.Title,
+		Content:         item.Content,
+		TargetAudience:  item.TargetAudience,
+		TargetAudiences: announcementTargetValues(item.TargetAudience),
+		TargetLabel:     announcementTargetLabel(item.TargetAudience),
+		Status:          item.Status,
+		StatusLabel:     announcementStatusLabel(item.Status),
+		ReviewedAt:      item.ReviewedAt,
+		PublishedAt:     item.PublishedAt,
+		DeactivatedAt:   item.DeactivatedAt,
+		CreatedBy:       item.CreatedBy,
+		UpdatedBy:       item.UpdatedBy,
+		CreatedAt:       item.CreatedAt,
+		UpdatedAt:       item.UpdatedAt,
 	}
 	normalizeAnnouncementItem(&response)
 	return response
@@ -210,11 +302,8 @@ func (a *AppContext) fetchAnnouncementsForSchool(schoolID uint, role string, inc
 		query = query.Where("sa.status = ?", announcementStatusActive)
 	}
 
-	if strings.TrimSpace(role) != "" {
-		query = query.Where("(sa.target_audience = ? OR sa.target_audience = ?)", announcementTargetAll, strings.ToUpper(strings.TrimSpace(role)))
-	}
-
-	if limit > 0 {
+	hasRoleFilter := strings.TrimSpace(role) != ""
+	if limit > 0 && !hasRoleFilter {
 		query = query.Order(announcementListOrder()).Limit(limit)
 	} else {
 		query = query.Order(announcementListOrder())
@@ -227,7 +316,13 @@ func (a *AppContext) fetchAnnouncementsForSchool(schoolID uint, role string, inc
 
 	items := make([]announcementItem, 0, len(rows))
 	for _, row := range rows {
+		if hasRoleFilter && !announcementVisibleToRole(row.TargetAudience, role) {
+			continue
+		}
 		items = append(items, announcementToResponse(row))
+		if hasRoleFilter && limit > 0 && len(items) >= limit {
+			break
+		}
 	}
 	normalizeAnnouncementItems(items)
 	return items, nil
@@ -309,10 +404,11 @@ func (a *AppContext) CreateSchoolAnnouncement(c *fiber.Ctx) error {
 	}
 
 	var body struct {
-		Title          string `json:"title"`
-		Content        string `json:"content"`
-		TargetAudience string `json:"target_audience"`
-		DeactivatedAt  string `json:"deactivated_at"`
+		Title           string   `json:"title"`
+		Content         string   `json:"content"`
+		TargetAudience  string   `json:"target_audience"`
+		TargetAudiences []string `json:"target_audiences"`
+		DeactivatedAt   string   `json:"deactivated_at"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return utils.Error(c, 400, "Payload pengumuman tidak valid", err.Error())
@@ -327,7 +423,7 @@ func (a *AppContext) CreateSchoolAnnouncement(c *fiber.Ctx) error {
 		return utils.Error(c, 400, "Isi pengumuman wajib diisi")
 	}
 
-	targetAudience, err := announcementNormalizeTarget(body.TargetAudience)
+	targetAudience, err := announcementNormalizeTargetPayload(body.TargetAudience, body.TargetAudiences)
 	if err != nil {
 		return utils.Error(c, 400, err.Error())
 	}
@@ -377,10 +473,11 @@ func (a *AppContext) UpdateSchoolAnnouncement(c *fiber.Ctx) error {
 	}
 
 	var body struct {
-		Title          string `json:"title"`
-		Content        string `json:"content"`
-		TargetAudience string `json:"target_audience"`
-		DeactivatedAt  string `json:"deactivated_at"`
+		Title           string   `json:"title"`
+		Content         string   `json:"content"`
+		TargetAudience  string   `json:"target_audience"`
+		TargetAudiences []string `json:"target_audiences"`
+		DeactivatedAt   string   `json:"deactivated_at"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return utils.Error(c, 400, "Payload pengumuman tidak valid", err.Error())
@@ -395,7 +492,7 @@ func (a *AppContext) UpdateSchoolAnnouncement(c *fiber.Ctx) error {
 		return utils.Error(c, 400, "Isi pengumuman wajib diisi")
 	}
 
-	targetAudience, err := announcementNormalizeTarget(body.TargetAudience)
+	targetAudience, err := announcementNormalizeTargetPayload(body.TargetAudience, body.TargetAudiences)
 	if err != nil {
 		return utils.Error(c, 400, err.Error())
 	}

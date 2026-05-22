@@ -22,6 +22,14 @@ type QuestionBankAIInput struct {
 	AdditionalInstructions string
 }
 
+type CurriculumTopicSuggestionInput struct {
+	SubjectName    string
+	ClassName      string
+	GradeLabel     string
+	PhaseName      string
+	CurriculumName string
+}
+
 type QuestionBankAIItem struct {
 	QuestionType       string   `json:"question_type"`
 	QuestionText       string   `json:"question_text"`
@@ -30,6 +38,208 @@ type QuestionBankAIItem struct {
 	Options            []string `json:"options"`
 	CorrectOption      *int     `json:"correct_option"`
 	Rubric             *string  `json:"rubric"`
+}
+
+type curriculumTopicSuggestionResponse struct {
+	Topics []string `json:"topics"`
+}
+
+func GenerateCurriculumTopicSuggestionsWithHuggingFace(input CurriculumTopicSuggestionInput) ([]string, error) {
+	fallbackTopics := buildFallbackCurriculumTopicSuggestions(input)
+	prompt := buildCurriculumTopicSuggestionPrompt(input)
+	text, err := callHuggingFace(prompt, "Anda adalah asisten kurikulum sekolah Indonesia yang hanya mengembalikan JSON valid tanpa markdown.", 0.3)
+	if err != nil {
+		return fallbackTopics, nil
+	}
+
+	extracted := extractJSONObject(text)
+	if !json.Valid([]byte(extracted)) {
+		return fallbackTopics, nil
+	}
+
+	var parsed curriculumTopicSuggestionResponse
+	if err := json.Unmarshal([]byte(extracted), &parsed); err != nil {
+		return fallbackTopics, nil
+	}
+
+	topics := normalizeTopicSuggestions(parsed.Topics)
+	if len(topics) == 0 {
+		return fallbackTopics, nil
+	}
+	return topics, nil
+}
+
+func buildCurriculumTopicSuggestionPrompt(input CurriculumTopicSuggestionInput) string {
+	curriculum := fallbackText(input.CurriculumName, "Kurikulum Merdeka")
+	parts := []string{
+		"Buat daftar materi/topik pembelajaran yang lazim dan relevan untuk guru membuat soal.",
+		"Gunakan Bahasa Indonesia yang singkat dan mudah dipahami guru.",
+		fmt.Sprintf("Kurikulum: %s.", curriculum),
+		fmt.Sprintf("Mapel: %s.", fallbackText(input.SubjectName, "-")),
+		fmt.Sprintf("Kelas: %s.", fallbackText(input.ClassName, "-")),
+	}
+
+	if strings.TrimSpace(input.GradeLabel) != "" {
+		parts = append(parts, fmt.Sprintf("Jenjang/kelas: %s.", strings.TrimSpace(input.GradeLabel)))
+	}
+	if strings.TrimSpace(input.PhaseName) != "" {
+		parts = append(parts, fmt.Sprintf("Fase: %s.", strings.TrimSpace(input.PhaseName)))
+	}
+
+	parts = append(parts,
+		"Daftar harus berupa materi yang bisa langsung dipilih sebagai topik pembuatan soal.",
+		"Jangan terlalu teknis, jangan terlalu panjang, dan jangan membuat capaian pembelajaran berbentuk paragraf.",
+		"Hasilkan 8 sampai 12 topik.",
+		"Kembalikan JSON saja tanpa markdown.",
+		`Struktur JSON wajib: {"topics":["Materi 1","Materi 2"]}`,
+	)
+
+	return strings.Join(parts, "\n")
+}
+
+func normalizeTopicSuggestions(items []string) []string {
+	topics := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		topic := strings.TrimSpace(item)
+		if topic == "" {
+			continue
+		}
+		key := strings.ToLower(strings.Join(strings.Fields(topic), " "))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		topics = append(topics, topic)
+		if len(topics) >= 12 {
+			break
+		}
+	}
+	return topics
+}
+
+func buildFallbackCurriculumTopicSuggestions(input CurriculumTopicSuggestionInput) []string {
+	subjectName := fallbackText(input.SubjectName, "Mata Pelajaran")
+	category := inferTeachingModuleSubjectCategory(subjectName)
+
+	categoryTopics := map[string][]string{
+		"Numerasi": {
+			"Bilangan dan operasi hitung",
+			"Persamaan dan pertidaksamaan",
+			"Fungsi dan grafik",
+			"Geometri dan pengukuran",
+			"Statistika dasar",
+			"Peluang sederhana",
+			"Pemecahan masalah kontekstual",
+			"Perbandingan dan skala",
+		},
+		"Sains": {
+			"Pengukuran dan besaran",
+			"Zat dan perubahannya",
+			"Gaya, gerak, dan energi",
+			"Sistem makhluk hidup",
+			"Ekosistem dan lingkungan",
+			"Gelombang dan bunyi",
+			"Listrik dan rangkaian sederhana",
+			"Metode ilmiah dan eksperimen",
+		},
+		"Bahasa": {
+			"Teks deskripsi dan observasi",
+			"Teks narasi dan cerita",
+			"Teks argumentasi",
+			"Gagasan pokok dan simpulan",
+			"Ejaan dan kalimat efektif",
+			"Berbicara dan presentasi",
+			"Membaca kritis",
+			"Menulis terstruktur",
+		},
+		"Sosial Humaniora": {
+			"Interaksi sosial",
+			"Kegiatan ekonomi",
+			"Perubahan sosial budaya",
+			"Sejarah peristiwa penting",
+			"Peta, wilayah, dan keruangan",
+			"Lembaga sosial dan pemerintahan",
+			"Hak dan kewajiban warga negara",
+			"Masalah sosial di lingkungan sekitar",
+		},
+		"Teknologi": {
+			"Algoritma dan logika dasar",
+			"Pemrograman dasar",
+			"Data dan representasi informasi",
+			"Jaringan komputer dasar",
+			"Sistem komputer",
+			"Keamanan digital",
+			"Antarmuka dan pengalaman pengguna",
+			"Proyek teknologi sederhana",
+		},
+		"Keagamaan": {
+			"Nilai keimanan dan akhlak",
+			"Ibadah dalam kehidupan sehari-hari",
+			"Keteladanan tokoh",
+			"Adab dan etika pergaulan",
+			"Pemahaman ayat atau hadis pilihan",
+			"Toleransi dan moderasi",
+			"Tanggung jawab sebagai pelajar",
+			"Refleksi nilai keagamaan",
+		},
+		"Seni": {
+			"Unsur seni dan estetika",
+			"Apresiasi karya seni",
+			"Karya dua dimensi",
+			"Karya tiga dimensi",
+			"Musik dan ritme dasar",
+			"Ekspresi kreatif",
+			"Proses berkarya",
+			"Presentasi hasil karya",
+		},
+		"Olahraga": {
+			"Kebugaran jasmani",
+			"Gerak dasar",
+			"Permainan bola besar",
+			"Permainan bola kecil",
+			"Atletik dasar",
+			"Senam dan kelentukan",
+			"Pola hidup sehat",
+			"Sportivitas dan kerja sama",
+		},
+		"Kejuruan": {
+			"Keselamatan dan kesehatan kerja",
+			"Dasar proses kerja kejuruan",
+			"Penggunaan alat dan bahan",
+			"Standar prosedur operasional",
+			"Dokumentasi hasil kerja",
+			"Pelayanan atau kualitas produk",
+			"Troubleshooting dasar",
+			"Proyek praktik sederhana",
+		},
+		"Umum": {
+			fmt.Sprintf("Konsep dasar %s", subjectName),
+			fmt.Sprintf("Penerapan %s dalam konteks sehari-hari", subjectName),
+			fmt.Sprintf("Latihan dan penguatan %s", subjectName),
+			fmt.Sprintf("Analisis materi inti %s", subjectName),
+			fmt.Sprintf("Evaluasi pemahaman %s", subjectName),
+			fmt.Sprintf("Proyek sederhana %s", subjectName),
+			fmt.Sprintf("Diskusi topik penting %s", subjectName),
+			fmt.Sprintf("Refleksi pembelajaran %s", subjectName),
+		},
+	}
+
+	topics := categoryTopics[category]
+	if len(topics) == 0 {
+		topics = categoryTopics["Umum"]
+	}
+
+	grade := strings.TrimSpace(input.GradeLabel)
+	if grade != "" {
+		adapted := make([]string, 0, len(topics))
+		for _, topic := range topics {
+			adapted = append(adapted, fmt.Sprintf("%s (%s)", topic, grade))
+		}
+		topics = adapted
+	}
+
+	return normalizeTopicSuggestions(topics)
 }
 
 func buildQuestionBankPrompt(input QuestionBankAIInput) string {

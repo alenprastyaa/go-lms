@@ -456,8 +456,29 @@ func NewDatabase() (*gorm.DB, error) {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
+		`CREATE TABLE IF NOT EXISTS learning_teaching_modules (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			teacher_id BIGINT NOT NULL,
+			subject_id BIGINT NOT NULL,
+			title TEXT NOT NULL,
+			topic TEXT NOT NULL,
+			grade_label TEXT NULL,
+			phase_name TEXT NULL,
+			curriculum_name TEXT NULL,
+			time_allocation TEXT NOT NULL,
+			meetings INT NOT NULL DEFAULT 1,
+			learning_model TEXT NULL,
+			status TEXT NOT NULL DEFAULT 'DRAFT',
+			input_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+			draft_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_school_invoices_school_status ON school_invoices (school_id, status, due_date)`,
 		`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_school_user ON push_subscriptions (school_id, user_id, is_active)`,
+		`CREATE INDEX IF NOT EXISTS idx_learning_teaching_modules_subject_updated ON learning_teaching_modules (subject_id, updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_learning_teaching_modules_teacher_subject ON learning_teaching_modules (teacher_id, subject_id, created_at DESC)`,
 	}
 	for _, stmt := range indexStatements {
 		if err := db.Exec(stmt).Error; err != nil {
