@@ -1945,7 +1945,7 @@ func (a *AppContext) GetLearningQuestionBankTopicSuggestions(c *fiber.Ctx) error
 		curriculumName = "Kurikulum Merdeka"
 	}
 
-	topics, err := services.GenerateCurriculumTopicSuggestionsWithHuggingFace(services.CurriculumTopicSuggestionInput{
+	topics, err := services.GenerateCurriculumTopicSuggestionsWithGemini(services.CurriculumTopicSuggestionInput{
 		SubjectName:    subject.Name,
 		ClassName:      subject.ClassName,
 		GradeLabel:     gradeLabel,
@@ -2009,7 +2009,7 @@ func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
 		return utils.Error(c, code, message)
 	}
 
-	items, err := services.GenerateQuestionBankItemsWithHuggingFace(services.QuestionBankAIInput{
+	items, err := services.GenerateQuestionBankItemsWithGemini(services.QuestionBankAIInput{
 		SubjectName:            subject.Name,
 		ClassName:              subject.ClassName,
 		GradeLabel:             strings.TrimSpace(body.GradeLabel),
@@ -2026,7 +2026,7 @@ func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Failed Generate Question Bank With AI", err.Error())
 	}
 	if len(items) == 0 {
-		return utils.Error(c, 500, "Failed Generate Question Bank With AI", "Hasil Hugging Face tidak valid untuk dijadikan bank soal")
+		return utils.Error(c, 500, "Failed Generate Question Bank With AI", "Hasil Gemini tidak valid untuk dijadikan bank soal")
 	}
 
 	return utils.Success(c, 200, "Success Generate Question Bank Preview", fiber.Map{

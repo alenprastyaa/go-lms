@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"lms/services"
+	"log"
 	"regexp"
 	"strings"
 
@@ -213,54 +214,38 @@ func isUsableAIAnswer(answer string) bool {
 	return true
 }
 
-func fallbackSystemChatbotAnswer(question string, counts struct {
-	Teachers int `json:"teachers"`
-	Students int `json:"students"`
-	Classes  int `json:"classes"`
-	Subjects int `json:"subjects"`
-}) string {
-	_ = counts
-	_ = question
-	return "Maaf, saya belum bisa menjawab dengan yakin saat ini. Coba kirim pertanyaan yang lebih spesifik, atau pecah jadi satu pertanyaan per pesan supaya saya bisa bantu lebih tepat."
-}
-
 func (a *AppContext) AskSystemChatbot(c *fiber.Ctx) error {
 	var body struct {
-		Question string `json:"question"`
+		Question string                          `json:"question"`
+		History  []services.SystemChatbotMessage `json:"history"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return utils.Error(c, 400, "Format pertanyaan tidak valid")
 	}
 
-	question := strings.ToLower(strings.TrimSpace(body.Question))
+	question := strings.TrimSpace(body.Question)
 	if question == "" {
 		return utils.Error(c, 400, "Pertanyaan tidak boleh kosong")
 	}
-	if len(question) > 500 {
-		return utils.Error(c, 400, "Pertanyaan terlalu panjang, mohon ringkas maksimal 500 karakter")
+	if len(question) > 4000 {
+		return utils.Error(c, 400, "Pertanyaan terlalu panjang, mohon ringkas maksimal 4000 karakter")
 	}
 
 	answer, aiErr := services.GenerateSystemChatbotAnswer(services.SystemChatbotInput{
 		Question: question,
+		History:  body.History,
 	})
 	answer = cleanAIAnswer(answer)
-	if !isUsableAIAnswer(answer) || aiErr != nil {
-		answer = fallbackSystemChatbotAnswer(question, struct {
-			Teachers int `json:"teachers"`
-			Students int `json:"students"`
-			Classes  int `json:"classes"`
-			Subjects int `json:"subjects"`
-		}{})
+	if aiErr != nil {
+		log.Printf("qwen chatbot error: %v", aiErr)
+		return utils.Error(c, 502, "AI Qwen sedang tidak tersambung. Coba lagi beberapa saat.", aiErr.Error())
+	}
+	if !isUsableAIAnswer(answer) {
+		log.Printf("qwen chatbot returned unusable answer")
+		return utils.Error(c, 502, "AI Qwen belum mengembalikan jawaban yang bisa dipakai. Coba ulangi pertanyaan.")
 	}
 
-	return utils.Success(c, 200, "Jawaban chatbot berhasil dibuat", fiber.Map{
-		"role_hint": "Asisten ini bisa membantu pertanyaan umum lintas topik, bukan hanya topik sekolah.",
-		"answer":    answer,
-		"suggestions": []string{
-			"Jelaskan topik ini dengan bahasa sederhana.",
-			"Buat langkah-langkah singkat untuk masalah ini.",
-			"Ringkas jawaban ini dalam 3 poin.",
-			"Beri contoh praktis yang mudah diikuti.",
-		},
+	return utils.Success(c, 200, "Jawaban AI berhasil dibuat", fiber.Map{
+		"answer": answer,
 	})
 }

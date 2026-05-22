@@ -22,12 +22,18 @@ func Register(app *fiber.App, db *gorm.DB, hub *realtime.Hub) {
 	registerAdmin(api, ctx)
 	registerAcademic(api, ctx)
 	registerLearningAdmin(api, ctx)
+	registerAI(api, ctx)
 	registerPrivateChat(api, ctx)
 	registerGuru(api, ctx)
 	registerSiswa(api, ctx)
 	registerInventory(api, ctx)
 	registerKoperasi(api, ctx)
 	registerNotifications(api, ctx)
+}
+
+func registerAI(api fiber.Router, ctx *controllers.AppContext) {
+	r := api.Group("/ai", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
+	r.Post("/chat", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "GURU", "SISWA", "SARPRAS", "KOPERASI"), ctx.AskSystemChatbot)
 }
 
 func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
@@ -288,7 +294,6 @@ func registerAcademic(api fiber.Router, ctx *controllers.AppContext) {
 
 func registerLearningAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/learning", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
-	r.Post("/system-chatbot", middlewares.RoleAllowed("ADMIN", "GURU"), ctx.AskSystemChatbot)
 	r.Get("/curriculum/overview", middlewares.RoleAllowed("ADMIN"), ctx.GetCurriculumOverview)
 	r.Post("/curriculum/subjects", middlewares.RoleAllowed("ADMIN"), ctx.CreateCurriculumSubject)
 	r.Put("/curriculum/subjects/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateCurriculumSubject)

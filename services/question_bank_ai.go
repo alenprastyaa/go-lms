@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -44,7 +45,7 @@ type curriculumTopicSuggestionResponse struct {
 	Topics []string `json:"topics"`
 }
 
-func GenerateCurriculumTopicSuggestionsWithHuggingFace(input CurriculumTopicSuggestionInput) ([]string, error) {
+func GenerateCurriculumTopicSuggestionsWithGemini(input CurriculumTopicSuggestionInput) ([]string, error) {
 	fallbackTopics := buildFallbackCurriculumTopicSuggestions(input)
 	prompt := buildCurriculumTopicSuggestionPrompt(input)
 	text, err := callHuggingFace(prompt, "Anda adalah asisten kurikulum sekolah Indonesia yang hanya mengembalikan JSON valid tanpa markdown.", 0.3)
@@ -67,6 +68,10 @@ func GenerateCurriculumTopicSuggestionsWithHuggingFace(input CurriculumTopicSugg
 		return fallbackTopics, nil
 	}
 	return topics, nil
+}
+
+func GenerateCurriculumTopicSuggestionsWithHuggingFace(input CurriculumTopicSuggestionInput) ([]string, error) {
+	return GenerateCurriculumTopicSuggestionsWithGemini(input)
 }
 
 func buildCurriculumTopicSuggestionPrompt(input CurriculumTopicSuggestionInput) string {
@@ -247,6 +252,12 @@ func buildQuestionBankPrompt(input QuestionBankAIInput) string {
 	parts := []string{
 		"Anda adalah penyusun bank soal untuk LMS sekolah.",
 		"Buat soal dalam Bahasa Indonesia yang jelas, natural, dan sesuai konteks sekolah.",
+		"Kalimat soal harus terdengar seperti soal buku latihan atau ujian yang ditulis guru, bukan terjemahan literal mesin.",
+		"Hindari frasa kaku, berulang, atau janggal seperti 'untuk x ... per hari dimodelkan oleh' jika ada bentuk yang lebih natural.",
+		"Untuk soal matematika atau kontekstual, pilih narasi yang mengalir alami, misalnya 'Jika x ...' atau 'Biaya ... untuk memproduksi x ... adalah ...'.",
+		"Jangan mengulang satuan atau keterangan waktu/tempat secara berlebihan dalam satu kalimat.",
+		"Jangan gunakan format LaTeX atau tanda dolar. Tulis notasi matematika dengan teks biasa yang tetap mudah dibaca, misalnya 'pangkat', 'akar', atau 'dibagi'.",
+		"Gunakan gaya ringkas. Batasi panjang: question_text <= 220 karakter, setiap opsi <= 70 karakter, rubric (jika essay) <= 200 karakter.",
 		fmt.Sprintf("Mapel: %s.", fallbackText(input.SubjectName, "-")),
 		fmt.Sprintf("Kelas: %s.", fallbackText(input.ClassName, "-")),
 	}
@@ -313,50 +324,53 @@ func fallbackText(value, fallback string) string {
 	return fallback
 }
 
-func GenerateQuestionBankItemsWithHuggingFace(input QuestionBankAIInput) ([]QuestionBankAIItem, error) {
+func GenerateQuestionBankItemsWithGemini(input QuestionBankAIInput) ([]QuestionBankAIItem, error) {
 	if input.QuestionCount <= 0 {
 		input.QuestionCount = 5
 	}
 
-	systemMessage := "Anda adalah penyusun bank soal sekolah yang harus mengembalikan JSON valid tanpa markdown."
-	collected := make([]QuestionBankAIItem, 0, input.QuestionCount)
-	seen := make(map[string]bool, input.QuestionCount)
-	var lastErr error
-	maxAttempts := input.QuestionCount * 3
-	if maxAttempts < 3 {
-		maxAttempts = 3
-	}
+	systemMessage := "Anda adalah penyusun bank soal sekolah. Kembalikan JSON valid saja tanpa markdown, tanpa penjelasan tambahan."
 
-	for attempt := 0; attempt < maxAttempts && len(collected) < input.QuestionCount; attempt++ {
-		attemptPrompt := buildSingleQuestionPrompt(input, collected)
+	// Default: 1 request untuk N soal (lebih hemat prompt_tokens dibanding batch).
+	// Jika JSON invalid/terpotong, fallback ke batch yang lebih kecil.
+	target := input.QuestionCount
+	for _, batch := range []int{target, minInt(5, target), minInt(3, target), 1} {
+		if batch <= 0 {
+			continue
+		}
+		batchInput := input
+		batchInput.QuestionCount = batch
+		prompt := buildQuestionBankPrompt(batchInput)
 
-		items, err := generateQuestionBankItems(attemptPrompt, systemMessage, input.QuestionType)
+		items, err := generateQuestionBankItemsWithGemini(prompt, systemMessage, input.QuestionType, batch)
 		if err != nil {
-			lastErr = err
+			// Try smaller batch when JSON is invalid or truncated.
+			if strings.Contains(strings.ToLower(err.Error()), "json") {
+				continue
+			}
+			return nil, err
+		}
+
+		seen := make(map[string]bool, len(items))
+		unique := appendUniqueQuestionBankItems(nil, items, seen, batch, 0)
+		if len(unique) < batch {
+			// Incomplete; try smaller batch.
 			continue
 		}
 
-		before := len(collected)
-		collected = appendUniqueQuestionBankItems(collected, items, seen, input.QuestionCount, 1)
-		if len(collected) > before {
-			lastErr = nil
-		}
+		unique = populateQuestionBankIllustrations(batchInput, unique)
+		return unique, nil
 	}
 
-	if len(collected) == 0 && lastErr != nil {
-		return nil, lastErr
-	}
-
-	if len(collected) > input.QuestionCount {
-		collected = collected[:input.QuestionCount]
-	}
-
-	collected = populateQuestionBankIllustrations(input, collected)
-
-	return collected, nil
+	return nil, fmt.Errorf("AI gagal menghasilkan JSON bank soal yang valid. Coba generate ulang.")
 }
 
-func generateQuestionBankItems(prompt, systemMessage, questionType string) ([]QuestionBankAIItem, error) {
+func GenerateQuestionBankItemsWithHuggingFace(input QuestionBankAIInput) ([]QuestionBankAIItem, error) {
+	return GenerateQuestionBankItemsWithGemini(input)
+}
+
+func generateQuestionBankItemsWithGemini(prompt, systemMessage, questionType string, questionCount int) ([]QuestionBankAIItem, error) {
+	_ = questionCount
 	text, err := callHuggingFace(prompt, systemMessage, 0.7)
 	if err != nil {
 		return nil, err
@@ -364,36 +378,22 @@ func generateQuestionBankItems(prompt, systemMessage, questionType string) ([]Qu
 
 	extracted := extractJSONObject(text)
 	if !json.Valid([]byte(extracted)) {
-		return nil, fmt.Errorf("hasil Hugging Face tidak bisa diparsing sebagai JSON bank soal: JSON tidak valid")
+		return nil, fmt.Errorf("hasil Gemini tidak bisa diparsing sebagai JSON bank soal: JSON tidak valid")
 	}
 
 	items, err := parseQuestionBankItemsFromJSON(extracted, questionType)
 	if err != nil {
-		return nil, fmt.Errorf("hasil Hugging Face tidak bisa diparsing sebagai JSON bank soal: %w", err)
+		return nil, fmt.Errorf("hasil Gemini tidak bisa diparsing sebagai JSON bank soal: %w", err)
 	}
 
 	return items, nil
 }
 
-func buildSingleQuestionPrompt(input QuestionBankAIInput, existing []QuestionBankAIItem) string {
-	singleInput := input
-	singleInput.QuestionCount = 1
-
-	parts := []string{
-		buildQuestionBankPrompt(singleInput),
-		"Hasilkan tepat 1 soal saja pada respons ini.",
-		"Field items harus berisi tepat 1 item.",
+func minInt(a, b int) int {
+	if a < b {
+		return a
 	}
-
-	if len(existing) > 0 {
-		parts = append(parts, "Soal berikut sudah pernah dibuat dan tidak boleh diulang:")
-		for index, item := range existing {
-			parts = append(parts, fmt.Sprintf("%d. %s", index+1, item.QuestionText))
-		}
-		parts = append(parts, "Buat soal baru yang berbeda secara jelas dari daftar di atas.")
-	}
-
-	return strings.Join(parts, "\n")
+	return b
 }
 
 func appendUniqueQuestionBankItems(dst, src []QuestionBankAIItem, seen map[string]bool, limit int, maxPerBatch int) []QuestionBankAIItem {
@@ -541,7 +541,7 @@ func normalizeQuestionBankItems(items []map[string]interface{}, questionType str
 
 			normalized = append(normalized, QuestionBankAIItem{
 				QuestionType:       "MCQ",
-				QuestionText:       questionText,
+				QuestionText:       normalizeQuestionText(questionText),
 				QuestionImageURL:   coalesceString(item["question_image_url"], item["image_url"]),
 				IllustrationPrompt: illustrationPrompt,
 				Options:            options,
@@ -559,7 +559,7 @@ func normalizeQuestionBankItems(items []map[string]interface{}, questionType str
 
 		normalized = append(normalized, QuestionBankAIItem{
 			QuestionType:       "ESSAY",
-			QuestionText:       questionText,
+			QuestionText:       normalizeQuestionText(questionText),
 			QuestionImageURL:   coalesceString(item["question_image_url"], item["image_url"]),
 			IllustrationPrompt: illustrationPrompt,
 			Options:            nil,
@@ -569,6 +569,59 @@ func normalizeQuestionBankItems(items []map[string]interface{}, questionType str
 	}
 
 	return normalized
+}
+
+func normalizeQuestionText(value string) string {
+	text := strings.TrimSpace(value)
+	if text == "" {
+		return ""
+	}
+
+	text = strings.Join(strings.Fields(text), " ")
+	text = strings.ReplaceAll(text, "$", "")
+	replacements := []struct {
+		pattern *regexp.Regexp
+		repl    string
+	}{
+		{
+			pattern: regexp.MustCompile(`(?i)\b([a-z0-9)\]])\^\{([^}]+)\}`),
+			repl:    `$1 pangkat ($2)`,
+		},
+		{
+			pattern: regexp.MustCompile(`(?i)\b([a-z0-9)\]])\^([a-z0-9+\-().]+)`),
+			repl:    `$1 pangkat $2`,
+		},
+		{
+			pattern: regexp.MustCompile(`(?i)\buntuk x ([^,.!?;:]+?) per hari dimodelkan oleh fungsi\b`),
+			repl:    "per hari untuk memproduksi x $1 dinyatakan oleh fungsi",
+		},
+		{
+			pattern: regexp.MustCompile(`(?i)\buntuk x ([^,.!?;:]+?) per hari dimodelkan oleh\b`),
+			repl:    "per hari untuk memproduksi x $1 dinyatakan oleh",
+		},
+		{
+			pattern: regexp.MustCompile(`(?i)\bdalam rupiah\) untuk x ([^,.!?;:]+?) per hari\b`),
+			repl:    "dalam rupiah) per hari untuk memproduksi x $1",
+		},
+	}
+
+	for _, item := range replacements {
+		text = item.pattern.ReplaceAllString(text, item.repl)
+	}
+
+	text = strings.NewReplacer(
+		"  ", " ",
+		" ,", ",",
+		" .", ".",
+		" :", ":",
+		" ;", ";",
+		" ?", "?",
+		" !", "!",
+	).Replace(text)
+
+	text = strings.TrimSpace(strings.Join(strings.Fields(text), " "))
+
+	return strings.TrimSpace(text)
 }
 
 func parseQuestionBankItemsFromJSON(raw string, questionType string) ([]QuestionBankAIItem, error) {
