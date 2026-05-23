@@ -176,7 +176,15 @@ func (a *AppContext) RequestParentLoginOTP(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Gagal memeriksa OTP", err.Error())
 	}
 	if recentCount > 0 {
-		return utils.Error(c, 429, "OTP sudah dikirim. Tunggu 1 menit sebelum meminta kode baru.")
+		nextSendAt := jakartaNow().Add(parentOTPRequestWindow)
+
+		return c.Status(429).JSON(fiber.Map{
+			"success": false,
+			"message": "OTP sudah dikirim. Silakan coba lagi pada waktu yang tertera.",
+			"data": fiber.Map{
+				"next_send_at": nextSendAt.Format(time.RFC3339),
+			},
+		})
 	}
 
 	otp, err := generateParentOTP()
