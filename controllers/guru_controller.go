@@ -2026,7 +2026,7 @@ func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Failed Generate Question Bank With AI", err.Error())
 	}
 	if len(items) == 0 {
-		return utils.Error(c, 500, "Failed Generate Question Bank With AI", "Hasil Gemini tidak valid untuk dijadikan bank soal")
+		return utils.Error(c, 500, "Failed Generate Question Bank With AI", "Hasil OpenRouter tidak valid untuk dijadikan bank soal")
 	}
 
 	return utils.Success(c, 200, "Success Generate Question Bank Preview", fiber.Map{

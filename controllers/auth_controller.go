@@ -154,7 +154,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 	var schoolName interface{} = nil
 	var schoolLogo interface{} = nil
 	if user.SchoolID != nil {
-		_ = a.DB.Select("name", "logo_url", "inventory_module_enabled", "attendance_module_enabled", "official_exam_module_enabled", "koperasi_module_enabled", "private_chat_module_enabled").Where("id = ?", *user.SchoolID).First(&school).Error
+		_ = a.DB.Select("name", "logo_url", "inventory_module_enabled", "attendance_module_enabled", "official_exam_module_enabled", "koperasi_module_enabled", "private_chat_module_enabled", "teaching_module_ai_enabled").Where("id = ?", *user.SchoolID).First(&school).Error
 		schoolName = school.Name
 		schoolLogo = school.LogoURL
 	}
@@ -166,6 +166,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 			"official_exam_module_enabled": school.OfficialExamModuleEnabled,
 			"koperasi_module_enabled":      school.KoperasiModuleEnabled,
 			"private_chat_module_enabled":  school.PrivateChatModuleEnabled,
+			"teaching_module_ai_enabled":   school.TeachingModuleAIEnabled,
 		}, "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
 	})
 }
@@ -1973,9 +1974,10 @@ func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 		OfficialExamModuleEnabled bool    `json:"official_exam_module_enabled"`
 		KoperasiModuleEnabled     bool    `json:"koperasi_module_enabled"`
 		PrivateChatModuleEnabled  bool    `json:"private_chat_module_enabled"`
+		TeachingModuleAIEnabled   bool    `json:"teaching_module_ai_enabled"`
 	}
 	err := a.DB.Table("users u").
-		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo, COALESCE(s.inventory_module_enabled, true) as inventory_module_enabled, COALESCE(s.attendance_module_enabled, true) as attendance_module_enabled, COALESCE(s.official_exam_module_enabled, true) as official_exam_module_enabled, COALESCE(s.koperasi_module_enabled, true) as koperasi_module_enabled, COALESCE(s.private_chat_module_enabled, true) as private_chat_module_enabled").
+		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo, COALESCE(s.inventory_module_enabled, true) as inventory_module_enabled, COALESCE(s.attendance_module_enabled, true) as attendance_module_enabled, COALESCE(s.official_exam_module_enabled, true) as official_exam_module_enabled, COALESCE(s.koperasi_module_enabled, true) as koperasi_module_enabled, COALESCE(s.private_chat_module_enabled, true) as private_chat_module_enabled, COALESCE(s.teaching_module_ai_enabled, true) as teaching_module_ai_enabled").
 		Joins("left join schools s on s.id = u.school_id").
 		Where("u.id = ?", userID).
 		Scan(&profile).Error

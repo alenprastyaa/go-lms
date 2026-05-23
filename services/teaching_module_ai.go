@@ -202,10 +202,12 @@ func GenerateTeachingModuleDraftWithHuggingFace(input TeachingModuleAIInput) (*T
 
 	fallbackDraft := buildFallbackTeachingModuleDraft(input)
 
-	text, err := callHuggingFace(
+	text, err := callOpenRouterText(
+		"teaching-module-draft",
 		buildTeachingModulePrompt(input),
 		"Anda adalah penyusun modul ajar Kurikulum Merdeka dan wajib mengembalikan JSON valid tanpa markdown.",
 		0.5,
+		8000,
 	)
 	if err != nil {
 		return &fallbackDraft, nil
@@ -264,10 +266,12 @@ func GenerateTeachingModuleSuggestionsWithHuggingFace(input TeachingModuleSugges
 
 	fallbackCatalog := buildFallbackTeachingModuleSuggestions(input)
 
-	text, err := callHuggingFace(
+	text, err := callOpenRouterText(
+		"teaching-module-suggestions",
 		buildTeachingModuleSuggestionPrompt(input),
 		"Anda adalah asisten guru yang membuat katalog dropdown modul ajar dan wajib mengembalikan JSON valid tanpa markdown.",
 		0.4,
+		2500,
 	)
 	if err != nil {
 		return &fallbackCatalog, nil

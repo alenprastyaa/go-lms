@@ -48,7 +48,13 @@ type curriculumTopicSuggestionResponse struct {
 func GenerateCurriculumTopicSuggestionsWithGemini(input CurriculumTopicSuggestionInput) ([]string, error) {
 	fallbackTopics := buildFallbackCurriculumTopicSuggestions(input)
 	prompt := buildCurriculumTopicSuggestionPrompt(input)
-	text, err := callHuggingFace(prompt, "Anda adalah asisten kurikulum sekolah Indonesia yang hanya mengembalikan JSON valid tanpa markdown.", 0.3)
+	text, err := callOpenRouterText(
+		"question-bank-topic-suggestions",
+		prompt,
+		"Anda adalah asisten kurikulum sekolah Indonesia yang hanya mengembalikan JSON valid tanpa markdown.",
+		0.3,
+		1200,
+	)
 	if err != nil {
 		return fallbackTopics, nil
 	}
@@ -370,20 +376,33 @@ func GenerateQuestionBankItemsWithHuggingFace(input QuestionBankAIInput) ([]Ques
 }
 
 func generateQuestionBankItemsWithGemini(prompt, systemMessage, questionType string, questionCount int) ([]QuestionBankAIItem, error) {
-	_ = questionCount
-	text, err := callHuggingFace(prompt, systemMessage, 0.7)
+	maxTokens := 1800
+	if questionCount > 0 {
+		maxTokens = 700 + (questionCount * 450)
+		if maxTokens > 6000 {
+			maxTokens = 6000
+		}
+	}
+
+	text, err := callOpenRouterText(
+		"question-bank-generate",
+		prompt,
+		systemMessage,
+		0.7,
+		maxTokens,
+	)
 	if err != nil {
 		return nil, err
 	}
 
 	extracted := extractJSONObject(text)
 	if !json.Valid([]byte(extracted)) {
-		return nil, fmt.Errorf("hasil Gemini tidak bisa diparsing sebagai JSON bank soal: JSON tidak valid")
+		return nil, fmt.Errorf("hasil OpenRouter tidak bisa diparsing sebagai JSON bank soal: JSON tidak valid")
 	}
 
 	items, err := parseQuestionBankItemsFromJSON(extracted, questionType)
 	if err != nil {
-		return nil, fmt.Errorf("hasil Gemini tidak bisa diparsing sebagai JSON bank soal: %w", err)
+		return nil, fmt.Errorf("hasil OpenRouter tidak bisa diparsing sebagai JSON bank soal: %w", err)
 	}
 
 	return items, nil

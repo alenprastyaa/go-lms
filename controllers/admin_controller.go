@@ -256,22 +256,80 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 	}
 	var overviewRows []KV
 	a.DB.Raw(`
-		SELECT 'teachers' AS key, COUNT(*)::int AS value FROM users WHERE school_id = ? AND role = 'GURU'
+		WITH
+			params AS (SELECT ?::bigint AS school_id),
+			subject_scope AS (
+				SELECT id FROM learning_subjects WHERE school_id = (SELECT school_id FROM params)
+			),
+			student_scope AS (
+				SELECT id FROM users WHERE school_id = (SELECT school_id FROM params) AND role = 'SISWA'
+			)
+		SELECT 'teachers' AS key, COUNT(*)::int AS value FROM users WHERE school_id = (SELECT school_id FROM params) AND role = 'GURU'
 		UNION ALL
-		SELECT 'students' AS key, COUNT(*)::int AS value FROM users WHERE school_id = ? AND role = 'SISWA'
+		SELECT 'students' AS key, COUNT(*)::int AS value FROM student_scope
 		UNION ALL
-		SELECT 'admins' AS key, COUNT(*)::int AS value FROM users WHERE school_id = ? AND role = 'ADMIN'
+		SELECT 'admins' AS key, COUNT(*)::int AS value FROM users WHERE school_id = (SELECT school_id FROM params) AND role = 'ADMIN'
 		UNION ALL
-		SELECT 'classes' AS key, COUNT(*)::int AS value FROM class WHERE school_id = ?
+		SELECT 'sarpras_users' AS key, COUNT(*)::int AS value FROM users WHERE school_id = (SELECT school_id FROM params) AND role = 'SARPRAS'
+		UNION ALL
+		SELECT 'koperasi_users' AS key, COUNT(*)::int AS value FROM users WHERE school_id = (SELECT school_id FROM params) AND role = 'KOPERASI'
+		UNION ALL
+		SELECT 'classes' AS key, COUNT(*)::int AS value FROM class WHERE school_id = (SELECT school_id FROM params)
+		UNION ALL
+		SELECT 'academic_years' AS key, COUNT(*)::int AS value FROM academic_years WHERE school_id = (SELECT school_id FROM params)
+		UNION ALL
+		SELECT 'active_academic_years' AS key, COUNT(*)::int AS value FROM academic_years WHERE school_id = (SELECT school_id FROM params) AND is_active = true
+		UNION ALL
+		SELECT 'semesters' AS key, COUNT(*)::int AS value FROM academic_semesters WHERE academic_year_id IN (SELECT id FROM academic_years WHERE school_id = (SELECT school_id FROM params))
 		UNION ALL
 		SELECT 'attendance_today' AS key, COUNT(*)::int AS value
 		FROM attendance a INNER JOIN users u ON u.id = a.user_id
-		WHERE u.school_id = ? AND a.attendance_date = CURRENT_DATE
+		WHERE u.school_id = (SELECT school_id FROM params) AND a.attendance_date = CURRENT_DATE
 		UNION ALL
 		SELECT 'receipts_this_month' AS key, COUNT(*)::int AS value
 		FROM payment_receipt pr INNER JOIN users u ON u.id = pr.user_id
-		WHERE u.school_id = ? AND DATE_TRUNC('month', pr.created_at) = DATE_TRUNC('month', CURRENT_DATE)
-	`, schoolID, schoolID, schoolID, schoolID, schoolID, schoolID).Scan(&overviewRows)
+		WHERE u.school_id = (SELECT school_id FROM params) AND DATE_TRUNC('month', pr.created_at) = DATE_TRUNC('month', CURRENT_DATE)
+		UNION ALL
+		SELECT 'receipts_total' AS key, COUNT(*)::int AS value FROM payment_receipt WHERE user_id IN (SELECT id FROM student_scope)
+		UNION ALL
+		SELECT 'announcements_total' AS key, COUNT(*)::int AS value FROM school_announcements WHERE school_id = (SELECT school_id FROM params)
+		UNION ALL
+		SELECT 'announcements_active' AS key, COUNT(*)::int AS value FROM school_announcements WHERE school_id = (SELECT school_id FROM params) AND status = 'ACTIVE'
+		UNION ALL
+		SELECT 'curriculum_subjects' AS key, COUNT(*)::int AS value FROM curriculum_subjects WHERE school_id = (SELECT school_id FROM params)
+		UNION ALL
+		SELECT 'curriculum_teacher_loads' AS key, COUNT(*)::int AS value FROM curriculum_teacher_loads WHERE school_id = (SELECT school_id FROM params)
+		UNION ALL
+		SELECT 'curriculum_class_distributions' AS key, COUNT(*)::int AS value FROM curriculum_class_distributions WHERE school_id = (SELECT school_id FROM params)
+		UNION ALL
+		SELECT 'curriculum_schedule_slots' AS key, COUNT(*)::int AS value FROM curriculum_schedule_slots WHERE school_id = (SELECT school_id FROM params)
+		UNION ALL
+		SELECT 'curriculum_schedule_entries' AS key, COUNT(*)::int AS value FROM curriculum_schedule_entries WHERE school_id = (SELECT school_id FROM params)
+		UNION ALL
+		SELECT 'learning_subjects' AS key, COUNT(*)::int AS value FROM learning_subjects WHERE school_id = (SELECT school_id FROM params)
+		UNION ALL
+		SELECT 'learning_materials' AS key, COUNT(*)::int AS value FROM learning_materials WHERE subject_id IN (SELECT id FROM subject_scope)
+		UNION ALL
+		SELECT 'question_bank' AS key, COUNT(*)::int AS value FROM learning_question_bank WHERE subject_id IN (SELECT id FROM subject_scope)
+		UNION ALL
+		SELECT 'quizzes' AS key, COUNT(*)::int AS value FROM learning_assignments WHERE subject_id IN (SELECT id FROM subject_scope) AND COALESCE(is_exam, false) = false AND assignment_type IN ('MCQ', 'ESSAY')
+		UNION ALL
+		SELECT 'official_exams' AS key, COUNT(*)::int AS value FROM learning_assignments WHERE subject_id IN (SELECT id FROM subject_scope) AND COALESCE(is_exam, false) = true
+		UNION ALL
+		SELECT 'official_exams_pending' AS key, COUNT(*)::int AS value FROM learning_assignments WHERE subject_id IN (SELECT id FROM subject_scope) AND COALESCE(is_exam, false) = true AND COALESCE(exam_status, '') <> 'PUBLISHED'
+		UNION ALL
+		SELECT 'inventory_items' AS key, COUNT(*)::int AS value FROM inventory_items WHERE school_id = (SELECT school_id FROM params)
+		UNION ALL
+		SELECT 'inventory_active_loans' AS key, COUNT(*)::int AS value FROM inventory_loans WHERE school_id = (SELECT school_id FROM params) AND status = 'BORROWED'
+		UNION ALL
+		SELECT 'inventory_overdue_loans' AS key, COUNT(*)::int AS value FROM inventory_loans WHERE school_id = (SELECT school_id FROM params) AND status = 'BORROWED' AND due_date IS NOT NULL AND due_date::date < CURRENT_DATE
+		UNION ALL
+		SELECT 'koperasi_products' AS key, COUNT(*)::int AS value FROM koperasi_products WHERE school_id = (SELECT school_id FROM params)
+		UNION ALL
+		SELECT 'koperasi_pending_orders' AS key, COUNT(*)::int AS value FROM koperasi_orders WHERE school_id = (SELECT school_id FROM params) AND status IN ('PENDING', 'PROCESSING', 'READY')
+		UNION ALL
+		SELECT 'billing_unpaid_invoices' AS key, COUNT(*)::int AS value FROM school_invoices WHERE school_id = (SELECT school_id FROM params) AND status <> 'PAID'
+	`, schoolID).Scan(&overviewRows)
 
 	overview := map[string]int{}
 	for _, row := range overviewRows {
@@ -279,7 +337,36 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 	}
 
 	var school map[string]interface{}
-	a.DB.Raw(`SELECT id, name FROM schools WHERE id = ?`, schoolID).Scan(&school)
+	a.DB.Raw(`
+		SELECT
+			id,
+			name,
+			COALESCE(inventory_module_enabled, true) AS inventory_module_enabled,
+			COALESCE(attendance_module_enabled, true) AS attendance_module_enabled,
+			COALESCE(official_exam_module_enabled, true) AS official_exam_module_enabled,
+			COALESCE(koperasi_module_enabled, true) AS koperasi_module_enabled,
+			COALESCE(private_chat_module_enabled, true) AS private_chat_module_enabled,
+			COALESCE(teaching_module_ai_enabled, true) AS teaching_module_ai_enabled
+		FROM schools
+		WHERE id = ?
+	`, schoolID).Scan(&school)
+
+	adminModules := []map[string]interface{}{
+		{"key": "school-users", "label": "User Sekolah", "to": "/school-users", "icon": "clarity:users-line", "primary": overview["teachers"] + overview["admins"] + overview["sarpras_users"] + overview["koperasi_users"], "caption": fmt.Sprintf("%d guru, %d admin", overview["teachers"], overview["admins"])},
+		{"key": "private-chat", "label": "Chat Pribadi", "to": "/private-chat", "icon": "ph:chat-circle-dots", "primary": overview["teachers"] + overview["students"], "caption": "Kontak internal sekolah"},
+		{"key": "classes", "label": "Kelas", "to": "/classes", "icon": "mdi:google-classroom", "primary": overview["classes"], "caption": fmt.Sprintf("%d siswa terdaftar", overview["students"])},
+		{"key": "students", "label": "Siswa", "to": "/students", "icon": "mdi:account-school-outline", "primary": overview["students"], "caption": "Akun peserta didik"},
+		{"key": "academic-periods", "label": "Tahun Ajaran", "to": "/academic-periods", "icon": "ph:calendar-blank", "primary": overview["academic_years"], "caption": fmt.Sprintf("%d semester, %d aktif", overview["semesters"], overview["active_academic_years"])},
+		{"key": "inventory", "label": "Sarpras", "to": "/inventory", "icon": "ph:archive-box", "primary": overview["inventory_items"], "caption": fmt.Sprintf("%d dipinjam, %d terlambat", overview["inventory_active_loans"], overview["inventory_overdue_loans"])},
+		{"key": "koperasi", "label": "Koperasi", "to": "/koperasi", "icon": "ph:shopping-cart", "primary": overview["koperasi_products"], "caption": fmt.Sprintf("%d pesanan perlu diproses", overview["koperasi_pending_orders"])},
+		{"key": "curriculum", "label": "Kurikulum", "to": "/learning-admin", "icon": "ph:books", "primary": overview["curriculum_subjects"], "caption": fmt.Sprintf("%d beban, %d distribusi", overview["curriculum_teacher_loads"], overview["curriculum_class_distributions"])},
+		{"key": "schedule", "label": "Jadwal Pembelajaran", "to": "/learning-admin/schedule", "icon": "ph:calendar-blank", "primary": overview["curriculum_schedule_entries"], "caption": fmt.Sprintf("%d slot jadwal", overview["curriculum_schedule_slots"])},
+		{"key": "learning", "label": "LMS Pembelajaran", "to": "/learning-admin", "icon": "ph:book-open-text", "primary": overview["learning_subjects"], "caption": fmt.Sprintf("%d materi, %d bank soal", overview["learning_materials"], overview["question_bank"])},
+		{"key": "learning-exams-admin", "label": "Ujian Resmi", "to": "/learning-exams-admin", "icon": "ph:exam", "primary": overview["official_exams"], "caption": fmt.Sprintf("%d belum published", overview["official_exams_pending"])},
+		{"key": "announcements", "label": "Pengumuman", "to": "/announcements", "icon": "ph:megaphone-simple", "primary": overview["announcements_total"], "caption": fmt.Sprintf("%d aktif", overview["announcements_active"])},
+		{"key": "billing", "label": "Billing", "to": "/billing", "icon": "ph:credit-card", "primary": overview["billing_unpaid_invoices"], "caption": "Invoice belum lunas"},
+		{"key": "admin-settings", "label": "Setting", "to": "/admin-settings", "icon": "ph:gear-six", "primary": overview["receipts_total"], "caption": "Data dan reset ruang admin"},
+	}
 
 	var classes []map[string]interface{}
 	a.DB.Raw(`
@@ -343,6 +430,7 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 		"school":           school,
 		"overview":         overview,
 		"announcements":    announcements,
+		"adminModules":     adminModules,
 		"classes":          recentOrEmpty(classes),
 		"recentAttendance": recentOrEmpty(recentAttendance),
 		"recentReceipts":   recentOrEmpty(recentReceipts),

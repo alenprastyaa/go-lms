@@ -9,6 +9,7 @@ type School struct {
 	OfficialExamModuleEnabled bool    `gorm:"column:official_exam_module_enabled" json:"official_exam_module_enabled"`
 	KoperasiModuleEnabled     bool    `gorm:"column:koperasi_module_enabled" json:"koperasi_module_enabled"`
 	PrivateChatModuleEnabled  bool    `gorm:"column:private_chat_module_enabled" json:"private_chat_module_enabled"`
+	TeachingModuleAIEnabled   bool    `gorm:"column:teaching_module_ai_enabled" json:"teaching_module_ai_enabled"`
 }
 
 func (School) TableName() string { return "schools" }

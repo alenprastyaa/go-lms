@@ -138,6 +138,8 @@ func ModuleAllowed(db *gorm.DB, feature string) fiber.Handler {
 		column = "koperasi_module_enabled"
 	case "private_chat":
 		column = "private_chat_module_enabled"
+	case "teaching_module_ai":
+		column = "teaching_module_ai_enabled"
 	default:
 		return func(c *fiber.Ctx) error {
 			return utils.Error(c, 500, "Unknown module")

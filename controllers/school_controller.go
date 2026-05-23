@@ -32,6 +32,7 @@ func (a *AppContext) CreateSchool(c *fiber.Ctx) error {
 		OfficialExamModuleEnabled: true,
 		KoperasiModuleEnabled:     true,
 		PrivateChatModuleEnabled:  true,
+		TeachingModuleAIEnabled:   true,
 	}
 	if file, err := c.FormFile("logo"); err == nil && file != nil {
 		logoURL, upErr := utils.SaveUploadedFile(c, file)
@@ -97,6 +98,9 @@ func (a *AppContext) UpdateSchool(c *fiber.Ctx) error {
 	if v := strings.TrimSpace(c.FormValue("private_chat_module_enabled")); v != "" {
 		updates["private_chat_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
 	}
+	if v := strings.TrimSpace(c.FormValue("teaching_module_ai_enabled")); v != "" {
+		updates["teaching_module_ai_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
+	}
 	if strings.EqualFold(strings.TrimSpace(c.FormValue("remove_logo")), "true") {
 		updates["logo_url"] = nil
 	}
@@ -139,6 +143,9 @@ func (a *AppContext) UpdateSchoolModules(c *fiber.Ctx) error {
 	}
 	if v, ok := parseBoolFormValue(c.FormValue("private_chat_module_enabled")); ok {
 		updates["private_chat_module_enabled"] = v
+	}
+	if v, ok := parseBoolFormValue(c.FormValue("teaching_module_ai_enabled")); ok {
+		updates["teaching_module_ai_enabled"] = v
 	}
 	if len(updates) == 0 {
 		return utils.Error(c, 400, "Tidak ada perubahan modul")
@@ -287,6 +294,7 @@ func schoolListQuery(whereClause string) string {
 			COALESCE(s.official_exam_module_enabled, true) AS official_exam_module_enabled,
 			COALESCE(s.koperasi_module_enabled, true) AS koperasi_module_enabled,
 			COALESCE(s.private_chat_module_enabled, true) AS private_chat_module_enabled,
+			COALESCE(s.teaching_module_ai_enabled, true) AS teaching_module_ai_enabled,
 			COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END)::int AS total_admins,
 			COUNT(DISTINCT CASE WHEN u.role = 'GURU' THEN u.id END)::int AS total_teachers,
 			COUNT(DISTINCT CASE WHEN u.role = 'SISWA' THEN u.id END)::int AS total_students,
@@ -301,7 +309,7 @@ func schoolListQuery(whereClause string) string {
 		LEFT JOIN learning_subjects ls ON ls.school_id = s.id
 		LEFT JOIN academic_years ay ON ay.school_id = s.id
 		%s
-		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.attendance_module_enabled, s.official_exam_module_enabled, s.koperasi_module_enabled, s.private_chat_module_enabled
+		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.attendance_module_enabled, s.official_exam_module_enabled, s.koperasi_module_enabled, s.private_chat_module_enabled, s.teaching_module_ai_enabled
 	`, whereClause)
 }
 
