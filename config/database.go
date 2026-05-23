@@ -93,7 +93,7 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check`).Error; err != nil {
 		return nil, err
 	}
-	if err := db.Exec(`ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('SUPER_ADMIN', 'ADMIN', 'SARPRAS', 'KOPERASI', 'GURU', 'SISWA'))`).Error; err != nil {
+	if err := db.Exec(`ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('SUPER_ADMIN', 'ADMIN', 'SARPRAS', 'KOPERASI', 'GURU', 'SISWA', 'ORANG_TUA'))`).Error; err != nil {
 		return nil, err
 	}
 	if err := db.Exec(`ALTER TABLE learning_submissions ADD COLUMN IF NOT EXISTS access_blocked BOOLEAN NOT NULL DEFAULT FALSE`).Error; err != nil {
@@ -109,6 +109,9 @@ func NewDatabase() (*gorm.DB, error) {
 		return nil, err
 	}
 	if err := db.Exec(`ALTER TABLE learning_assignments ADD COLUMN IF NOT EXISTS question_duration_mode TEXT NOT NULL DEFAULT 'PER_QUESTION'`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE learning_assignments ADD COLUMN IF NOT EXISTS max_violations INT NOT NULL DEFAULT 3`).Error; err != nil {
 		return nil, err
 	}
 	if err := db.Exec(`ALTER TABLE learning_subjects ADD COLUMN IF NOT EXISTS curriculum_subject_id BIGINT NULL`).Error; err != nil {
@@ -224,6 +227,26 @@ func NewDatabase() (*gorm.DB, error) {
 			created_by BIGINT NULL,
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS parent_students (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			parent_user_id BIGINT NOT NULL,
+			student_user_id BIGINT NOT NULL,
+			relationship TEXT NOT NULL DEFAULT 'WALI',
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			UNIQUE (parent_user_id, student_user_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS parent_login_otps (
+			id BIGSERIAL PRIMARY KEY,
+			parent_user_id BIGINT NOT NULL,
+			email TEXT NOT NULL,
+			otp_hash TEXT NOT NULL,
+			expires_at TIMESTAMP NOT NULL,
+			used_at TIMESTAMP NULL,
+			attempts INT NOT NULL DEFAULT 0,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE TABLE IF NOT EXISTS inventory_items (
 			id BIGSERIAL PRIMARY KEY,
@@ -390,6 +413,10 @@ func NewDatabase() (*gorm.DB, error) {
 		`CREATE INDEX IF NOT EXISTS idx_student_class_enrollments_school_class ON student_class_enrollments (school_id, class_id, is_active)`,
 		`CREATE INDEX IF NOT EXISTS idx_student_class_enrollments_student ON student_class_enrollments (student_id, start_date, end_date)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_student_class_enrollments_one_active ON student_class_enrollments (student_id) WHERE is_active = true`,
+		`CREATE INDEX IF NOT EXISTS idx_parent_students_parent ON parent_students (parent_user_id, school_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_parent_students_student ON parent_students (student_user_id, school_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_parent_login_otps_parent_created ON parent_login_otps (parent_user_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_parent_login_otps_email_created ON parent_login_otps (email, created_at DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_items_school_code ON inventory_items (school_id, code) WHERE code IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_inventory_items_school_active ON inventory_items (school_id, is_active, name)`,
 		`CREATE INDEX IF NOT EXISTS idx_inventory_loans_school_status ON inventory_loans (school_id, status, borrowed_at)`,

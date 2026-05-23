@@ -38,6 +38,14 @@ func normalizeLearningQuestionDurationSeconds(mode string, secondsRaw string, mi
 	return minutesValue * 60, nil
 }
 
+func normalizeLearningViolationTolerance(raw string) int {
+	value := utils.ToInt(raw, 3)
+	if value < 1 {
+		return 3
+	}
+	return value
+}
+
 func (a *AppContext) GetAdminSubjects(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 	page := utils.ToInt(c.Query("page", "1"), 1)
@@ -331,6 +339,7 @@ func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 	qDur := c.FormValue("question_duration_seconds")
 	qDurMinutes := c.FormValue("question_duration_minutes")
 	qDurMode := strings.ToUpper(strings.TrimSpace(c.FormValue("question_duration_mode")))
+	maxViolations := normalizeLearningViolationTolerance(c.FormValue("max_violations"))
 	examCount := c.FormValue("exam_target_question_count")
 	questionBankIDsRaw := strings.TrimSpace(c.FormValue("question_bank_ids"))
 	shuffleQuestions := strings.ToLower(strings.TrimSpace(c.FormValue("shuffle_questions"))) == "true"
@@ -457,14 +466,14 @@ func (a *AppContext) CreateLearningAssignment(c *fiber.Ctx) error {
 		  subject_id, title, description, assignment_type, is_exam, exam_category, exam_code, exam_status,
 		  question_bank_ids, shuffle_questions, quiz_payload,
 		  start_at, managed_by_admin, exam_target_question_count, academic_year_id, semester_id,
-		  question_duration_mode, question_duration_seconds, attachment_url, due_date, created_by, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+		  question_duration_mode, question_duration_seconds, max_violations, attachment_url, due_date, created_by, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
 		RETURNING *
 	`,
 		subjectID, title, description, assignmentType, isExam, nullIfEmpty(examCategory), nullIfEmpty(examCode),
 		ternaryString(isExam, "REQUESTED", ""), toJSONRaw(questionBankIDs), shuffleQuestions, toJSONRaw(quizPayload),
 		normalizeDateTimeLocalToWIB(startAt), true, nullIfEmpty(examCount),
-		nullIfZero(academicYearID), nullIfZero(semesterID), qDurMode, nullIfZero(qDurValue), nullIfEmpty(attachmentURL),
+		nullIfZero(academicYearID), nullIfZero(semesterID), qDurMode, nullIfZero(qDurValue), maxViolations, nullIfEmpty(attachmentURL),
 		normalizeDateTimeLocalToWIB(dueDate), userID,
 	).Scan(&row)
 	normalizeJakartaDateTimeFields(row, "start_at", "due_date", "exam_submitted_at", "exam_published_at", "created_at", "updated_at")
@@ -492,6 +501,7 @@ func (a *AppContext) UpdateExamRequestByAdmin(c *fiber.Ctx) error {
 	qDur := c.FormValue("question_duration_seconds")
 	qDurMinutes := c.FormValue("question_duration_minutes")
 	qDurMode := strings.ToUpper(strings.TrimSpace(c.FormValue("question_duration_mode")))
+	maxViolations := normalizeLearningViolationTolerance(c.FormValue("max_violations"))
 	examCount := c.FormValue("exam_target_question_count")
 	if assignmentType == "" {
 		assignmentType = "MCQ"
@@ -511,11 +521,11 @@ func (a *AppContext) UpdateExamRequestByAdmin(c *fiber.Ctx) error {
 		UPDATE learning_assignments
 		SET subject_id = ?, title = ?, description = ?, due_date = ?, assignment_type = ?,
 		    exam_category = ?, exam_code = ?, start_at = ?, question_duration_mode = ?, question_duration_seconds = ?,
-		    exam_target_question_count = ?
+		    exam_target_question_count = ?, max_violations = ?
 		WHERE id = ? AND is_exam = true
 		RETURNING *
 	`, subjectID, title, description, normalizeDateTimeLocalToWIB(dueDate), assignmentType, nullIfEmpty(examCategory),
-		nullIfEmpty(examCode), normalizeDateTimeLocalToWIB(startAt), qDurMode, nullIfZero(qDurValue), nullIfEmpty(examCount), id).Scan(&row)
+		nullIfEmpty(examCode), normalizeDateTimeLocalToWIB(startAt), qDurMode, nullIfZero(qDurValue), nullIfEmpty(examCount), maxViolations, id).Scan(&row)
 	if len(row) == 0 {
 		return utils.Error(c, 404, "Assignment not found")
 	}

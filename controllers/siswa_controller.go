@@ -3,7 +3,6 @@ package controllers
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -263,6 +262,7 @@ func (a *AppContext) StartLearningQuizAttempt(c *fiber.Ctx) error {
 		DueDateRaw              string  `gorm:"column:due_date_raw"`
 		QuestionDurationMode    string  `gorm:"column:question_duration_mode"`
 		QuestionDurationSeconds *int    `gorm:"column:question_duration_seconds"`
+		MaxViolations           int     `gorm:"column:max_violations"`
 		QuizPayloadText         string  `gorm:"column:quiz_payload_text"`
 	}
 	a.DB.Raw(`
@@ -271,6 +271,7 @@ func (a *AppContext) StartLearningQuizAttempt(c *fiber.Ctx) error {
 		       TO_CHAR(la.due_date, 'YYYY-MM-DD HH24:MI:SS') AS due_date_raw,
 		       COALESCE(la.question_duration_mode, 'PER_QUESTION') AS question_duration_mode,
 		       la.question_duration_seconds,
+		       COALESCE(la.max_violations, 3) AS max_violations,
 		       COALESCE(la.quiz_payload::text, '[]') AS quiz_payload_text
 		FROM learning_assignments la
 		INNER JOIN learning_subjects ls ON ls.id = la.subject_id
@@ -390,6 +391,7 @@ func (a *AppContext) StartLearningQuizAttempt(c *fiber.Ctx) error {
 		"question_duration_seconds": normalizedDurationSeconds,
 		"question_count":            questionCount,
 		"violation_count":           violationCount,
+		"max_violations":            assignment.MaxViolations,
 		"access_blocked":            boolFromAny(row["access_blocked"]),
 	})
 }
@@ -511,10 +513,11 @@ func (a *AppContext) RecordQuizViolation(c *fiber.Ctx) error {
 		IsExam          bool   `gorm:"column:is_exam"`
 		SchoolID        int    `gorm:"column:school_id"`
 		ClassID         int    `gorm:"column:class_id"`
+		MaxViolations   int    `gorm:"column:max_violations"`
 		QuizPayloadText string `gorm:"column:quiz_payload_text"`
 	}
 	a.DB.Raw(`
-		SELECT la.id, la.assignment_type, la.is_exam, ls.school_id, ls.class_id,
+		SELECT la.id, la.assignment_type, la.is_exam, ls.school_id, ls.class_id, COALESCE(la.max_violations, 3) AS max_violations,
 		       COALESCE(la.quiz_payload::text, '[]') AS quiz_payload_text
 		FROM learning_assignments la
 		INNER JOIN learning_subjects ls ON ls.id = la.subject_id
@@ -549,7 +552,10 @@ func (a *AppContext) RecordQuizViolation(c *fiber.Ctx) error {
 		INSERT INTO learning_quiz_violation_logs (submission_id,assignment_id,student_id,violation_type,violation_message,created_at)
 		VALUES (?, ?, ?, ?, ?, NOW())
 	`, submissionID, assignmentID, studentID, fallbackStr(body.ViolationType, "FOCUS_LOST"), nullIfEmpty(body.ViolationMessage))
-	maxViolations := envInt("QUIZ_MAX_VIOLATIONS", 3)
+	maxViolations := assignment.MaxViolations
+	if maxViolations < 1 {
+		maxViolations = 3
+	}
 	var violationCount int
 	a.DB.Raw(`SELECT COUNT(*)::int FROM learning_quiz_violation_logs WHERE submission_id = ?`, submissionID).Scan(&violationCount)
 	autoSubmitted := false
@@ -939,16 +945,4 @@ func parseJakartaTimestamp(value string) *time.Time {
 	}
 
 	return nil
-}
-
-func envInt(key string, fallback int) int {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil {
-		return fallback
-	}
-	return n
 }

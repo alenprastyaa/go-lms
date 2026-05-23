@@ -2947,6 +2947,7 @@ func (a *AppContext) UpdateLearningAssignmentByTeacher(c *fiber.Ctx) error {
 	if assignmentType == "" {
 		assignmentType = asString(cur["assignment_type"])
 	}
+	maxViolations := normalizeLearningViolationTolerance(c.FormValue("max_violations", asString(cur["max_violations"])))
 	attachment := asString(cur["attachment_url"])
 	if strings.ToLower(c.FormValue("remove_attachment")) == "true" || assignmentType == "MANUAL" {
 		attachment = ""
@@ -2960,9 +2961,9 @@ func (a *AppContext) UpdateLearningAssignmentByTeacher(c *fiber.Ctx) error {
 	var row map[string]interface{}
 	a.DB.Raw(`
 		UPDATE learning_assignments
-		SET title=?, description=?, due_date=?, assignment_type=?, attachment_url=?
+		SET title=?, description=?, due_date=?, assignment_type=?, max_violations=?, attachment_url=?
 		WHERE id=? RETURNING *
-	`, title, description, nullIfEmpty(dueDate), assignmentType, nullIfEmpty(attachment), id).Scan(&row)
+	`, title, description, nullIfEmpty(dueDate), assignmentType, maxViolations, nullIfEmpty(attachment), id).Scan(&row)
 	return utils.Success(c, 200, "Success Update Assignment", row)
 }
 

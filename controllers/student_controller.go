@@ -90,11 +90,11 @@ func (a *AppContext) ResetStudentPassword(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 
 	var current struct {
-		ID        uint    `gorm:"column:id"`
-		FullName  *string `gorm:"column:full_name"`
-		Username  string  `gorm:"column:username"`
-		SchoolID  *uint   `gorm:"column:school_id"`
-		Role      string  `gorm:"column:role"`
+		ID       uint    `gorm:"column:id"`
+		FullName *string `gorm:"column:full_name"`
+		Username string  `gorm:"column:username"`
+		SchoolID *uint   `gorm:"column:school_id"`
+		Role     string  `gorm:"column:role"`
 	}
 	if err := a.DB.Raw(`SELECT id, full_name, username, school_id, role FROM users WHERE id = ? AND school_id = ? AND role = 'SISWA'`, id, schoolID).Scan(&current).Error; err != nil {
 		return utils.Error(c, 500, "Gagal memuat data siswa", err.Error())
@@ -119,11 +119,11 @@ func (a *AppContext) ResetStudentPassword(c *fiber.Ctx) error {
 	}
 
 	return utils.Success(c, 200, "Password siswa berhasil direset", fiber.Map{
-		"id":               current.ID,
-		"full_name":        current.FullName,
-		"username":         current.Username,
-		"password":         rawPassword,
-		"initial_password": rawPassword,
+		"id":                 current.ID,
+		"full_name":          current.FullName,
+		"username":           current.Username,
+		"password":           rawPassword,
+		"initial_password":   rawPassword,
 		"password_available": true,
 	})
 }
@@ -180,11 +180,18 @@ func (a *AppContext) EditStudent(c *fiber.Ctx) error {
 	}
 	var row map[string]interface{}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		nextParentPhone := current.PhoneNumber
+		if body.PhoneNumber != nil {
+			nextParentPhone = body.PhoneNumber
+		}
 		if err := tx.Raw(`
 			UPDATE users SET full_name = ?, username = ?, role = ?, class_id = ?, parent_email = ?, phone_number = ?, school_id = ?
 			WHERE id = ? AND school_id = ? AND role = 'SISWA'
 			RETURNING id, full_name, username, role, class_id, parent_email, phone_number, profile_image
-		`, coalesceStrPtr(body.FullName, current.FullName), username, role, classID, coalesceStrPtr(body.ParentEmail, current.ParentEmail), coalesceStrPtr(body.PhoneNumber, current.PhoneNumber), schoolID, id, schoolID).Scan(&row).Error; err != nil {
+		`, coalesceStrPtr(body.FullName, current.FullName), username, role, classID, coalesceStrPtr(body.ParentEmail, current.ParentEmail), coalesceStrPtr(nextParentPhone, nil), schoolID, id, schoolID).Scan(&row).Error; err != nil {
+			return err
+		}
+		if err := ensureParentAccountLinkedTx(tx, schoolID, current.ID, nextParentPhone); err != nil {
 			return err
 		}
 		if classID != nil && (current.ClassID == nil || *current.ClassID != *classID) {
@@ -208,7 +215,15 @@ func (a *AppContext) DeleteStudent(c *fiber.Ctx) error {
 		ID       int    `json:"id"`
 		Username string `json:"username"`
 	}
-	a.DB.Raw(`DELETE FROM users WHERE id = ? AND school_id = ? AND role = 'SISWA' RETURNING id, username`, id, schoolID).Scan(&row)
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(`DELETE FROM parent_students WHERE school_id = ? AND student_user_id = ?`, schoolID, id).Error; err != nil {
+			return err
+		}
+		return tx.Raw(`DELETE FROM users WHERE id = ? AND school_id = ? AND role = 'SISWA' RETURNING id, username`, id, schoolID).Scan(&row).Error
+	})
+	if err != nil {
+		return utils.Error(c, 500, "Gagal menghapus siswa", err.Error())
+	}
 	if row.ID == 0 {
 		return utils.Error(c, 404, "Student not found")
 	}
@@ -264,6 +279,9 @@ func (a *AppContext) RegisterStudentByAdmin(c *fiber.Ctx) error {
 			return err
 		}
 		studentID := uint(utils.ToInt(fmt.Sprint(row["id"]), 0))
+		if err := ensureParentAccountLinkedTx(tx, schoolID, studentID, body.PhoneNumber); err != nil {
+			return err
+		}
 		return ensureInitialStudentClassEnrollmentTx(tx, schoolID, studentID, body.ClassID, uintPointerFromLocal(c, "userID"))
 	})
 	if err != nil {

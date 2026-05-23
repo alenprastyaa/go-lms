@@ -583,6 +583,13 @@ func (a *AppContext) ImportStudents(c *fiber.Ctx) error {
 			})
 			continue
 		}
+		if err := ensureParentAccountLinkedTx(tx, schoolID, user.ID, user.PhoneNumber); err != nil {
+			failedRows = append(failedRows, fiber.Map{
+				"row":     rowIndex + 1,
+				"message": err.Error(),
+			})
+			continue
+		}
 		if err := ensureInitialStudentClassEnrollmentTx(tx, schoolID, user.ID, selectedClass.ID, uintPointerFromLocal(c, "userID")); err != nil {
 			failedRows = append(failedRows, fiber.Map{
 				"row":     rowIndex + 1,
@@ -681,6 +688,9 @@ func (a *AppContext) registerScopedUser(c *fiber.Ctx, asStudent bool) error {
 			return err
 		}
 		if asStudent && user.SchoolID != nil && user.ClassID != nil {
+			if err := ensureParentAccountLinkedTx(tx, *user.SchoolID, user.ID, user.PhoneNumber); err != nil {
+				return err
+			}
 			return ensureInitialStudentClassEnrollmentTx(tx, *user.SchoolID, user.ID, *user.ClassID, uintPointerFromLocal(c, "userID"))
 		}
 		return nil

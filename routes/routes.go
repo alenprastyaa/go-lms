@@ -40,6 +40,8 @@ func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/auth")
 	r.Post("/register", ctx.RegisterUser)
 	r.Post("/login", ctx.Login)
+	r.Post("/parent/request-otp", ctx.RequestParentLoginOTP)
+	r.Post("/parent/verify-otp", ctx.VerifyParentLoginOTP)
 
 	p := r.Use(middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	p.Post("/register/student", ctx.RegisterStudent)
@@ -246,6 +248,7 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	d := api.Group("/dashboard", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	d.Get("/superadmin", middlewares.RoleAllowed("SUPER_ADMIN"), ctx.GetSuperAdminDashboard)
 	d.Get("/admin", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.GetAdminDashboard)
+	d.Get("/parent", middlewares.RoleAllowed("ORANG_TUA"), ctx.GetParentDashboard)
 
 	announcements := api.Group("/announcements", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	announcements.Get("/dashboard", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "KOPERASI", "SARPRAS", "GURU", "SISWA"), ctx.GetDashboardAnnouncements)
