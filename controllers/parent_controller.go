@@ -171,7 +171,7 @@ func (a *AppContext) RequestParentLoginOTP(c *fiber.Ctx) error {
 
 	var recentCount int64
 	if err := a.DB.Table("parent_login_otps").
-		Where("parent_user_id = ? AND created_at >= ?", parent.ID, time.Now().UTC().Add(-parentOTPRequestWindow)).
+		Where("parent_user_id = ? AND created_at >= ?", parent.ID, jakartaNow().Add(-parentOTPRequestWindow)).
 		Count(&recentCount).Error; err != nil {
 		return utils.Error(c, 500, "Gagal memeriksa OTP", err.Error())
 	}
@@ -188,7 +188,7 @@ func (a *AppContext) RequestParentLoginOTP(c *fiber.Ctx) error {
 		ParentUserID: parent.ID,
 		Identifier:   phoneNumber,
 		OTPHash:      hashParentOTP(phoneNumber, otp),
-		ExpiresAt:    time.Now().UTC().Add(parentOTPValidity),
+		ExpiresAt:    jakartaNow().Add(parentOTPValidity),
 	}
 	if err := a.DB.Create(&row).Error; err != nil {
 		return utils.Error(c, 500, "Gagal menyimpan OTP", err.Error())
@@ -231,7 +231,7 @@ func (a *AppContext) VerifyParentLoginOTP(c *fiber.Ctx) error {
 		First(&row).Error; err != nil {
 		return utils.Error(c, 400, "OTP tidak tersedia atau sudah digunakan")
 	}
-	if row.ExpiresAt.Before(time.Now().UTC()) {
+	if row.ExpiresAt.Before(jakartaNow()) {
 		return utils.Error(c, 400, "OTP sudah kedaluwarsa")
 	}
 	if row.Attempts >= parentOTPMaxAttempts {
@@ -243,7 +243,7 @@ func (a *AppContext) VerifyParentLoginOTP(c *fiber.Ctx) error {
 		return utils.Error(c, 400, "Kode OTP tidak sesuai")
 	}
 
-	now := time.Now().UTC()
+	now := jakartaNow()
 	if err := a.DB.Model(&models.ParentLoginOTP{}).Where("id = ?", row.ID).Updates(map[string]interface{}{
 		"used_at":  now,
 		"attempts": gorm.Expr("attempts + 1"),
