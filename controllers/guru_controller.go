@@ -3,7 +3,6 @@ package controllers
 import (
 	"archive/zip"
 	"bytes"
-	"encoding/csv"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -72,6 +71,131 @@ func extractDocxText(raw []byte) (string, error) {
 		}
 	}
 	return html.UnescapeString(out.String()), nil
+}
+
+// parseNumberedQuestionTemplate parses the simple numbered format:
+//
+//  1. Question text here
+//
+//  A. Option A
+//  B. Option B
+//  C. Option C
+//  D. Option D
+//  E. Option E
+//
+//  Jawaban: A
+//
+// Essay format:
+//
+//  6. Question text
+//
+//  Rubrik: optional rubric text
+func parseNumberedQuestionTemplate(content string) []map[string]interface{} {
+	normalize := strings.NewReplacer("\r\n", "\n", "\r", "\n")
+	lines := strings.Split(normalize.Replace(content), "\n")
+
+	// Regexes
+	qStartRe := regexp.MustCompile(`^\s*(\d+)\s*[\.)\]]\s+(.+)`)
+	optRe := regexp.MustCompile(`^\s*([A-Ea-e])\s*[\.)\-:]\s*(.+)`)
+	jawabRe := regexp.MustCompile(`(?i)^\s*jawaban\s*[:.]\s*([A-Ea-e])\s*$`)
+	rubrikRe := regexp.MustCompile(`(?i)^\s*rubrik\s*[:.]\s*(.*)`)
+	// Lines that are template metadata — skip them
+	skipRe := regexp.MustCompile(`(?i)^([-=─]{3,}|\[.*\]|TEMPLATE|PANDUAN|PETUNJUK|CONTOH|ISI SOAL|KUNCI)`)
+
+	type block struct {
+		qLines  []string
+		options [5]string
+		correct int
+		rubric  string
+	}
+
+	var blocks []block
+	var cur *block
+
+	flush := func() {
+		if cur == nil {
+			return
+		}
+		if len(cur.qLines) > 0 {
+			blocks = append(blocks, *cur)
+		}
+		cur = nil
+	}
+
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" || skipRe.MatchString(line) {
+			continue
+		}
+
+		if m := qStartRe.FindStringSubmatch(line); len(m) == 3 {
+			flush()
+			cur = &block{qLines: []string{strings.TrimSpace(m[2])}}
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+
+		if m := jawabRe.FindStringSubmatch(line); len(m) == 2 {
+			switch strings.ToUpper(m[1]) {
+			case "B":
+				cur.correct = 1
+			case "C":
+				cur.correct = 2
+			case "D":
+				cur.correct = 3
+			case "E":
+				cur.correct = 4
+			default:
+				cur.correct = 0
+			}
+			continue
+		}
+
+		if m := rubrikRe.FindStringSubmatch(line); len(m) == 2 {
+			cur.rubric = strings.TrimSpace(m[1])
+			continue
+		}
+
+		if m := optRe.FindStringSubmatch(line); len(m) == 3 {
+			idx := int(strings.ToUpper(m[1])[0] - 'A')
+			if idx >= 0 && idx < 5 {
+				cur.options[idx] = strings.TrimSpace(m[2])
+			}
+			continue
+		}
+
+		// Continuation of question text (before first option arrives)
+		noOptions := cur.options[0] == "" && cur.options[1] == "" &&
+			cur.options[2] == "" && cur.options[3] == "" && cur.options[4] == ""
+		if noOptions {
+			cur.qLines = append(cur.qLines, line)
+		}
+	}
+	flush()
+
+	result := make([]map[string]interface{}, 0, len(blocks))
+	for _, b := range blocks {
+		questionText := strings.Join(b.qLines, " ")
+		hasMCQOptions := b.options[0] != "" && b.options[1] != "" &&
+			b.options[2] != "" && b.options[3] != "" && b.options[4] != ""
+		if hasMCQOptions {
+			result = append(result, map[string]interface{}{
+				"question_type":  "MCQ",
+				"question_text":  questionText,
+				"options":        []string{b.options[0], b.options[1], b.options[2], b.options[3], b.options[4]},
+				"correct_option": b.correct,
+			})
+		} else if questionText != "" {
+			result = append(result, map[string]interface{}{
+				"question_type": "ESSAY",
+				"question_text": questionText,
+				"rubric":        b.rubric,
+			})
+		}
+	}
+	return result
 }
 
 func parseSimpleMCQTemplate(content string) []map[string]interface{} {
@@ -1918,14 +2042,24 @@ func (a *AppContext) DeleteLearningQuestionBankItem(c *fiber.Ctx) error {
 func (a *AppContext) DeleteLearningQuestionBankItemsBulk(c *fiber.Ctx) error {
 	subjectID := c.Params("subjectId")
 	var body struct {
-		IDs []int `json:"ids"`
+		IDs         []int `json:"ids"`
+		QuestionIDs []int `json:"question_ids"`
 	}
 	_ = c.BodyParser(&body)
-	if len(body.IDs) == 0 {
+	// Accept both "ids" and "question_ids" field names
+	ids := body.IDs
+	if len(ids) == 0 {
+		ids = body.QuestionIDs
+	}
+	if len(ids) == 0 {
 		return utils.Error(c, 400, "ids are required")
 	}
-	a.DB.Exec(`DELETE FROM learning_question_bank WHERE subject_id=? AND id IN ?`, subjectID, body.IDs)
-	return utils.Success(c, 200, "Success Delete Question Bank Items Bulk", fiber.Map{"deleted_ids": body.IDs})
+	result := a.DB.Exec(`DELETE FROM learning_question_bank WHERE subject_id=? AND id IN ?`, subjectID, ids)
+	deleted := int(result.RowsAffected)
+	return utils.Success(c, 200, "Soal berhasil dihapus", fiber.Map{
+		"total":       deleted,
+		"deleted_ids": ids,
+	})
 }
 
 func (a *AppContext) GetLearningQuestionBankTopicSuggestions(c *fiber.Ctx) error {
@@ -2062,15 +2196,312 @@ func (a *AppContext) SaveGeneratedLearningQuestionBankItems(c *fiber.Ctx) error 
 	return utils.Success(c, 201, "Success Save Generated Question Bank Items", saved)
 }
 
-func (a *AppContext) DownloadLearningQuestionBankTemplate(c *fiber.Ctx) error {
-	c.Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-	c.Set("Content-Disposition", `attachment; filename="template_soal_pilihan_ganda.docx"`)
+// xmlEscapeWord escapes special XML characters for use in Word document XML.
+func xmlEscapeWord(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	s = strings.ReplaceAll(s, "'", "&apos;")
+	return s
+}
 
-	templatePath := "template_soal_pilihan_ganda.docx"
-	if _, err := os.Stat(templatePath); err != nil {
-		templatePath = "Go/template_soal_pilihan_ganda.docx"
+type wordParagraph struct {
+	text      string
+	bold      bool
+	mono      bool
+	fontSize  int    // pt (e.g. 11, 12, 14)
+	color     string // hex color without "#"
+	bgColor   string // hex fill color
+	center    bool
+	italic    bool
+	spaceBefore int // twips (240 = 1 line)
+	spaceAfter  int
+}
+
+func makeWordParagraph(p wordParagraph) string {
+	var sb strings.Builder
+	sb.WriteString("<w:p>")
+
+	// Paragraph properties
+	hasPPr := p.center || p.bgColor != "" || p.spaceBefore > 0 || p.spaceAfter > 0
+	if hasPPr {
+		sb.WriteString("<w:pPr>")
+		if p.center {
+			sb.WriteString(`<w:jc w:val="center"/>`)
+		}
+		if p.spaceBefore > 0 || p.spaceAfter > 0 {
+			fmt.Fprintf(&sb, `<w:spacing w:before="%d" w:after="%d"/>`, p.spaceBefore, p.spaceAfter)
+		}
+		if p.bgColor != "" {
+			fmt.Fprintf(&sb, `<w:shd w:val="clear" w:color="auto" w:fill="%s"/>`, p.bgColor)
+		}
+		sb.WriteString("</w:pPr>")
 	}
-	return c.SendFile(templatePath)
+
+	if p.text != "" {
+		sb.WriteString("<w:r>")
+		// Run properties
+		sb.WriteString("<w:rPr>")
+		if p.bold {
+			sb.WriteString("<w:b/><w:bCs/>")
+		}
+		if p.italic {
+			sb.WriteString("<w:i/><w:iCs/>")
+		}
+		if p.mono {
+			sb.WriteString(`<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New" w:cs="Courier New"/>`)
+		}
+		if p.fontSize > 0 {
+			fmt.Fprintf(&sb, `<w:sz w:val="%d"/><w:szCs w:val="%d"/>`, p.fontSize*2, p.fontSize*2)
+		}
+		if p.color != "" {
+			fmt.Fprintf(&sb, `<w:color w:val="%s"/>`, p.color)
+		}
+		sb.WriteString("</w:rPr>")
+		fmt.Fprintf(&sb, `<w:t xml:space="preserve">%s</w:t>`, xmlEscapeWord(p.text))
+		sb.WriteString("</w:r>")
+	}
+
+	sb.WriteString("</w:p>")
+	return sb.String()
+}
+
+func buildQuestionBankDocx(paragraphs []wordParagraph) ([]byte, error) {
+	var docBody strings.Builder
+	docBody.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`)
+	docBody.WriteString(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">`)
+	docBody.WriteString(`<w:body>`)
+	for _, p := range paragraphs {
+		docBody.WriteString(makeWordParagraph(p))
+	}
+	// Section properties required for valid .docx
+	docBody.WriteString(`<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>`)
+	docBody.WriteString(`</w:body></w:document>`)
+
+	contentTypes := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`
+
+	rootRels := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`
+
+	docRels := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>`
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	files := []struct{ name, body string }{
+		{"[Content_Types].xml", contentTypes},
+		{"_rels/.rels", rootRels},
+		{"word/document.xml", docBody.String()},
+		{"word/_rels/document.xml.rels", docRels},
+	}
+	for _, f := range files {
+		w, err := zw.Create(f.name)
+		if err != nil {
+			return nil, err
+		}
+		if _, err = io.WriteString(w, f.body); err != nil {
+			return nil, err
+		}
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func buildQuestionBankTemplateParagraphs(subjectName, questionType string) []wordParagraph {
+	// ── Helpers ──────────────────────────────────────────────────────────
+	sp := func(n int) wordParagraph { return wordParagraph{text: "", spaceAfter: n} }
+	title := func(t string) wordParagraph {
+		return wordParagraph{text: t, bold: true, fontSize: 14, color: "1E40AF", center: true, spaceAfter: 40}
+	}
+	subtitle := func(t string) wordParagraph {
+		return wordParagraph{text: t, italic: true, fontSize: 10, color: "6B7280", center: true, spaceAfter: 80}
+	}
+	sep := func() wordParagraph {
+		return wordParagraph{text: strings.Repeat("─", 56), fontSize: 9, color: "CBD5E1", center: true, spaceBefore: 80, spaceAfter: 80}
+	}
+	sectionLabel := func(t string) wordParagraph {
+		return wordParagraph{text: t, bold: true, fontSize: 11, color: "1E40AF", bgColor: "DBEAFE", spaceBefore: 120, spaceAfter: 60}
+	}
+	tip := func(t string) wordParagraph {
+		return wordParagraph{text: t, fontSize: 10, color: "374151", spaceAfter: 20}
+	}
+	// Question number line — bold blue
+	qNum := func(t string) wordParagraph {
+		return wordParagraph{text: t, bold: true, fontSize: 11, color: "1E3A8A", spaceBefore: 120, spaceAfter: 20}
+	}
+	// Option line (A. B. C. D. E.)
+	opt := func(t string) wordParagraph {
+		return wordParagraph{text: t, fontSize: 11, color: "1E293B", spaceAfter: 20}
+	}
+	// Correct answer line — bold green
+	jawab := func(t string) wordParagraph {
+		return wordParagraph{text: t, bold: true, fontSize: 11, color: "15803D", spaceAfter: 20}
+	}
+	// Rubrik line — amber
+	rubrik := func(t string) wordParagraph {
+		return wordParagraph{text: t, fontSize: 11, color: "92400E", spaceAfter: 20}
+	}
+	// Blank question line (to fill in)
+	blankQ := func(n int) wordParagraph {
+		return wordParagraph{text: fmt.Sprintf("%d. ", n), bold: true, fontSize: 11, color: "1E3A8A", bgColor: "EFF6FF", spaceBefore: 120, spaceAfter: 20}
+	}
+	blankOpt := func(letter string) wordParagraph {
+		return wordParagraph{text: letter + ". ", fontSize: 11, color: "64748B", bgColor: "F8FAFC", spaceAfter: 20}
+	}
+	blankJawab := func() wordParagraph {
+		return wordParagraph{text: "Jawaban: ", bold: true, fontSize: 11, color: "15803D", bgColor: "F0FDF4", spaceAfter: 20}
+	}
+	blankRubrik := func() wordParagraph {
+		return wordParagraph{text: "Rubrik: ", fontSize: 11, color: "92400E", bgColor: "FFFBEB", spaceAfter: 20}
+	}
+	notice := func(t string) wordParagraph {
+		return wordParagraph{text: t, italic: true, fontSize: 9, color: "94A3B8", center: true, spaceBefore: 80, spaceAfter: 40}
+	}
+	// ── Build content ────────────────────────────────────────────────────
+	var ps []wordParagraph
+
+	subjectLabel := subjectName
+	if subjectLabel == "" {
+		subjectLabel = "Mata Pelajaran"
+	}
+	typeDesc := "Pilihan Ganda + Uraian"
+	if questionType == "MCQ" {
+		typeDesc = "Pilihan Ganda"
+	} else if questionType == "ESSAY" {
+		typeDesc = "Uraian"
+	}
+
+	includeMCQ := questionType != "ESSAY"
+	includeESSAY := questionType != "MCQ"
+
+	ps = append(ps,
+		title("TEMPLATE BANK SOAL — "+strings.ToUpper(subjectLabel)),
+		subtitle("Jenis soal: "+typeDesc+" • Simpan sebagai .docx lalu upload ke sistem"),
+		sep(),
+	)
+
+	// ── Petunjuk ────────────────────────────────────────────────────────
+	ps = append(ps, sectionLabel("PETUNJUK PENGISIAN"))
+	petunjuk := []string{
+		"1.  Tulis nomor soal diikuti teks pertanyaan pada satu baris (contoh:  1. Apa ibu kota Indonesia?)",
+		"2.  Tulis setiap opsi di baris baru menggunakan huruf A. B. C. D. E.",
+		"3.  Tulis  Jawaban: X  di bawah opsi terakhir (X = huruf jawaban yang benar, misal A).",
+		"4.  Untuk soal uraian: tidak perlu opsi, cukup tulis  Rubrik: ...  (boleh dikosongkan).",
+		"5.  Hapus bagian CONTOH sebelum mengupload agar tidak ikut tersimpan.",
+		"6.  Baris kosong di antara soal tidak masalah — sistem akan mengabaikannya.",
+	}
+	for _, p := range petunjuk {
+		ps = append(ps, tip(p))
+	}
+	ps = append(ps, sep())
+
+	// ── Contoh soal ─────────────────────────────────────────────────────
+	ps = append(ps, sectionLabel("CONTOH SOAL  (hapus bagian ini sebelum upload)"))
+
+	if includeMCQ {
+		ps = append(ps,
+			qNum("1. Siapakah proklamator kemerdekaan Republik Indonesia?"),
+			sp(10),
+			opt("A. Ir. Soekarno"),
+			opt("B. Mohammad Hatta"),
+			opt("C. Ir. Soekarno dan Mohammad Hatta"),
+			opt("D. Soeharto"),
+			opt("E. BJ. Habibie"),
+			sp(10),
+			jawab("Jawaban: C"),
+		)
+		if includeESSAY {
+			ps = append(ps, sp(40))
+		}
+	}
+	if includeESSAY {
+		startNum := 1
+		if includeMCQ {
+			startNum = 2
+		}
+		ps = append(ps,
+			qNum(fmt.Sprintf("%d. Jelaskan pengertian fotosintesis dan sebutkan tiga faktor yang mempengaruhinya!", startNum)),
+			sp(10),
+			rubrik("Rubrik: Siswa menyebutkan definisi fotosintesis dengan benar dan menyebutkan minimal 3 faktor (cahaya matahari, air, karbon dioksida, klorofil)."),
+		)
+	}
+	ps = append(ps, sep())
+
+	// ── Template kosong ─────────────────────────────────────────────────
+	ps = append(ps, sectionLabel("ISI SOAL ANDA DI BAWAH INI"))
+	ps = append(ps, notice("Salin format di bawah sebanyak soal yang dibutuhkan"))
+
+	blankTotal := 5
+	qIndex := 1
+	for i := 0; i < blankTotal; i++ {
+		if includeMCQ {
+			ps = append(ps,
+				blankQ(qIndex),
+				sp(10),
+				blankOpt("A"),
+				blankOpt("B"),
+				blankOpt("C"),
+				blankOpt("D"),
+				blankOpt("E"),
+				sp(10),
+				blankJawab(),
+			)
+			qIndex++
+		}
+		if includeESSAY {
+			ps = append(ps,
+				blankQ(qIndex),
+				sp(10),
+				blankRubrik(),
+			)
+			qIndex++
+		}
+		ps = append(ps, sp(60))
+	}
+
+	ps = append(ps, notice("— Tambah lebih banyak soal dengan menyalin format di atas —"))
+	return ps
+}
+
+func (a *AppContext) DownloadLearningQuestionBankTemplate(c *fiber.Ctx) error {
+	subjectID := c.Params("subjectId")
+	questionType := strings.ToUpper(strings.TrimSpace(c.Query("question_type")))
+	if questionType == "" {
+		questionType = "MIXED"
+	}
+
+	// Load subject name for the template title
+	var subjectName string
+	a.DB.Raw(`SELECT name FROM learning_subjects WHERE id = ? LIMIT 1`, subjectID).Scan(&subjectName)
+
+	paragraphs := buildQuestionBankTemplateParagraphs(subjectName, questionType)
+	docxBytes, err := buildQuestionBankDocx(paragraphs)
+	if err != nil {
+		return utils.Error(c, 500, "gagal membuat file template")
+	}
+
+	typeLabel := "campuran"
+	if questionType == "MCQ" {
+		typeLabel = "pilihan_ganda"
+	} else if questionType == "ESSAY" {
+		typeLabel = "uraian"
+	}
+	filename := fmt.Sprintf("template_bank_soal_%s.docx", typeLabel)
+
+	c.Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	return c.Send(docxBytes)
 }
 
 func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error {
@@ -2103,13 +2534,6 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 	}
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	content = strings.ReplaceAll(content, "\r", "\n")
-
-	normalizeHeader := func(value string) string {
-		next := strings.TrimSpace(strings.ToLower(value))
-		next = strings.ReplaceAll(next, " ", "_")
-		next = strings.ReplaceAll(next, "-", "_")
-		return next
-	}
 
 	importedItems := make([]map[string]interface{}, 0)
 	mcqCount := 0
@@ -2195,93 +2619,51 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 			}
 		}
 	} else {
-		reader := csv.NewReader(strings.NewReader(content))
-		reader.TrimLeadingSpace = true
-		rows, readErr := reader.ReadAll()
-		if readErr == nil && len(rows) >= 2 {
-			headers := make([]string, 0, len(rows[0]))
-			for _, item := range rows[0] {
-				headers = append(headers, normalizeHeader(item))
-			}
-			headerIndex := map[string]int{}
-			for index, key := range headers {
-				headerIndex[key] = index
-			}
-
-			getValue := func(record []string, key string) string {
-				idx, ok := headerIndex[key]
-				if !ok || idx < 0 || idx >= len(record) {
-					return ""
-				}
-				return strings.TrimSpace(record[idx])
-			}
-
-			isEssayTemplate := headerIndex["rubric"] >= 0
-			isMcqTemplate := headerIndex["option_a"] >= 0 && headerIndex["option_b"] >= 0 && headerIndex["option_c"] >= 0 && headerIndex["option_d"] >= 0 && headerIndex["option_e"] >= 0
-
-			if !isEssayTemplate && !isMcqTemplate {
-				return utils.Error(c, 400, "header template tidak dikenali, unduh ulang template terbaru")
-			}
-
-			for rowIndex := 1; rowIndex < len(rows); rowIndex++ {
-				record := rows[rowIndex]
-				questionText := getValue(record, "question_text")
-				if questionText == "" {
-					continue
-				}
-
-				if isEssayTemplate && !isMcqTemplate {
-					rubric := getValue(record, "rubric")
+		// Primary: try the simple numbered format (1. ... A. ... Jawaban: X)
+		parsedNumbered := parseNumberedQuestionTemplate(content)
+		if len(parsedNumbered) > 0 {
+			for _, item := range parsedNumbered {
+				qType := fmt.Sprint(item["question_type"])
+				questionText := fmt.Sprint(item["question_text"])
+				if qType == "ESSAY" {
+					rubricVal := ""
+					if r, ok := item["rubric"]; ok {
+						rubricVal = strings.TrimSpace(fmt.Sprint(r))
+					}
 					var inserted map[string]interface{}
 					a.DB.Raw(`
-					INSERT INTO learning_question_bank (subject_id, question_type, question_text, rubric, created_by, created_at)
-					VALUES (?, 'ESSAY', ?, ?, ?, NOW())
-					RETURNING *
-				`, subjectID, questionText, nullIfEmpty(rubric), userID).Scan(&inserted)
+						INSERT INTO learning_question_bank (subject_id, question_type, question_text, rubric, created_by, created_at)
+						VALUES (?, 'ESSAY', ?, ?, ?, NOW())
+						RETURNING *
+					`, subjectID, questionText, nullIfEmpty(rubricVal), userID).Scan(&inserted)
 					if len(inserted) > 0 {
 						normalizeJakartaDateTimeFields(inserted, "created_at", "updated_at")
 						importedItems = append(importedItems, inserted)
 						essayCount++
 					}
-					continue
-				}
-
-				optionA := getValue(record, "option_a")
-				optionB := getValue(record, "option_b")
-				optionC := getValue(record, "option_c")
-				optionD := getValue(record, "option_d")
-				optionE := getValue(record, "option_e")
-				correctRaw := getValue(record, "correct_option_index")
-				if optionA == "" || optionB == "" || optionC == "" || optionD == "" || optionE == "" {
-					continue
-				}
-
-				correct := 0
-				if correctRaw == "1" || strings.EqualFold(correctRaw, "b") {
-					correct = 1
-				} else if correctRaw == "2" || strings.EqualFold(correctRaw, "c") {
-					correct = 2
-				} else if correctRaw == "3" || strings.EqualFold(correctRaw, "d") {
-					correct = 3
-				} else if correctRaw == "4" || strings.EqualFold(correctRaw, "e") {
-					correct = 4
-				}
-
-				var inserted map[string]interface{}
-				a.DB.Raw(`
-					INSERT INTO learning_question_bank (subject_id, question_type, question_text, options, correct_option, created_by, created_at)
-					VALUES (?, 'MCQ', ?, ?::jsonb, ?, ?, NOW())
-					RETURNING *
-				`, subjectID, questionText, toJSONRaw([]string{optionA, optionB, optionC, optionD, optionE}), correct, userID).Scan(&inserted)
-				if len(inserted) > 0 {
-					normalizeJakartaDateTimeFields(inserted, "created_at", "updated_at")
-					importedItems = append(importedItems, inserted)
-					mcqCount++
+				} else {
+					opts, _ := item["options"].([]string)
+					correct, _ := item["correct_option"].(int)
+					if len(opts) < 5 {
+						continue
+					}
+					var inserted map[string]interface{}
+					a.DB.Raw(`
+						INSERT INTO learning_question_bank (subject_id, question_type, question_text, options, correct_option, created_by, created_at)
+						VALUES (?, 'MCQ', ?, ?::jsonb, ?, ?, NOW())
+						RETURNING *
+					`, subjectID, questionText, toJSONRaw(opts), correct, userID).Scan(&inserted)
+					if len(inserted) > 0 {
+						normalizeJakartaDateTimeFields(inserted, "created_at", "updated_at")
+						importedItems = append(importedItems, inserted)
+						mcqCount++
+					}
 				}
 			}
 		} else {
-			parsed := parseSimpleMCQTemplate(content)
-			for _, item := range parsed {
+			// Legacy fallback: old simple MCQ format (KUNCI JAWABAN section at bottom)
+			parsedLegacy := parseSimpleMCQTemplate(content)
+			for _, item := range parsedLegacy {
 				var inserted map[string]interface{}
 				a.DB.Raw(`
 					INSERT INTO learning_question_bank (subject_id, question_type, question_text, options, correct_option, created_by, created_at)

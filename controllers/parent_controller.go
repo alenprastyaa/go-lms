@@ -186,6 +186,9 @@ func (a *AppContext) RequestParentLoginOTP(c *fiber.Ctx) error {
 			},
 		})
 	}
+	if strings.TrimSpace(os.Getenv("NGIRIMWA_API_KEY")) == "" {
+		return utils.Error(c, 500, "NGIRIMWA_API_KEY belum diatur di server")
+	}
 
 	otp, err := generateParentOTP()
 	if err != nil {
@@ -202,6 +205,7 @@ func (a *AppContext) RequestParentLoginOTP(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Gagal menyimpan OTP", err.Error())
 	}
 	if err := sendParentOTPWhatsApp(phoneNumber, otp); err != nil {
+		_ = a.DB.Where("id = ?", row.ID).Delete(&models.ParentLoginOTP{}).Error
 		return utils.Error(c, 500, "Gagal mengirim OTP", err.Error())
 	}
 
