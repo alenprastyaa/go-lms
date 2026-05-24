@@ -3,6 +3,7 @@ package controllers
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -621,15 +622,61 @@ func (a *AppContext) RecordQuizViolation(c *fiber.Ctx) error {
 
 func (a *AppContext) CheckIn(c *fiber.Ctx) error {
 	userID := c.Locals("userID").(uint)
+	schoolID := c.Locals("schoolID").(uint)
 	file, err := c.FormFile("image")
 	if err != nil || file == nil {
 		return utils.Error(c, 400, "Image is required")
 	}
+
+	latStr := strings.TrimSpace(c.FormValue("latitude"))
+	lngStr := strings.TrimSpace(c.FormValue("longitude"))
+	if latStr == "" || lngStr == "" {
+		return utils.Error(c, 400, "Lokasi perangkat (GPS) wajib diaktifkan untuk absensi.")
+	}
+	lat, latErr := strconv.ParseFloat(latStr, 64)
+	lng, lngErr := strconv.ParseFloat(lngStr, 64)
+	if latErr != nil || lngErr != nil || math.IsNaN(lat) || math.IsNaN(lng) {
+		return utils.Error(c, 400, "Koordinat lokasi tidak valid.")
+	}
+
 	var faceReferenceImage string
 	a.DB.Raw(`SELECT COALESCE(face_reference_image, '') FROM users WHERE id = ? LIMIT 1`, userID).Scan(&faceReferenceImage)
 	if strings.TrimSpace(faceReferenceImage) == "" {
 		return utils.Error(c, 400, "Foto referensi wajah belum tersedia. Lakukan enrol wajah terlebih dahulu sebelum absensi.")
 	}
+
+	// Strict geofence: if school location is not set, attendance is blocked.
+	var geo struct {
+		Lat    *float64 `gorm:"column:attendance_latitude"`
+		Lng    *float64 `gorm:"column:attendance_longitude"`
+		Radius *int     `gorm:"column:attendance_radius_meters"`
+	}
+	if err := a.DB.Raw(`
+		SELECT
+			attendance_latitude,
+			attendance_longitude,
+			attendance_radius_meters
+		FROM schools
+		WHERE id = ?
+		LIMIT 1
+	`, schoolID).Scan(&geo).Error; err != nil {
+		return utils.Error(c, 500, "Gagal membaca lokasi sekolah", err.Error())
+	}
+	if geo.Lat == nil || geo.Lng == nil {
+		return utils.Error(c, 403, "Lokasi sekolah belum diatur. Absensi ditolak. Hubungi admin/super admin.")
+	}
+	radiusMeters := 0
+	if geo.Radius != nil {
+		radiusMeters = *geo.Radius
+	}
+	if radiusMeters <= 0 {
+		radiusMeters = 150
+	}
+	distanceMeters := utils.HaversineDistanceMeters(lat, lng, *geo.Lat, *geo.Lng)
+	if distanceMeters > float64(radiusMeters) {
+		return utils.Error(c, 403, fmt.Sprintf("Anda berada di luar area sekolah (%.0fm / radius %dm). Absensi ditolak.", distanceMeters, radiusMeters))
+	}
+
 	var exists int64
 	a.DB.Raw(`SELECT COUNT(*) FROM attendance WHERE user_id=? AND attendance_date=CURRENT_DATE`, userID).Scan(&exists)
 	if exists > 0 {

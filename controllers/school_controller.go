@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -33,6 +34,27 @@ func (a *AppContext) CreateSchool(c *fiber.Ctx) error {
 		KoperasiModuleEnabled:     true,
 		PrivateChatModuleEnabled:  true,
 		TeachingModuleAIEnabled:   true,
+	}
+	if v := strings.TrimSpace(c.FormValue("attendance_latitude")); v != "" {
+		if lat, err := strconv.ParseFloat(v, 64); err == nil {
+			school.AttendanceLatitude = &lat
+		} else {
+			return utils.Error(c, 400, "Latitude tidak valid")
+		}
+	}
+	if v := strings.TrimSpace(c.FormValue("attendance_longitude")); v != "" {
+		if lng, err := strconv.ParseFloat(v, 64); err == nil {
+			school.AttendanceLongitude = &lng
+		} else {
+			return utils.Error(c, 400, "Longitude tidak valid")
+		}
+	}
+	if v := strings.TrimSpace(c.FormValue("attendance_radius_meters")); v != "" {
+		radius, err := strconv.Atoi(v)
+		if err != nil || radius <= 0 {
+			return utils.Error(c, 400, "Radius lokasi absensi tidak valid")
+		}
+		school.AttendanceRadiusMeters = &radius
 	}
 	if file, err := c.FormFile("logo"); err == nil && file != nil {
 		logoURL, upErr := utils.SaveUploadedFile(c, file)
@@ -88,6 +110,33 @@ func (a *AppContext) UpdateSchool(c *fiber.Ctx) error {
 	}
 	if v := strings.TrimSpace(c.FormValue("attendance_module_enabled")); v != "" {
 		updates["attendance_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
+	}
+	if v := strings.TrimSpace(c.FormValue("attendance_latitude")); v != "" {
+		lat, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return utils.Error(c, 400, "Latitude tidak valid")
+		}
+		updates["attendance_latitude"] = lat
+	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_latitude")), "true") {
+		updates["attendance_latitude"] = nil
+	}
+	if v := strings.TrimSpace(c.FormValue("attendance_longitude")); v != "" {
+		lng, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return utils.Error(c, 400, "Longitude tidak valid")
+		}
+		updates["attendance_longitude"] = lng
+	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_longitude")), "true") {
+		updates["attendance_longitude"] = nil
+	}
+	if v := strings.TrimSpace(c.FormValue("attendance_radius_meters")); v != "" {
+		radius, err := strconv.Atoi(v)
+		if err != nil || radius <= 0 {
+			return utils.Error(c, 400, "Radius lokasi absensi tidak valid")
+		}
+		updates["attendance_radius_meters"] = radius
+	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_radius_meters")), "true") {
+		updates["attendance_radius_meters"] = nil
 	}
 	if v := strings.TrimSpace(c.FormValue("official_exam_module_enabled")); v != "" {
 		updates["official_exam_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
@@ -219,6 +268,33 @@ func (a *AppContext) UpdateCurrentSchool(c *fiber.Ctx) error {
 	updates := map[string]interface{}{
 		"name": name,
 	}
+	if v := strings.TrimSpace(c.FormValue("attendance_latitude")); v != "" {
+		lat, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return utils.Error(c, 400, "Latitude tidak valid")
+		}
+		updates["attendance_latitude"] = lat
+	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_latitude")), "true") {
+		updates["attendance_latitude"] = nil
+	}
+	if v := strings.TrimSpace(c.FormValue("attendance_longitude")); v != "" {
+		lng, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return utils.Error(c, 400, "Longitude tidak valid")
+		}
+		updates["attendance_longitude"] = lng
+	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_longitude")), "true") {
+		updates["attendance_longitude"] = nil
+	}
+	if v := strings.TrimSpace(c.FormValue("attendance_radius_meters")); v != "" {
+		radius, err := strconv.Atoi(v)
+		if err != nil || radius <= 0 {
+			return utils.Error(c, 400, "Radius lokasi absensi tidak valid")
+		}
+		updates["attendance_radius_meters"] = radius
+	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_radius_meters")), "true") {
+		updates["attendance_radius_meters"] = nil
+	}
 	if strings.EqualFold(strings.TrimSpace(c.FormValue("remove_logo")), "true") {
 		updates["logo_url"] = nil
 	}
@@ -235,7 +311,7 @@ func (a *AppContext) UpdateCurrentSchool(c *fiber.Ctx) error {
 	}
 
 	var row map[string]interface{}
-	a.DB.Raw(`SELECT id, name, logo_url FROM schools WHERE id = ?`, schoolID).Scan(&row)
+	a.DB.Raw(`SELECT id, name, logo_url, attendance_latitude, attendance_longitude, attendance_radius_meters FROM schools WHERE id = ?`, schoolID).Scan(&row)
 	return utils.Success(c, 200, "Data sekolah berhasil diperbarui", row)
 }
 
@@ -291,6 +367,9 @@ func schoolListQuery(whereClause string) string {
 			s.logo_url,
 			COALESCE(s.inventory_module_enabled, true) AS inventory_module_enabled,
 			COALESCE(s.attendance_module_enabled, true) AS attendance_module_enabled,
+			s.attendance_latitude,
+			s.attendance_longitude,
+			s.attendance_radius_meters,
 			COALESCE(s.official_exam_module_enabled, true) AS official_exam_module_enabled,
 			COALESCE(s.koperasi_module_enabled, true) AS koperasi_module_enabled,
 			COALESCE(s.private_chat_module_enabled, true) AS private_chat_module_enabled,
@@ -309,7 +388,7 @@ func schoolListQuery(whereClause string) string {
 		LEFT JOIN learning_subjects ls ON ls.school_id = s.id
 		LEFT JOIN academic_years ay ON ay.school_id = s.id
 		%s
-		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.attendance_module_enabled, s.official_exam_module_enabled, s.koperasi_module_enabled, s.private_chat_module_enabled, s.teaching_module_ai_enabled
+		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.attendance_module_enabled, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.official_exam_module_enabled, s.koperasi_module_enabled, s.private_chat_module_enabled, s.teaching_module_ai_enabled
 	`, whereClause)
 }
 

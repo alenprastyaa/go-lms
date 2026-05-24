@@ -111,6 +111,7 @@ func registerStudent(api fiber.Router, ctx *controllers.AppContext) {
 func registerPublic(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/public")
 	r.Get("/registration-options", ctx.GetPublicRegistrationOptions)
+	r.Get("/geocode", ctx.SearchPublicLocations)
 	r.Post("/student-registration", ctx.RegisterStudentPublic)
 	r.Get("/check-username", ctx.CheckUsernameAvailability)
 }

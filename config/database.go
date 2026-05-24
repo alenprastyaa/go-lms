@@ -69,6 +69,15 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS attendance_module_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS attendance_latitude DOUBLE PRECISION NULL`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS attendance_longitude DOUBLE PRECISION NULL`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS attendance_radius_meters INT NULL`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS official_exam_module_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
 		return nil, err
 	}

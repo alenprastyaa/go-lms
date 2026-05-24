@@ -153,10 +153,16 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 	var school models.School
 	var schoolName interface{} = nil
 	var schoolLogo interface{} = nil
+	var schoolLatitude interface{} = nil
+	var schoolLongitude interface{} = nil
+	var schoolRadius interface{} = nil
 	if user.SchoolID != nil {
-		_ = a.DB.Select("name", "logo_url", "inventory_module_enabled", "attendance_module_enabled", "official_exam_module_enabled", "koperasi_module_enabled", "private_chat_module_enabled", "teaching_module_ai_enabled").Where("id = ?", *user.SchoolID).First(&school).Error
+		_ = a.DB.Select("name", "logo_url", "attendance_latitude", "attendance_longitude", "attendance_radius_meters", "inventory_module_enabled", "attendance_module_enabled", "official_exam_module_enabled", "koperasi_module_enabled", "private_chat_module_enabled", "teaching_module_ai_enabled").Where("id = ?", *user.SchoolID).First(&school).Error
 		schoolName = school.Name
 		schoolLogo = school.LogoURL
+		schoolLatitude = school.AttendanceLatitude
+		schoolLongitude = school.AttendanceLongitude
+		schoolRadius = school.AttendanceRadiusMeters
 	}
 
 	return utils.Success(c, 200, "Login successful", fiber.Map{
@@ -167,7 +173,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 			"koperasi_module_enabled":      school.KoperasiModuleEnabled,
 			"private_chat_module_enabled":  school.PrivateChatModuleEnabled,
 			"teaching_module_ai_enabled":   school.TeachingModuleAIEnabled,
-		}, "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
+		}, "attendance_latitude": schoolLatitude, "attendance_longitude": schoolLongitude, "attendance_radius_meters": schoolRadius, "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
 	})
 }
 
@@ -1979,6 +1985,9 @@ func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 		FaceReferenceDescriptor   *string `json:"face_reference_descriptor"`
 		SchoolName                *string `json:"school_name"`
 		SchoolLogo                *string `json:"school_logo"`
+		AttendanceLatitude        *float64 `json:"attendance_latitude"`
+		AttendanceLongitude       *float64 `json:"attendance_longitude"`
+		AttendanceRadiusMeters    *int     `json:"attendance_radius_meters"`
 		InventoryModuleEnabled    bool    `json:"inventory_module_enabled"`
 		AttendanceModuleEnabled   bool    `json:"attendance_module_enabled"`
 		OfficialExamModuleEnabled bool    `json:"official_exam_module_enabled"`
@@ -1987,7 +1996,7 @@ func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 		TeachingModuleAIEnabled   bool    `json:"teaching_module_ai_enabled"`
 	}
 	err := a.DB.Table("users u").
-		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo, COALESCE(s.inventory_module_enabled, true) as inventory_module_enabled, COALESCE(s.attendance_module_enabled, true) as attendance_module_enabled, COALESCE(s.official_exam_module_enabled, true) as official_exam_module_enabled, COALESCE(s.koperasi_module_enabled, true) as koperasi_module_enabled, COALESCE(s.private_chat_module_enabled, true) as private_chat_module_enabled, COALESCE(s.teaching_module_ai_enabled, true) as teaching_module_ai_enabled").
+		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, COALESCE(s.inventory_module_enabled, true) as inventory_module_enabled, COALESCE(s.attendance_module_enabled, true) as attendance_module_enabled, COALESCE(s.official_exam_module_enabled, true) as official_exam_module_enabled, COALESCE(s.koperasi_module_enabled, true) as koperasi_module_enabled, COALESCE(s.private_chat_module_enabled, true) as private_chat_module_enabled, COALESCE(s.teaching_module_ai_enabled, true) as teaching_module_ai_enabled").
 		Joins("left join schools s on s.id = u.school_id").
 		Where("u.id = ?", userID).
 		Scan(&profile).Error
