@@ -642,7 +642,7 @@ func (a *AppContext) RelayPrivateChatCallSignal(c *fiber.Ctx) error {
 	var body struct {
 		SignalType string `json:"signal_type"`
 		ClientID   string `json:"client_id"`
-		SDP        string `json:"sdp"`
+		SDP        any    `json:"sdp"`
 		Candidate  any    `json:"candidate"`
 		Reason     string `json:"reason"`
 	}
@@ -660,7 +660,7 @@ func (a *AppContext) RelayPrivateChatCallSignal(c *fiber.Ctx) error {
 		"to_user_id":   peerID,
 		"peer_user_id": peerID,
 		"signal_type":  signalType,
-		"sdp":          strings.TrimSpace(body.SDP),
+		"sdp":          normalizeCallPayloadValue(body.SDP),
 		"candidate":    normalizeCallPayloadValue(body.Candidate),
 		"reason":       strings.TrimSpace(body.Reason),
 		"client_id":    strings.TrimSpace(body.ClientID),
