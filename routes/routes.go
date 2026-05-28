@@ -129,10 +129,13 @@ func registerPrivateChat(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/private-chat", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "KOPERASI", "GURU", "SISWA"), middlewares.ModuleAllowed(ctx.DB, "private_chat"))
 	r.Get("/summary", ctx.GetPrivateChatSummary)
 	r.Get("/contacts", ctx.SearchPrivateChatContacts)
+	r.Get("/turn/ice-servers", ctx.GetPrivateChatTurnServers)
 	r.Get("/:peerUserId/messages", ctx.GetPrivateChatMessages)
 	r.Post("/:peerUserId/messages", ctx.CreatePrivateChatMessage)
 	r.Put("/:peerUserId/messages/:messageId", ctx.UpdatePrivateChatMessage)
 	r.Post("/:peerUserId/read", ctx.MarkPrivateChatAsRead)
+	r.Post("/:peerUserId/calls", ctx.StartPrivateChatCall)
+	r.Post("/:peerUserId/calls/:callId/signal", ctx.RelayPrivateChatCallSignal)
 }
 
 func registerGuru(api fiber.Router, ctx *controllers.AppContext) {

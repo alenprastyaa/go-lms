@@ -183,6 +183,10 @@ func (h *Hub) BroadcastPrivateChatReadUpdated(schoolID uint, ownerUserID uint, p
 	h.broadcastUserEvent("private-chat:read-updated", schoolID, []uint{ownerUserID, peerUserID}, payload)
 }
 
+func (h *Hub) BroadcastPrivateChatCallEvent(schoolID uint, callerID uint, calleeID uint, payload any) {
+	h.broadcastUserEvent("private-chat:call-event", schoolID, []uint{callerID, calleeID}, payload)
+}
+
 func (h *Hub) BroadcastSchoolRoleEvent(eventName string, schoolID uint, roles []string, payload any) {
 	if h == nil || schoolID == 0 || len(roles) == 0 {
 		return

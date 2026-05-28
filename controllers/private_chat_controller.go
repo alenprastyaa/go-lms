@@ -2,11 +2,13 @@ package controllers
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"lms/services"
 	"lms/utils"
 )
 
@@ -491,4 +493,149 @@ func (a *AppContext) MarkPrivateChatAsRead(c *fiber.Ctx) error {
 	}
 
 	return utils.Success(c, 200, "Success Mark Private Chat As Read", payload)
+}
+
+func normalizeCallPayloadValue(value any) any {
+	if value == nil {
+		return nil
+	}
+
+	switch typed := value.(type) {
+	case json.RawMessage:
+		if len(typed) == 0 {
+			return nil
+		}
+		var parsed any
+		if err := json.Unmarshal(typed, &parsed); err == nil {
+			return parsed
+		}
+		return string(typed)
+	case []byte:
+		if len(typed) == 0 {
+			return nil
+		}
+		var parsed any
+		if err := json.Unmarshal(typed, &parsed); err == nil {
+			return parsed
+		}
+		return string(typed)
+	default:
+		return value
+	}
+}
+
+func (a *AppContext) GetPrivateChatTurnServers(c *fiber.Ctx) error {
+	iceServers, expiresAt, err := services.FetchCloudflareTurnICEServers()
+	if err != nil {
+		return utils.Error(c, 500, err.Error())
+	}
+
+	return utils.Success(c, 200, "Success Get Private Chat TURN Servers", fiber.Map{
+		"ice_servers": iceServers,
+		"expires_at":  normalizeJakartaDateTimeValue(&expiresAt),
+	})
+}
+
+func (a *AppContext) StartPrivateChatCall(c *fiber.Ctx) error {
+	userID := c.Locals("userID").(uint)
+	schoolID := c.Locals("schoolID").(uint)
+	peerID := uint(utils.ToInt(c.Params("peerUserId"), 0))
+
+	peer, err := a.ensurePrivateChatPeer(schoolID, userID, peerID)
+	if err != nil {
+		return utils.Error(c, err.(*fiber.Error).Code, err.Error())
+	}
+
+	var body struct {
+		CallID     string `json:"call_id"`
+		ClientID   string `json:"client_id"`
+		Offer      any    `json:"offer"`
+		OfferType  string `json:"offer_type"`
+		SignalType string `json:"signal_type"`
+	}
+	_ = c.BodyParser(&body)
+
+	callID := strings.TrimSpace(body.CallID)
+	if callID == "" {
+		callID = fmt.Sprintf("call-%d-%d-%d", userID, peerID, time.Now().UnixNano())
+	}
+	clientID := strings.TrimSpace(body.ClientID)
+	offer := normalizeCallPayloadValue(body.Offer)
+	offerType := strings.ToLower(strings.TrimSpace(body.OfferType))
+	if offerType == "" {
+		offerType = "offer"
+	}
+
+	eventPayload := fiber.Map{
+		"call_id":        callID,
+		"school_id":      schoolID,
+		"from_user_id":   userID,
+		"to_user_id":     peerID,
+		"peer_user_id":   peerID,
+		"peer_username":  peer["username"],
+		"peer_full_name": peer["full_name"],
+		"signal_type":    "incoming",
+		"offer_type":     offerType,
+		"offer":          offer,
+		"client_id":      clientID,
+		"created_at":     time.Now().Format(time.RFC3339Nano),
+	}
+
+	if a.Realtime != nil {
+		a.Realtime.BroadcastPrivateChatCallEvent(schoolID, userID, peerID, eventPayload)
+	}
+
+	return utils.Success(c, 201, "Success Create Private Chat Call", fiber.Map{
+		"call_id":      callID,
+		"signal_type":  "incoming",
+		"ice_offer":    offer,
+		"offer_type":   offerType,
+		"peer_user_id": peerID,
+	})
+}
+
+func (a *AppContext) RelayPrivateChatCallSignal(c *fiber.Ctx) error {
+	userID := c.Locals("userID").(uint)
+	schoolID := c.Locals("schoolID").(uint)
+	peerID := uint(utils.ToInt(c.Params("peerUserId"), 0))
+	callID := strings.TrimSpace(c.Params("callId"))
+
+	if _, err := a.ensurePrivateChatPeer(schoolID, userID, peerID); err != nil {
+		return utils.Error(c, err.(*fiber.Error).Code, err.Error())
+	}
+	if callID == "" {
+		return utils.Error(c, 400, "call id is required")
+	}
+
+	var body struct {
+		SignalType string `json:"signal_type"`
+		ClientID   string `json:"client_id"`
+		SDP        string `json:"sdp"`
+		Candidate  any    `json:"candidate"`
+	}
+	_ = c.BodyParser(&body)
+
+	signalType := strings.ToLower(strings.TrimSpace(body.SignalType))
+	if signalType == "" {
+		signalType = "signal"
+	}
+
+	eventPayload := fiber.Map{
+		"call_id":      callID,
+		"school_id":    schoolID,
+		"from_user_id": userID,
+		"to_user_id":   peerID,
+		"peer_user_id": peerID,
+		"signal_type":  signalType,
+		"sdp":          strings.TrimSpace(body.SDP),
+		"candidate":    normalizeCallPayloadValue(body.Candidate),
+		"client_id":    strings.TrimSpace(body.ClientID),
+		"created_at":   time.Now().Format(time.RFC3339Nano),
+	}
+
+	if a.Realtime != nil {
+		a.Realtime.BroadcastPrivateChatCallEvent(schoolID, userID, peerID, eventPayload)
+	}
+
+	return utils.Success(c, 200, "Success Relay Private Chat Call Signal", eventPayload)
 }
