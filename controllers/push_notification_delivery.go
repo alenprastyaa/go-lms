@@ -18,14 +18,21 @@ import (
 )
 
 type pushNotificationMessage struct {
-	Title    string `json:"title"`
-	Body     string `json:"body"`
-	Kind     string `json:"kind,omitempty"`
-	URL      string `json:"url,omitempty"`
-	Icon     string `json:"icon,omitempty"`
-	Badge    string `json:"badge,omitempty"`
-	Tag      string `json:"tag,omitempty"`
-	Renotify bool   `json:"renotify,omitempty"`
+	Title            string `json:"title"`
+	Body             string `json:"body"`
+	Kind             string `json:"kind,omitempty"`
+	URL              string `json:"url,omitempty"`
+	Icon             string `json:"icon,omitempty"`
+	Badge            string `json:"badge,omitempty"`
+	Tag              string `json:"tag,omitempty"`
+	Renotify         bool   `json:"renotify,omitempty"`
+	CallID           string `json:"call_id,omitempty"`
+	CallFromUserID   uint   `json:"call_from_user_id,omitempty"`
+	CallToUserID     uint   `json:"call_to_user_id,omitempty"`
+	CallPeerUserID   uint   `json:"call_peer_user_id,omitempty"`
+	CallPeerUsername string `json:"call_peer_username,omitempty"`
+	CallPeerFullName string `json:"call_peer_full_name,omitempty"`
+	CallOffer        any    `json:"call_offer,omitempty"`
 }
 
 type pushNotificationTarget struct {
@@ -204,6 +211,59 @@ func (a *AppContext) notifyPrivateChatMessage(senderID, recipientID uint, sender
 				Badge:    "/logo.png",
 				Tag:      "private-chat:" + fmt.Sprint(senderID) + ":" + fmt.Sprint(recipientID),
 				Renotify: true,
+			},
+		},
+	}
+
+	return a.sendPushTargets(targets)
+}
+
+func (a *AppContext) notifyPrivateChatCall(callerID, recipientID uint, callerUsername, callerName, callID string, offer any) error {
+	targets := []pushNotificationTarget{
+		{
+			UserID: recipientID,
+			Message: pushNotificationMessage{
+				Title:            sanitizePushText(callerName, "Panggilan Suara"),
+				Body:             "Ada panggilan suara masuk. Buka aplikasi untuk menjawab.",
+				Kind:             "call",
+				URL:              "/chat?user=" + fmt.Sprint(callerID) + "&call_id=" + fmt.Sprint(callID),
+				Icon:             "/pwa-icon.svg",
+				Badge:            "/logo.png",
+				Tag:              "private-call:" + fmt.Sprint(callerID) + ":" + fmt.Sprint(recipientID) + ":" + fmt.Sprint(callID),
+				Renotify:         true,
+				CallID:           fmt.Sprint(callID),
+				CallFromUserID:   callerID,
+				CallToUserID:     recipientID,
+				CallPeerUserID:   callerID,
+				CallPeerUsername: sanitizePushText(callerUsername, ""),
+				CallPeerFullName: callerName,
+				CallOffer:        offer,
+			},
+		},
+	}
+
+	return a.sendPushTargets(targets)
+}
+
+func (a *AppContext) notifyPrivateChatMissedCall(targetUserID, peerUserID uint, peerUsername, peerName, callID string) error {
+	targets := []pushNotificationTarget{
+		{
+			UserID: targetUserID,
+			Message: pushNotificationMessage{
+				Title:            "Panggilan suara tak terjawab",
+				Body:             "Panggilan dari " + sanitizePushText(peerName, "kontak") + " tidak dijawab.",
+				Kind:             "call_missed",
+				URL:              "/chat?user=" + fmt.Sprint(peerUserID) + "&call_id=" + fmt.Sprint(callID),
+				Icon:             "/pwa-icon.svg",
+				Badge:            "/logo.png",
+				Tag:              "private-call-missed:" + fmt.Sprint(targetUserID) + ":" + fmt.Sprint(peerUserID) + ":" + fmt.Sprint(callID),
+				Renotify:         true,
+				CallID:           fmt.Sprint(callID),
+				CallFromUserID:   peerUserID,
+				CallToUserID:     targetUserID,
+				CallPeerUserID:   peerUserID,
+				CallPeerUsername: sanitizePushText(peerUsername, ""),
+				CallPeerFullName: sanitizePushText(peerName, "kontak"),
 			},
 		},
 	}

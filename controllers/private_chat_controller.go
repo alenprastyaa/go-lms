@@ -235,6 +235,17 @@ func (a *AppContext) CreatePrivateChatMessage(c *fiber.Ctx) error {
 		return utils.Error(c, err.(*fiber.Error).Code, err.Error())
 	}
 
+	var caller struct {
+		Username string `gorm:"column:username"`
+		FullName string `gorm:"column:full_name"`
+	}
+	_ = a.DB.Raw(`
+		SELECT username, COALESCE(NULLIF(full_name, ''), username) AS full_name
+		FROM users
+		WHERE id = ?
+		LIMIT 1
+	`, userID).Scan(&caller).Error
+
 	var body struct {
 		Message            string  `json:"message"`
 		Text               string  `json:"text"`
@@ -546,6 +557,17 @@ func (a *AppContext) StartPrivateChatCall(c *fiber.Ctx) error {
 		return utils.Error(c, err.(*fiber.Error).Code, err.Error())
 	}
 
+	var caller struct {
+		Username string `gorm:"column:username"`
+		FullName string `gorm:"column:full_name"`
+	}
+	_ = a.DB.Raw(`
+		SELECT username, COALESCE(NULLIF(full_name, ''), username) AS full_name
+		FROM users
+		WHERE id = ?
+		LIMIT 1
+	`, userID).Scan(&caller).Error
+
 	var body struct {
 		CallID     string `json:"call_id"`
 		ClientID   string `json:"client_id"`
@@ -584,6 +606,16 @@ func (a *AppContext) StartPrivateChatCall(c *fiber.Ctx) error {
 	if a.Realtime != nil {
 		a.Realtime.BroadcastPrivateChatCallEvent(schoolID, userID, peerID, eventPayload)
 	}
+	senderLabel := strings.TrimSpace(caller.FullName)
+	if senderLabel == "" {
+		senderLabel = strings.TrimSpace(caller.Username)
+	}
+	if senderLabel == "" {
+		senderLabel = "Panggilan Suara"
+	}
+	go func() {
+		_ = a.notifyPrivateChatCall(userID, peerID, caller.Username, senderLabel, callID, offer)
+	}()
 
 	return utils.Success(c, 201, "Success Create Private Chat Call", fiber.Map{
 		"call_id":      callID,
@@ -612,6 +644,7 @@ func (a *AppContext) RelayPrivateChatCallSignal(c *fiber.Ctx) error {
 		ClientID   string `json:"client_id"`
 		SDP        string `json:"sdp"`
 		Candidate  any    `json:"candidate"`
+		Reason     string `json:"reason"`
 	}
 	_ = c.BodyParser(&body)
 
@@ -629,12 +662,70 @@ func (a *AppContext) RelayPrivateChatCallSignal(c *fiber.Ctx) error {
 		"signal_type":  signalType,
 		"sdp":          strings.TrimSpace(body.SDP),
 		"candidate":    normalizeCallPayloadValue(body.Candidate),
+		"reason":       strings.TrimSpace(body.Reason),
 		"client_id":    strings.TrimSpace(body.ClientID),
 		"created_at":   time.Now().Format(time.RFC3339Nano),
 	}
 
 	if a.Realtime != nil {
 		a.Realtime.BroadcastPrivateChatCallEvent(schoolID, userID, peerID, eventPayload)
+	}
+
+	if signalType == "missed" {
+		var sender struct {
+			Username string `gorm:"column:username"`
+			FullName string `gorm:"column:full_name"`
+		}
+		var peer struct {
+			Username string `gorm:"column:username"`
+			FullName string `gorm:"column:full_name"`
+		}
+		_ = a.DB.Raw(`
+			SELECT username, COALESCE(NULLIF(full_name, ''), username) AS full_name
+			FROM users
+			WHERE id = ?
+			LIMIT 1
+		`, userID).Scan(&sender).Error
+		_ = a.DB.Raw(`
+			SELECT username, COALESCE(NULLIF(full_name, ''), username) AS full_name
+			FROM users
+			WHERE id = ?
+			LIMIT 1
+		`, peerID).Scan(&peer).Error
+
+		senderLabel := strings.TrimSpace(sender.FullName)
+		if senderLabel == "" {
+			senderLabel = strings.TrimSpace(sender.Username)
+		}
+		if senderLabel == "" {
+			senderLabel = "Kontak"
+		}
+
+		peerLabel := strings.TrimSpace(peer.FullName)
+		if peerLabel == "" {
+			peerLabel = strings.TrimSpace(peer.Username)
+		}
+		if peerLabel == "" {
+			peerLabel = "Kontak"
+		}
+
+		reason := strings.ToLower(strings.TrimSpace(body.Reason))
+		targetUserID := peerID
+		peerUserID := userID
+		peerUsername := sender.Username
+		peerName := senderLabel
+		if reason == "caller_timeout" {
+			targetUserID = userID
+			peerUserID = peerID
+			peerUsername = peer.Username
+			peerName = peerLabel
+		}
+
+		if targetUserID > 0 && peerUserID > 0 {
+			go func() {
+				_ = a.notifyPrivateChatMissedCall(targetUserID, peerUserID, peerUsername, peerName, callID)
+			}()
+		}
 	}
 
 	return utils.Success(c, 200, "Success Relay Private Chat Call Signal", eventPayload)
