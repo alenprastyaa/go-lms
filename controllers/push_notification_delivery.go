@@ -45,6 +45,11 @@ type pushNotificationRecipient struct {
 	Role   string `gorm:"column:role"`
 }
 
+type pushDeliveryOptions struct {
+	TTL     int
+	Urgency webpush.Urgency
+}
+
 type vapidConfig struct {
 	PublicKey  string
 	PrivateKey string
@@ -61,6 +66,19 @@ func loadVapidConfig() (string, string, string, error) {
 	subject := "https://school-system.my.id"
 
 	return publicKey, privateKey, subject, nil
+}
+
+func pushDeliveryOptionsForMessage(message pushNotificationMessage) pushDeliveryOptions {
+	switch strings.ToLower(strings.TrimSpace(message.Kind)) {
+	case "call":
+		return pushDeliveryOptions{TTL: 90, Urgency: webpush.UrgencyHigh}
+	case "chat", "call_missed":
+		return pushDeliveryOptions{TTL: 15 * 60, Urgency: webpush.UrgencyHigh}
+	case "announcement", "assignment":
+		return pushDeliveryOptions{TTL: 24 * 60 * 60, Urgency: webpush.UrgencyNormal}
+	default:
+		return pushDeliveryOptions{TTL: 60 * 60, Urgency: webpush.UrgencyNormal}
+	}
 }
 
 func (a *AppContext) sendPushTargets(targets []pushNotificationTarget) error {
@@ -128,6 +146,7 @@ func (a *AppContext) sendPushTargets(targets []pushNotificationTarget) error {
 			continue
 		}
 
+		deliveryOptions := pushDeliveryOptionsForMessage(targetMap[subscription.UserID])
 		resp, sendErr := webpush.SendNotificationWithContext(ctx, payload, &webpush.Subscription{
 			Endpoint: subscription.Endpoint,
 			Keys: webpush.Keys{
@@ -139,7 +158,8 @@ func (a *AppContext) sendPushTargets(targets []pushNotificationTarget) error {
 			Subscriber:      subject,
 			VAPIDPublicKey:  publicKey,
 			VAPIDPrivateKey: privateKey,
-			TTL:             30,
+			TTL:             deliveryOptions.TTL,
+			Urgency:         deliveryOptions.Urgency,
 		})
 
 		if resp != nil {
