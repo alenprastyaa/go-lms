@@ -346,7 +346,8 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 			COALESCE(official_exam_module_enabled, true) AS official_exam_module_enabled,
 			COALESCE(koperasi_module_enabled, true) AS koperasi_module_enabled,
 			COALESCE(private_chat_module_enabled, true) AS private_chat_module_enabled,
-			COALESCE(teaching_module_ai_enabled, true) AS teaching_module_ai_enabled
+			COALESCE(teaching_module_ai_enabled, true) AS teaching_module_ai_enabled,
+			COALESCE(personal_teacher_mode_enabled, false) AS personal_teacher_mode_enabled
 		FROM schools
 		WHERE id = ?
 	`, schoolID).Scan(&school)
@@ -366,6 +367,29 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 		{"key": "announcements", "label": "Pengumuman", "to": "/announcements", "icon": "ph:megaphone-simple", "primary": overview["announcements_total"], "caption": fmt.Sprintf("%d aktif", overview["announcements_active"])},
 		{"key": "billing", "label": "Billing", "to": "/billing", "icon": "ph:credit-card", "primary": overview["billing_unpaid_invoices"], "caption": "Invoice belum lunas"},
 		{"key": "admin-settings", "label": "Setting", "to": "/admin-settings", "icon": "ph:gear-six", "primary": overview["receipts_total"], "caption": "Data dan reset ruang admin"},
+	}
+	if schoolBoolValue(school, "personal_teacher_mode_enabled") {
+		allowed := map[string]bool{
+			"classes":          true,
+			"students":         true,
+			"academic-periods": true,
+			"curriculum":       true,
+			"learning":         true,
+			"admin-settings":   true,
+		}
+		filteredModules := []map[string]interface{}{}
+		for _, module := range adminModules {
+			key, _ := module["key"].(string)
+			if allowed[key] {
+				if key == "learning" {
+					module["label"] = "Guru Mapel"
+					module["to"] = "/learning-subjects"
+					module["caption"] = "Atur guru pengampu per kelas"
+				}
+				filteredModules = append(filteredModules, module)
+			}
+		}
+		adminModules = filteredModules
 	}
 
 	var classes []map[string]interface{}
@@ -436,6 +460,21 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 		"recentReceipts":   recentOrEmpty(recentReceipts),
 		"lockedSchools":    recentOrEmpty(lockedSchools),
 	})
+}
+
+func schoolBoolValue(row map[string]interface{}, key string) bool {
+	value, ok := row[key]
+	if !ok || value == nil {
+		return false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true") || typed == "1"
+	default:
+		return fmt.Sprint(typed) == "true" || fmt.Sprint(typed) == "1"
+	}
 }
 
 func (a *AppContext) SendHomeroomAttendanceReport(c *fiber.Ctx) error {

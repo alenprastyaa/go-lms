@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
+
+var userRoleValues = []string{"SUPER_ADMIN", "ADMIN", "SARPRAS", "KOPERASI", "GURU", "SISWA", "ORANG_TUA"}
 
 func NewDatabase() (*gorm.DB, error) {
 	dsn := fmt.Sprintf(
@@ -90,6 +93,9 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS teaching_module_ai_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS personal_teacher_mode_enabled BOOLEAN NOT NULL DEFAULT FALSE`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS face_reference_image TEXT`).Error; err != nil {
 		return nil, err
 	}
@@ -97,6 +103,9 @@ func NewDatabase() (*gorm.DB, error) {
 		return nil, err
 	}
 	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS initial_password_ciphertext TEXT`).Error; err != nil {
+		return nil, err
+	}
+	if err := ensurePostgresEnumValues(db, "user_role", userRoleValues); err != nil {
 		return nil, err
 	}
 	if err := db.Exec(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check`).Error; err != nil {
@@ -557,4 +566,35 @@ func getEnvInt(key string, fallback int) int {
 		return fallback
 	}
 	return v
+}
+
+func ensurePostgresEnumValues(db *gorm.DB, enumName string, values []string) error {
+	var exists bool
+	if err := db.Raw(`SELECT to_regtype(?) IS NOT NULL`, enumName).Scan(&exists).Error; err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	quotedEnumName := quotePostgresIdentifier(enumName)
+	for _, value := range values {
+		stmt := fmt.Sprintf(
+			`ALTER TYPE %s ADD VALUE IF NOT EXISTS %s`,
+			quotedEnumName,
+			quotePostgresLiteral(value),
+		)
+		if err := db.Exec(stmt).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func quotePostgresIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+func quotePostgresLiteral(value string) string {
+	return `'` + strings.ReplaceAll(value, `'`, `''`) + `'`
 }

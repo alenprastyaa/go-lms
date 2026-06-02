@@ -77,19 +77,19 @@ func extractDocxText(raw []byte) (string, error) {
 //
 //  1. Question text here
 //
-//  A. Option A
-//  B. Option B
-//  C. Option C
-//  D. Option D
-//  E. Option E
+//     A. Option A
+//     B. Option B
+//     C. Option C
+//     D. Option D
+//     E. Option E
 //
-//  Jawaban: A
+//     Jawaban: A
 //
 // Essay format:
 //
 //  6. Question text
 //
-//  Rubrik: optional rubric text
+//     Rubrik: optional rubric text
 func parseNumberedQuestionTemplate(content string) []map[string]interface{} {
 	normalize := strings.NewReplacer("\r\n", "\n", "\r", "\n")
 	lines := strings.Split(normalize.Replace(content), "\n")
@@ -1671,6 +1671,7 @@ func (a *AppContext) GetQuizAssignmentOverviewForTeacher(c *fiber.Ctx) error {
 	`, assignmentID).Scan(&submitted)
 
 	a.syncAutoGradedMcqScores(submitted)
+	normalizeJakartaDateTimeRows(submitted, "submitted_at", "graded_at")
 	a.DB.Raw(`
 		SELECT u.id AS student_id, u.username, u.parent_email
 		FROM learning_assignments a
@@ -2207,14 +2208,14 @@ func xmlEscapeWord(s string) string {
 }
 
 type wordParagraph struct {
-	text      string
-	bold      bool
-	mono      bool
-	fontSize  int    // pt (e.g. 11, 12, 14)
-	color     string // hex color without "#"
-	bgColor   string // hex fill color
-	center    bool
-	italic    bool
+	text        string
+	bold        bool
+	mono        bool
+	fontSize    int    // pt (e.g. 11, 12, 14)
+	color       string // hex color without "#"
+	bgColor     string // hex fill color
+	center      bool
+	italic      bool
 	spaceBefore int // twips (240 = 1 line)
 	spaceAfter  int
 }
