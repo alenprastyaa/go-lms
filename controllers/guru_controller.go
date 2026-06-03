@@ -15,9 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
 	"lms/services"
 	"lms/utils"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 func extractDocxText(raw []byte) (string, error) {
@@ -73,6 +74,53 @@ func extractDocxText(raw []byte) (string, error) {
 	return html.UnescapeString(out.String()), nil
 }
 
+func normalizeQuestionBankImportContent(content string) string {
+	normalized := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(content)
+	upper := strings.ToUpper(normalized)
+	markers := []string{
+		"ISI SOAL ANDA DI BAWAH INI",
+	}
+	for _, marker := range markers {
+		idx := strings.Index(upper, marker)
+		if idx < 0 {
+			continue
+		}
+		return strings.TrimSpace(normalized[idx+len(marker):])
+	}
+	return normalized
+}
+
+func normalizeQuestionBankLine(line string) string {
+	replacer := strings.NewReplacer("\u00a0", " ", "\u200b", "", "\ufeff", "")
+	return strings.TrimSpace(replacer.Replace(line))
+}
+
+func questionBankAnswerIndex(value string) (int, bool) {
+	answer := strings.ToUpper(normalizeQuestionBankLine(value))
+	if len(answer) == 0 {
+		return 0, false
+	}
+	switch answer[:1] {
+	case "A":
+		return 0, true
+	case "B":
+		return 1, true
+	case "C":
+		return 2, true
+	case "D":
+		return 3, true
+	case "E":
+		return 4, true
+	default:
+		return 0, false
+	}
+}
+
+func looksLikeModernQuestionBankTemplate(content string) bool {
+	modernLabelRe := regexp.MustCompile(`(?im)^\s*(jawaban|rubrik)\s*[:：.]?`)
+	return modernLabelRe.MatchString(content)
+}
+
 // parseNumberedQuestionTemplate parses the simple numbered format:
 //
 //  1. Question text here
@@ -95,10 +143,12 @@ func parseNumberedQuestionTemplate(content string) []map[string]interface{} {
 	lines := strings.Split(normalize.Replace(content), "\n")
 
 	// Regexes
-	qStartRe := regexp.MustCompile(`^\s*(\d+)\s*[\.)\]]\s+(.+)`)
+	qStartRe := regexp.MustCompile(`^\s*(\d+)\s*[\.)\]]\s*(.*)$`)
 	optRe := regexp.MustCompile(`^\s*([A-Ea-e])\s*[\.)\-:]\s*(.+)`)
-	jawabRe := regexp.MustCompile(`(?i)^\s*jawaban\s*[:.]\s*([A-Ea-e])\s*$`)
-	rubrikRe := regexp.MustCompile(`(?i)^\s*rubrik\s*[:.]\s*(.*)`)
+	jawabRe := regexp.MustCompile(`(?i)^\s*jawaban\s*[:：.]?\s*([A-Ea-e])\s*$`)
+	jawabLabelRe := regexp.MustCompile(`(?i)^\s*jawaban\s*[:：.]?\s*$`)
+	singleAnswerRe := regexp.MustCompile(`(?i)^\s*([A-Ea-e])\s*$`)
+	rubrikRe := regexp.MustCompile(`(?i)^\s*rubrik\s*[:：.]\s*(.*)`)
 	// Lines that are template metadata — skip them
 	skipRe := regexp.MustCompile(`(?i)^([-=─]{3,}|\[.*\]|TEMPLATE|PANDUAN|PETUNJUK|CONTOH|ISI SOAL|KUNCI)`)
 
@@ -111,6 +161,8 @@ func parseNumberedQuestionTemplate(content string) []map[string]interface{} {
 
 	var blocks []block
 	var cur *block
+	expectAnswerLine := false
+	expectQuestionText := false
 
 	flush := func() {
 		if cur == nil {
@@ -123,33 +175,51 @@ func parseNumberedQuestionTemplate(content string) []map[string]interface{} {
 	}
 
 	for _, raw := range lines {
-		line := strings.TrimSpace(raw)
+		line := normalizeQuestionBankLine(raw)
 		if line == "" || skipRe.MatchString(line) {
 			continue
 		}
 
+		if expectAnswerLine {
+			expectAnswerLine = false
+			if cur != nil {
+				if m := singleAnswerRe.FindStringSubmatch(line); len(m) == 2 {
+					if correct, ok := questionBankAnswerIndex(m[1]); ok {
+						cur.correct = correct
+						continue
+					}
+				}
+			}
+		}
+
 		if m := qStartRe.FindStringSubmatch(line); len(m) == 3 {
 			flush()
-			cur = &block{qLines: []string{strings.TrimSpace(m[2])}}
+			questionText := strings.TrimSpace(m[2])
+			cur = &block{correct: -1}
+			expectQuestionText = questionText == ""
+			if questionText != "" {
+				cur.qLines = []string{questionText}
+			}
 			continue
 		}
 		if cur == nil {
 			continue
 		}
 
+		if expectQuestionText {
+			expectQuestionText = false
+			cur.qLines = append(cur.qLines, line)
+			continue
+		}
+
 		if m := jawabRe.FindStringSubmatch(line); len(m) == 2 {
-			switch strings.ToUpper(m[1]) {
-			case "B":
-				cur.correct = 1
-			case "C":
-				cur.correct = 2
-			case "D":
-				cur.correct = 3
-			case "E":
-				cur.correct = 4
-			default:
-				cur.correct = 0
+			if correct, ok := questionBankAnswerIndex(m[1]); ok {
+				cur.correct = correct
 			}
+			continue
+		}
+		if jawabLabelRe.MatchString(line) {
+			expectAnswerLine = true
 			continue
 		}
 
@@ -180,14 +250,14 @@ func parseNumberedQuestionTemplate(content string) []map[string]interface{} {
 		questionText := strings.Join(b.qLines, " ")
 		hasMCQOptions := b.options[0] != "" && b.options[1] != "" &&
 			b.options[2] != "" && b.options[3] != "" && b.options[4] != ""
-		if hasMCQOptions {
+		if hasMCQOptions && b.correct >= 0 {
 			result = append(result, map[string]interface{}{
 				"question_type":  "MCQ",
 				"question_text":  questionText,
 				"options":        []string{b.options[0], b.options[1], b.options[2], b.options[3], b.options[4]},
 				"correct_option": b.correct,
 			})
-		} else if questionText != "" {
+		} else if !hasMCQOptions && questionText != "" {
 			result = append(result, map[string]interface{}{
 				"question_type": "ESSAY",
 				"question_text": questionText,
@@ -331,21 +401,18 @@ func parseSimpleMCQTemplate(content string) []map[string]interface{} {
 	if len(parsed) == 0 {
 		return nil
 	}
+	if len(answers) == 0 {
+		return nil
+	}
 
 	items := make([]map[string]interface{}, 0, len(parsed))
 	for idx, item := range parsed {
-		correct := 0
-		if idx < len(answers) {
-			switch answers[idx] {
-			case "B":
-				correct = 1
-			case "C":
-				correct = 2
-			case "D":
-				correct = 3
-			case "E":
-				correct = 4
-			}
+		if idx >= len(answers) {
+			continue
+		}
+		correct, ok := questionBankAnswerIndex(answers[idx])
+		if !ok {
+			continue
 		}
 		items = append(items, map[string]interface{}{
 			"question_text":  item.question,
@@ -2325,17 +2392,11 @@ func buildQuestionBankTemplateParagraphs(subjectName, questionType string) []wor
 	title := func(t string) wordParagraph {
 		return wordParagraph{text: t, bold: true, fontSize: 14, color: "1E40AF", center: true, spaceAfter: 40}
 	}
-	subtitle := func(t string) wordParagraph {
-		return wordParagraph{text: t, italic: true, fontSize: 10, color: "6B7280", center: true, spaceAfter: 80}
-	}
 	sep := func() wordParagraph {
 		return wordParagraph{text: strings.Repeat("─", 56), fontSize: 9, color: "CBD5E1", center: true, spaceBefore: 80, spaceAfter: 80}
 	}
 	sectionLabel := func(t string) wordParagraph {
 		return wordParagraph{text: t, bold: true, fontSize: 11, color: "1E40AF", bgColor: "DBEAFE", spaceBefore: 120, spaceAfter: 60}
-	}
-	tip := func(t string) wordParagraph {
-		return wordParagraph{text: t, fontSize: 10, color: "374151", spaceAfter: 20}
 	}
 	// Question number line — bold blue
 	qNum := func(t string) wordParagraph {
@@ -2376,39 +2437,15 @@ func buildQuestionBankTemplateParagraphs(subjectName, questionType string) []wor
 	if subjectLabel == "" {
 		subjectLabel = "Mata Pelajaran"
 	}
-	typeDesc := "Pilihan Ganda + Uraian"
-	if questionType == "MCQ" {
-		typeDesc = "Pilihan Ganda"
-	} else if questionType == "ESSAY" {
-		typeDesc = "Uraian"
-	}
-
 	includeMCQ := questionType != "ESSAY"
 	includeESSAY := questionType != "MCQ"
 
 	ps = append(ps,
 		title("TEMPLATE BANK SOAL — "+strings.ToUpper(subjectLabel)),
-		subtitle("Jenis soal: "+typeDesc+" • Simpan sebagai .docx lalu upload ke sistem"),
-		sep(),
 	)
 
-	// ── Petunjuk ────────────────────────────────────────────────────────
-	ps = append(ps, sectionLabel("PETUNJUK PENGISIAN"))
-	petunjuk := []string{
-		"1.  Tulis nomor soal diikuti teks pertanyaan pada satu baris (contoh:  1. Apa ibu kota Indonesia?)",
-		"2.  Tulis setiap opsi di baris baru menggunakan huruf A. B. C. D. E.",
-		"3.  Tulis  Jawaban: X  di bawah opsi terakhir (X = huruf jawaban yang benar, misal A).",
-		"4.  Untuk soal uraian: tidak perlu opsi, cukup tulis  Rubrik: ...  (boleh dikosongkan).",
-		"5.  Hapus bagian CONTOH sebelum mengupload agar tidak ikut tersimpan.",
-		"6.  Baris kosong di antara soal tidak masalah — sistem akan mengabaikannya.",
-	}
-	for _, p := range petunjuk {
-		ps = append(ps, tip(p))
-	}
-	ps = append(ps, sep())
-
 	// ── Contoh soal ─────────────────────────────────────────────────────
-	ps = append(ps, sectionLabel("CONTOH SOAL  (hapus bagian ini sebelum upload)"))
+	ps = append(ps, sectionLabel("CONTOH SOAL ( Hapus Contoh Soal Sebelum Upload )"))
 
 	if includeMCQ {
 		ps = append(ps,
@@ -2482,11 +2519,20 @@ func (a *AppContext) DownloadLearningQuestionBankTemplate(c *fiber.Ctx) error {
 		questionType = "MIXED"
 	}
 
-	// Load subject name for the template title
-	var subjectName string
-	a.DB.Raw(`SELECT name FROM learning_subjects WHERE id = ? LIMIT 1`, subjectID).Scan(&subjectName)
+	// Load subject and class names for the template title and download filename.
+	var subjectInfo struct {
+		Name      string `gorm:"column:name"`
+		ClassName string `gorm:"column:class_name"`
+	}
+	a.DB.Raw(`
+		SELECT ls.name, COALESCE(c.class_name, '') AS class_name
+		FROM learning_subjects ls
+		LEFT JOIN class c ON c.id = ls.class_id
+		WHERE ls.id = ?
+		LIMIT 1
+	`, subjectID).Scan(&subjectInfo)
 
-	paragraphs := buildQuestionBankTemplateParagraphs(subjectName, questionType)
+	paragraphs := buildQuestionBankTemplateParagraphs(subjectInfo.Name, questionType)
 	docxBytes, err := buildQuestionBankDocx(paragraphs)
 	if err != nil {
 		return utils.Error(c, 500, "gagal membuat file template")
@@ -2498,7 +2544,12 @@ func (a *AppContext) DownloadLearningQuestionBankTemplate(c *fiber.Ctx) error {
 	} else if questionType == "ESSAY" {
 		typeLabel = "uraian"
 	}
-	filename := fmt.Sprintf("template_bank_soal_%s.docx", typeLabel)
+	subjectPart := safeFilenamePart(subjectInfo.Name)
+	if strings.TrimSpace(subjectInfo.Name) == "" {
+		subjectPart = "mapel"
+	}
+	classPart := safeFilenamePart(subjectInfo.ClassName)
+	filename := fmt.Sprintf("template_bank_soal_%s_%s_%s.docx", subjectPart, classPart, typeLabel)
 
 	c.Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -2535,6 +2586,7 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 	}
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	content = strings.ReplaceAll(content, "\r", "\n")
+	content = normalizeQuestionBankImportContent(content)
 
 	importedItems := make([]map[string]interface{}, 0)
 	mcqCount := 0
@@ -2595,16 +2647,9 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 			if options[0] == "" || options[1] == "" || options[2] == "" || options[3] == "" || options[4] == "" {
 				continue
 			}
-			answer := strings.ToUpper(strings.TrimSpace(fields["JAWABAN"]))
-			correct := 0
-			if answer == "B" {
-				correct = 1
-			} else if answer == "C" {
-				correct = 2
-			} else if answer == "D" {
-				correct = 3
-			} else if answer == "E" {
-				correct = 4
+			correct, hasCorrectAnswer := questionBankAnswerIndex(fields["JAWABAN"])
+			if !hasCorrectAnswer {
+				continue
 			}
 
 			var inserted map[string]interface{}
@@ -2661,7 +2706,7 @@ func (a *AppContext) ImportLearningQuestionBankFromDocument(c *fiber.Ctx) error 
 					}
 				}
 			}
-		} else {
+		} else if !looksLikeModernQuestionBankTemplate(content) {
 			// Legacy fallback: old simple MCQ format (KUNCI JAWABAN section at bottom)
 			parsedLegacy := parseSimpleMCQTemplate(content)
 			for _, item := range parsedLegacy {
@@ -3352,14 +3397,59 @@ func (a *AppContext) UpdateLearningAssignmentByTeacher(c *fiber.Ctx) error {
 
 func (a *AppContext) DeleteLearningAssignmentByTeacher(c *fiber.Ctx) error {
 	id := c.Params("assignmentId")
-	var row map[string]interface{}
-	a.DB.Raw(`
-		DELETE FROM learning_assignments
-		WHERE id=? AND COALESCE(is_exam,false)=false AND assignment_type IN ('FILE','MANUAL')
-		RETURNING *
-	`, id).Scan(&row)
-	if len(row) == 0 {
+	schoolID := c.Locals("schoolID").(uint)
+	teacherID := c.Locals("userID").(uint)
+
+	tx := a.DB.Begin()
+	if tx.Error != nil {
+		return utils.Error(c, 500, tx.Error.Error())
+	}
+
+	var allowed struct {
+		ID int `gorm:"column:id"`
+	}
+	tx.Raw(`
+		SELECT la.id
+		FROM learning_assignments la
+		INNER JOIN learning_subjects ls ON ls.id = la.subject_id
+		WHERE la.id = ?
+		  AND ls.school_id = ?
+		  AND ls.teacher_id = ?
+		  AND COALESCE(la.is_exam, false) = false
+		  AND la.assignment_type IN ('FILE','MANUAL','MCQ','ESSAY')
+		LIMIT 1
+		FOR UPDATE
+	`, id, schoolID, teacherID).Scan(&allowed)
+	if allowed.ID == 0 {
+		tx.Rollback()
 		return utils.Error(c, 404, "Assignment not found")
 	}
+
+	if err := tx.Exec(`DELETE FROM learning_quiz_violation_logs WHERE assignment_id = ?`, id).Error; err != nil {
+		tx.Rollback()
+		return utils.Error(c, 500, err.Error())
+	}
+	if err := tx.Exec(`DELETE FROM learning_submissions WHERE assignment_id = ?`, id).Error; err != nil {
+		tx.Rollback()
+		return utils.Error(c, 500, err.Error())
+	}
+
+	var row map[string]interface{}
+	if err := tx.Raw(`
+		DELETE FROM learning_assignments
+		WHERE id = ?
+		RETURNING *
+	`, id).Scan(&row).Error; err != nil {
+		tx.Rollback()
+		return utils.Error(c, 500, err.Error())
+	}
+	if len(row) == 0 {
+		tx.Rollback()
+		return utils.Error(c, 404, "Assignment not found")
+	}
+	if err := tx.Commit().Error; err != nil {
+		return utils.Error(c, 500, err.Error())
+	}
+	normalizeJakartaDateTimeFields(row, "created_at", "updated_at", "due_date")
 	return utils.Success(c, 200, "Success Delete Assignment", row)
 }
