@@ -9,6 +9,8 @@ type School struct {
 	AttendanceLatitude         *float64 `gorm:"column:attendance_latitude" json:"attendance_latitude"`
 	AttendanceLongitude        *float64 `gorm:"column:attendance_longitude" json:"attendance_longitude"`
 	AttendanceRadiusMeters     *int     `gorm:"column:attendance_radius_meters" json:"attendance_radius_meters"`
+	AttendanceLateAfterTime    *string  `gorm:"column:attendance_late_after_time" json:"attendance_late_after_time"`
+	AttendanceCheckoutDeadline *string  `gorm:"column:attendance_checkout_deadline" json:"attendance_checkout_deadline"`
 	OfficialExamModuleEnabled  bool     `gorm:"column:official_exam_module_enabled" json:"official_exam_module_enabled"`
 	KoperasiModuleEnabled      bool     `gorm:"column:koperasi_module_enabled" json:"koperasi_module_enabled"`
 	PrivateChatModuleEnabled   bool     `gorm:"column:private_chat_module_enabled" json:"private_chat_module_enabled"`

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -58,6 +59,16 @@ func (a *AppContext) CreateSchool(c *fiber.Ctx) error {
 			return utils.Error(c, 400, "Radius lokasi absensi tidak valid")
 		}
 		school.AttendanceRadiusMeters = &radius
+	}
+	if value, ok, err := parseAttendanceTimeFormValue(c.FormValue("attendance_late_after_time")); err != nil {
+		return utils.Error(c, 400, "Batas terlambat harus format HH:MM")
+	} else if ok {
+		school.AttendanceLateAfterTime = &value
+	}
+	if value, ok, err := parseAttendanceTimeFormValue(c.FormValue("attendance_checkout_deadline")); err != nil {
+		return utils.Error(c, 400, "Jam pulang minimal harus format HH:MM")
+	} else if ok {
+		school.AttendanceCheckoutDeadline = &value
 	}
 	if file, err := c.FormFile("logo"); err == nil && file != nil {
 		logoURL, upErr := utils.SaveUploadedFile(c, file)
@@ -140,6 +151,20 @@ func (a *AppContext) UpdateSchool(c *fiber.Ctx) error {
 		updates["attendance_radius_meters"] = radius
 	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_radius_meters")), "true") {
 		updates["attendance_radius_meters"] = nil
+	}
+	if value, ok, err := parseAttendanceTimeFormValue(c.FormValue("attendance_late_after_time")); err != nil {
+		return utils.Error(c, 400, "Batas terlambat harus format HH:MM")
+	} else if ok {
+		updates["attendance_late_after_time"] = value
+	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_late_after_time")), "true") {
+		updates["attendance_late_after_time"] = nil
+	}
+	if value, ok, err := parseAttendanceTimeFormValue(c.FormValue("attendance_checkout_deadline")); err != nil {
+		return utils.Error(c, 400, "Jam pulang minimal harus format HH:MM")
+	} else if ok {
+		updates["attendance_checkout_deadline"] = value
+	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_checkout_deadline")), "true") {
+		updates["attendance_checkout_deadline"] = nil
 	}
 	if v := strings.TrimSpace(c.FormValue("official_exam_module_enabled")); v != "" {
 		updates["official_exam_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
@@ -304,6 +329,20 @@ func (a *AppContext) UpdateCurrentSchool(c *fiber.Ctx) error {
 	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_radius_meters")), "true") {
 		updates["attendance_radius_meters"] = nil
 	}
+	if value, ok, err := parseAttendanceTimeFormValue(c.FormValue("attendance_late_after_time")); err != nil {
+		return utils.Error(c, 400, "Batas terlambat harus format HH:MM")
+	} else if ok {
+		updates["attendance_late_after_time"] = value
+	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_late_after_time")), "true") {
+		updates["attendance_late_after_time"] = nil
+	}
+	if value, ok, err := parseAttendanceTimeFormValue(c.FormValue("attendance_checkout_deadline")); err != nil {
+		return utils.Error(c, 400, "Jam pulang minimal harus format HH:MM")
+	} else if ok {
+		updates["attendance_checkout_deadline"] = value
+	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_checkout_deadline")), "true") {
+		updates["attendance_checkout_deadline"] = nil
+	}
 	if strings.EqualFold(strings.TrimSpace(c.FormValue("remove_logo")), "true") {
 		updates["logo_url"] = nil
 	}
@@ -320,7 +359,7 @@ func (a *AppContext) UpdateCurrentSchool(c *fiber.Ctx) error {
 	}
 
 	var row map[string]interface{}
-	a.DB.Raw(`SELECT id, name, logo_url, attendance_latitude, attendance_longitude, attendance_radius_meters FROM schools WHERE id = ?`, schoolID).Scan(&row)
+	a.DB.Raw(`SELECT id, name, logo_url, attendance_latitude, attendance_longitude, attendance_radius_meters, attendance_late_after_time, attendance_checkout_deadline FROM schools WHERE id = ?`, schoolID).Scan(&row)
 	return utils.Success(c, 200, "Data sekolah berhasil diperbarui", row)
 }
 
@@ -379,6 +418,8 @@ func schoolListQuery(whereClause string) string {
 			s.attendance_latitude,
 			s.attendance_longitude,
 			s.attendance_radius_meters,
+			s.attendance_late_after_time,
+			s.attendance_checkout_deadline,
 			COALESCE(s.official_exam_module_enabled, true) AS official_exam_module_enabled,
 			COALESCE(s.koperasi_module_enabled, true) AS koperasi_module_enabled,
 			COALESCE(s.private_chat_module_enabled, true) AS private_chat_module_enabled,
@@ -398,8 +439,20 @@ func schoolListQuery(whereClause string) string {
 		LEFT JOIN learning_subjects ls ON ls.school_id = s.id
 		LEFT JOIN academic_years ay ON ay.school_id = s.id
 		%s
-		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.attendance_module_enabled, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.official_exam_module_enabled, s.koperasi_module_enabled, s.private_chat_module_enabled, s.teaching_module_ai_enabled, s.personal_teacher_mode_enabled
+		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.attendance_module_enabled, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, s.official_exam_module_enabled, s.koperasi_module_enabled, s.private_chat_module_enabled, s.teaching_module_ai_enabled, s.personal_teacher_mode_enabled
 	`, whereClause)
+}
+
+func parseAttendanceTimeFormValue(value string) (string, bool, error) {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return "", false, nil
+	}
+	parsed, err := time.Parse("15:04", raw)
+	if err != nil {
+		return "", false, err
+	}
+	return parsed.Format("15:04"), true, nil
 }
 
 func parseBoolFormValue(value string) (bool, bool) {

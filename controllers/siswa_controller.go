@@ -29,12 +29,13 @@ func (a *AppContext) GetSiswaDashboard(c *fiber.Ctx) error {
 			a.clock_in,
 			a.clock_out,
 			a.status,
+			a.checkout_note,
 			a.image
 		FROM users u
 		LEFT JOIN class c ON c.id=u.class_id
 		LEFT JOIN schools s ON s.id=u.school_id
 		LEFT JOIN LATERAL (
-			SELECT attendance_date, clock_in, clock_out, status, image
+			SELECT attendance_date, clock_in, clock_out, status, checkout_note, image
 			FROM attendance
 			WHERE user_id = u.id AND attendance_date = CURRENT_DATE
 			LIMIT 1
@@ -57,6 +58,7 @@ func (a *AppContext) GetSiswaDashboard(c *fiber.Ctx) error {
 		today["clock_in"] = studentToday["clock_in"]
 		today["clock_out"] = studentToday["clock_out"]
 		today["status"] = studentToday["status"]
+		today["checkout_note"] = studentToday["checkout_note"]
 		today["image"] = studentToday["image"]
 		normalizeAttendanceMap(today)
 	}
@@ -82,7 +84,7 @@ func (a *AppContext) GetSiswaDashboard(c *fiber.Ctx) error {
 	}
 
 	var recentAttendance []map[string]interface{}
-	a.DB.Raw(`SELECT attendance_date,clock_in,clock_out,status,image FROM attendance WHERE user_id=? ORDER BY attendance_date DESC, clock_in DESC LIMIT 8`, studentID).Scan(&recentAttendance)
+	a.DB.Raw(`SELECT attendance_date,clock_in,clock_out,status,checkout_note,image FROM attendance WHERE user_id=? ORDER BY attendance_date DESC, clock_in DESC LIMIT 8`, studentID).Scan(&recentAttendance)
 	normalizeAttendanceMaps(recentAttendance)
 	var recentReceipts []map[string]interface{}
 	a.DB.Raw(`SELECT id,periode,description,created_at,image_path FROM payment_receipt WHERE user_id=? ORDER BY created_at DESC LIMIT 8`, studentID).Scan(&recentReceipts)
@@ -647,15 +649,19 @@ func (a *AppContext) CheckIn(c *fiber.Ctx) error {
 
 	// Strict geofence: if school location is not set, attendance is blocked.
 	var geo struct {
-		Lat    *float64 `gorm:"column:attendance_latitude"`
-		Lng    *float64 `gorm:"column:attendance_longitude"`
-		Radius *int     `gorm:"column:attendance_radius_meters"`
+		Lat              *float64 `gorm:"column:attendance_latitude"`
+		Lng              *float64 `gorm:"column:attendance_longitude"`
+		Radius           *int     `gorm:"column:attendance_radius_meters"`
+		LateAfterTime    *string  `gorm:"column:attendance_late_after_time"`
+		CheckoutDeadline *string  `gorm:"column:attendance_checkout_deadline"`
 	}
 	if err := a.DB.Raw(`
 		SELECT
 			attendance_latitude,
 			attendance_longitude,
-			attendance_radius_meters
+			attendance_radius_meters,
+			attendance_late_after_time,
+			attendance_checkout_deadline
 		FROM schools
 		WHERE id = ?
 		LIMIT 1
@@ -682,44 +688,135 @@ func (a *AppContext) CheckIn(c *fiber.Ctx) error {
 	if exists > 0 {
 		return utils.Error(c, 400, "Anda sudah melakukan absensi masuk hari ini.")
 	}
+
+	status := "hadir"
+	if cutoffMinutes := attendanceClockMinutesFromStringPtr(geo.LateAfterTime); cutoffMinutes != nil {
+		nowJakarta := jakartaNow()
+		nowMinutes := nowJakarta.Hour()*60 + nowJakarta.Minute()
+		if nowMinutes > *cutoffMinutes {
+			status = "terlambat"
+		}
+	}
+
 	url, upErr := utils.SaveUploadedFile(c, file)
 	if upErr != nil {
 		return utils.Error(c, 500, "Check-in failed", upErr.Error())
 	}
-	a.DB.Exec(`INSERT INTO attendance (user_id,attendance_date,image,clock_in,status) VALUES (?, CURRENT_DATE, ?, NOW(), 'hadir')`, userID, url)
+	a.DB.Exec(`INSERT INTO attendance (user_id,attendance_date,image,clock_in,status) VALUES (?, CURRENT_DATE, ?, NOW(), ?)`, userID, url, status)
 	return c.JSON(fiber.Map{"success": true, "message": "Check-in successful."})
 }
 
 func (a *AppContext) CheckOut(c *fiber.Ctx) error {
 	userID := c.Locals("userID").(uint)
+	schoolID := c.Locals("schoolID").(uint)
+
+	checkoutNote := ""
+	var checkoutSetting struct {
+		Deadline *string `gorm:"column:attendance_checkout_deadline"`
+	}
+	a.DB.Raw(`SELECT attendance_checkout_deadline FROM schools WHERE id = ? LIMIT 1`, schoolID).Scan(&checkoutSetting)
+	if deadlineMinutes := attendanceClockMinutesFromStringPtr(checkoutSetting.Deadline); deadlineMinutes != nil {
+		nowJakarta := jakartaNow()
+		nowMinutes := nowJakarta.Hour()*60 + nowJakarta.Minute()
+		if nowMinutes < *deadlineMinutes {
+			checkoutNote = fmt.Sprintf("Kepulangan tidak sesuai: check-out sebelum jam pulang minimal %s WIB.", *checkoutSetting.Deadline)
+		}
+	}
+
 	var row map[string]interface{}
 	a.DB.Raw(`
-		UPDATE attendance SET clock_out = NOW()
+		UPDATE attendance SET clock_out = NOW(), checkout_note = NULLIF(?, '')
 		WHERE user_id=? AND attendance_date=CURRENT_DATE AND clock_out IS NULL
 		RETURNING *
-	`, userID).Scan(&row)
+	`, checkoutNote, userID).Scan(&row)
 	if len(row) == 0 {
 		return utils.Error(c, 404, "You have not checked in today.")
 	}
-	return c.JSON(fiber.Map{"success": true, "message": "Check-out successful."})
+	message := "Check-out successful."
+	if checkoutNote != "" {
+		message = checkoutNote
+	}
+	return c.JSON(fiber.Map{"success": true, "message": message, "data": row})
+}
+
+func attendanceClockMinutesFromStringPtr(value *string) *int {
+	if value == nil {
+		return nil
+	}
+	parsed, err := time.Parse("15:04", strings.TrimSpace(*value))
+	if err != nil {
+		return nil
+	}
+	minutes := parsed.Hour()*60 + parsed.Minute()
+	return &minutes
 }
 
 func (a *AppContext) GetListAttendance(c *fiber.Ctx) error {
 	userID := c.Locals("userID").(uint)
 	page := utils.ToInt(c.Query("page", "1"), 1)
 	limit := utils.ToInt(c.Query("limit", "10"), 10)
+	search := strings.TrimSpace(c.Query("search"))
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
 	offset := (page - 1) * limit
+
+	searchClause := ""
+	searchArgs := []interface{}{}
+	if search != "" {
+		like := "%" + search + "%"
+		searchClause = `
+			AND (
+				COALESCE(a.status, '') ILIKE ?
+				OR COALESCE(a.checkout_note, '') ILIKE ?
+				OR COALESCE(TO_CHAR(a.attendance_date, 'YYYY-MM-DD'), '') ILIKE ?
+				OR COALESCE(TO_CHAR(a.clock_in, 'HH24:MI'), '') ILIKE ?
+				OR COALESCE(TO_CHAR(a.clock_out, 'HH24:MI'), '') ILIKE ?
+			)
+		`
+		searchArgs = append(searchArgs, like, like, like, like, like)
+	}
+
+	countArgs := append([]interface{}{userID}, searchArgs...)
+	var total int
+	a.DB.Raw(fmt.Sprintf(`
+		SELECT COUNT(*)::int
+		FROM attendance a
+		WHERE a.user_id=?
+		%s
+	`, searchClause), countArgs...).Scan(&total)
+
 	var rows []map[string]interface{}
-	a.DB.Raw(`
-		SELECT u.username,a.attendance_date,a.image,a.clock_in,a.clock_out,a.status
+	listArgs := append([]interface{}{userID}, searchArgs...)
+	listArgs = append(listArgs, limit, offset)
+	a.DB.Raw(fmt.Sprintf(`
+		SELECT u.username,a.attendance_date,a.image,a.clock_in,a.clock_out,a.status,a.checkout_note
 		FROM attendance a
 		LEFT JOIN users u ON a.user_id=u.id
 		WHERE a.user_id=?
+		%s
 		ORDER BY a.attendance_date DESC, a.clock_in DESC
 		LIMIT ? OFFSET ?
-	`, userID, limit, offset).Scan(&rows)
+	`, searchClause), listArgs...).Scan(&rows)
 	normalizeAttendanceMaps(rows)
-	return utils.Success(c, 200, "Success Get Attendance Data", fiber.Map{"page": page, "limit": limit, "data": rows})
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + limit - 1) / limit
+	}
+	return utils.Success(c, 200, "Success Get Attendance Data", fiber.Map{
+		"page":        page,
+		"limit":       limit,
+		"search":      search,
+		"total":       total,
+		"total_pages": totalPages,
+		"data":        rows,
+	})
 }
 
 func nilIfEmptyMap(v map[string]interface{}) interface{} {

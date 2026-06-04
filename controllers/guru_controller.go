@@ -471,7 +471,7 @@ func (a *AppContext) GetGuruDashboard(c *fiber.Ctx) error {
 
 	var recentAttendance []map[string]interface{}
 	a.DB.Raw(`
-		SELECT u.id AS student_id,u.username,a.attendance_date,a.clock_in,a.clock_out,a.status,a.image
+		SELECT u.id AS student_id,u.username,a.attendance_date,a.clock_in,a.clock_out,a.status,a.checkout_note,a.image
 		FROM attendance a
 		INNER JOIN users u ON u.id=a.user_id
 		INNER JOIN class c ON c.id=u.class_id
@@ -648,7 +648,7 @@ func (a *AppContext) GetMyClassStudents(c *fiber.Ctx) error {
 	a.DB.Raw(`
 		SELECT u.id,u.username,COALESCE(NULLIF(u.full_name, ''), u.username, '-') AS full_name,u.class_id,u.parent_email,u.phone_number,cn.class_name,
 		       CASE WHEN a.user_id IS NULL THEN false ELSE true END AS checked_in_today,
-		       a.clock_in,a.clock_out,a.status AS attendance_status
+		       a.clock_in,a.clock_out,a.status AS attendance_status,a.checkout_note
 		FROM users u
 		INNER JOIN class cn ON u.class_id=cn.id
 		LEFT JOIN attendance a ON a.user_id=u.id AND a.attendance_date=CURRENT_DATE
@@ -687,7 +687,7 @@ func (a *AppContext) GetStudentAttendanceForTeacher(c *fiber.Ctx) error {
 
 	var rows []map[string]interface{}
 	a.DB.Raw(`
-		SELECT u.username, a.attendance_date, a.image, a.clock_in, a.clock_out, a.status
+		SELECT u.username, a.attendance_date, a.image, a.clock_in, a.clock_out, a.status, a.checkout_note
 		FROM attendance a LEFT JOIN users u ON a.user_id=u.id
 		WHERE a.user_id=?
 		ORDER BY a.attendance_date DESC, a.clock_in DESC

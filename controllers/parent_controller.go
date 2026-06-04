@@ -369,7 +369,7 @@ func (a *AppContext) GetParentDashboard(c *fiber.Ctx) error {
 	}
 
 	var today map[string]interface{}
-	a.DB.Raw(`SELECT attendance_date, clock_in, clock_out, status, image FROM attendance WHERE user_id = ? AND attendance_date = CURRENT_DATE LIMIT 1`, selectedChildID).Scan(&today)
+	a.DB.Raw(`SELECT attendance_date, clock_in, clock_out, status, checkout_note, image FROM attendance WHERE user_id = ? AND attendance_date = CURRENT_DATE LIMIT 1`, selectedChildID).Scan(&today)
 	normalizeAttendanceMap(today)
 
 	var overviewSummary struct {
@@ -390,7 +390,7 @@ func (a *AppContext) GetParentDashboard(c *fiber.Ctx) error {
 	}
 
 	var recentAttendance []map[string]interface{}
-	a.DB.Raw(`SELECT attendance_date, clock_in, clock_out, status, image FROM attendance WHERE user_id = ? ORDER BY attendance_date DESC, clock_in DESC LIMIT 8`, selectedChildID).Scan(&recentAttendance)
+	a.DB.Raw(`SELECT attendance_date, clock_in, clock_out, status, checkout_note, image FROM attendance WHERE user_id = ? ORDER BY attendance_date DESC, clock_in DESC LIMIT 8`, selectedChildID).Scan(&recentAttendance)
 	normalizeAttendanceMaps(recentAttendance)
 
 	var recentReceipts []map[string]interface{}

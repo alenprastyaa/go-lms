@@ -201,7 +201,7 @@ func (a *AppContext) GetSuperAdminDashboard(c *fiber.Ctx) error {
 
 	var recentAttendance []map[string]interface{}
 	a.DB.Raw(`
-		SELECT u.username, s.name AS school_name, a.attendance_date, a.clock_in, a.clock_out, a.status
+		SELECT u.username, s.name AS school_name, a.attendance_date, a.clock_in, a.clock_out, a.status, a.checkout_note
 		FROM attendance a
 		INNER JOIN users u ON u.id = a.user_id
 		LEFT JOIN schools s ON s.id = u.school_id
@@ -407,7 +407,7 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 
 	var recentAttendance []map[string]interface{}
 	a.DB.Raw(`
-		SELECT u.username, c.class_name, a.attendance_date, a.clock_in, a.clock_out, a.status
+		SELECT u.username, c.class_name, a.attendance_date, a.clock_in, a.clock_out, a.status, a.checkout_note
 		FROM attendance a
 		INNER JOIN users u ON u.id = a.user_id
 		LEFT JOIN class c ON c.id = u.class_id
