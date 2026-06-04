@@ -159,7 +159,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 	var attendanceLateAfterTime interface{} = nil
 	var attendanceCheckoutDeadline interface{} = nil
 	if user.SchoolID != nil {
-		_ = a.DB.Select("name", "logo_url", "attendance_latitude", "attendance_longitude", "attendance_radius_meters", "attendance_late_after_time", "attendance_checkout_deadline", "inventory_module_enabled", "attendance_module_enabled", "official_exam_module_enabled", "koperasi_module_enabled", "private_chat_module_enabled", "teaching_module_ai_enabled", "personal_teacher_mode_enabled").Where("id = ?", *user.SchoolID).First(&school).Error
+		_ = a.DB.Select("name", "logo_url", "attendance_latitude", "attendance_longitude", "attendance_radius_meters", "attendance_late_after_time", "attendance_checkout_deadline", "inventory_module_enabled", "attendance_module_enabled", "attendance_teacher_module_enabled", "official_exam_module_enabled", "koperasi_module_enabled", "private_chat_module_enabled", "teaching_module_ai_enabled", "payroll_module_enabled", "personal_teacher_mode_enabled").Where("id = ?", *user.SchoolID).First(&school).Error
 		schoolName = school.Name
 		schoolLogo = school.LogoURL
 		schoolLatitude = school.AttendanceLatitude
@@ -171,13 +171,15 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 
 	return utils.Success(c, 200, "Login successful", fiber.Map{
 		"role": normalizedRole, "username": user.Username, "school_id": user.SchoolID, "school_name": schoolName, "school_logo": schoolLogo, "school_features": fiber.Map{
-			"inventory_module_enabled":      school.InventoryModuleEnabled,
-			"attendance_module_enabled":     school.AttendanceModuleEnabled,
-			"official_exam_module_enabled":  school.OfficialExamModuleEnabled,
-			"koperasi_module_enabled":       school.KoperasiModuleEnabled,
-			"private_chat_module_enabled":   school.PrivateChatModuleEnabled,
-			"teaching_module_ai_enabled":    school.TeachingModuleAIEnabled,
-			"personal_teacher_mode_enabled": school.PersonalTeacherModeEnabled,
+			"inventory_module_enabled":          school.InventoryModuleEnabled,
+			"attendance_module_enabled":         school.AttendanceModuleEnabled,
+			"attendance_teacher_module_enabled": school.AttendanceTeacherModuleEnabled,
+			"official_exam_module_enabled":      school.OfficialExamModuleEnabled,
+			"koperasi_module_enabled":           school.KoperasiModuleEnabled,
+			"private_chat_module_enabled":       school.PrivateChatModuleEnabled,
+			"teaching_module_ai_enabled":        school.TeachingModuleAIEnabled,
+			"payroll_module_enabled":            school.PayrollModuleEnabled,
+			"personal_teacher_mode_enabled":     school.PersonalTeacherModeEnabled,
 		}, "attendance_latitude": schoolLatitude, "attendance_longitude": schoolLongitude, "attendance_radius_meters": schoolRadius, "attendance_late_after_time": attendanceLateAfterTime, "attendance_checkout_deadline": attendanceCheckoutDeadline, "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
 	})
 }
@@ -1713,7 +1715,7 @@ func normalizeUsernameSeed(value string) string {
 
 func (a *AppContext) GetUserSchoolList(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
-	role := c.Query("role")
+	role := strings.ToUpper(strings.TrimSpace(c.Query("role")))
 	page := utils.ToInt(c.Query("page", "1"), 1)
 	limit := utils.ToInt(c.Query("limit", "10"), 10)
 	if page < 1 {
@@ -1728,7 +1730,13 @@ func (a *AppContext) GetUserSchoolList(c *fiber.Ctx) error {
 	var users []map[string]interface{}
 	q := a.DB.Table("users").Select("id, full_name, username, role, school_id, parent_email, phone_number, profile_image, COALESCE(initial_password_ciphertext, '') AS initial_password_ciphertext").Where("school_id = ?", schoolID)
 	if role != "" {
-		q = q.Where("role = ?", role)
+		if role == "SISWA" {
+			q = q.Where("1 = 0")
+		} else {
+			q = q.Where("role = ?", role)
+		}
+	} else {
+		q = q.Where("role <> ?", "SISWA")
 	}
 	if usePagination {
 		var total int64
@@ -1881,8 +1889,8 @@ func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ? AND school_id = ?", id, schoolID).First(&current).Error; err != nil {
 		return utils.Error(c, 404, "User school not found")
 	}
-	if current.Role != "ADMIN" && current.Role != "GURU" && current.Role != "SARPRAS" && current.Role != "KOPERASI" {
-		return utils.Error(c, 400, "Only school admin, teacher, sarpras, and koperasi can be updated here")
+	if current.Role != "ADMIN" && current.Role != "GURU" && current.Role != "SARPRAS" && current.Role != "KOPERASI" && current.Role != "BENDAHARA" {
+		return utils.Error(c, 400, "Only school admin, teacher, sarpras, koperasi, and bendahara can be updated here")
 	}
 	nextUsername := current.Username
 	if body.Username != nil {
@@ -1968,8 +1976,8 @@ func (a *AppContext) DeleteUserSchool(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ? AND school_id = ?", id, schoolID).First(&current).Error; err != nil {
 		return utils.Error(c, 404, "User school not found")
 	}
-	if current.Role != "ADMIN" && current.Role != "GURU" && current.Role != "SARPRAS" && current.Role != "KOPERASI" {
-		return utils.Error(c, 400, "Only school admin, teacher, sarpras, and koperasi can be deleted here")
+	if current.Role != "ADMIN" && current.Role != "GURU" && current.Role != "SARPRAS" && current.Role != "KOPERASI" && current.Role != "BENDAHARA" {
+		return utils.Error(c, 400, "Only school admin, teacher, sarpras, koperasi, and bendahara can be deleted here")
 	}
 	a.DB.Exec(`DELETE FROM users WHERE id = ? AND school_id = ?`, id, schoolID)
 	return utils.Success(c, 200, fmt.Sprintf(`User "%s" berhasil dihapus`, current.Username), nil)
@@ -1978,33 +1986,35 @@ func (a *AppContext) DeleteUserSchool(c *fiber.Ctx) error {
 func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 	userID := c.Locals("userID").(uint)
 	var profile struct {
-		ID                         uint     `json:"id"`
-		FullName                   *string  `json:"full_name"`
-		Username                   string   `json:"username"`
-		Role                       string   `json:"role"`
-		SchoolID                   *uint    `json:"school_id"`
-		ParentEmail                *string  `json:"parent_email"`
-		PhoneNumber                *string  `json:"phone_number"`
-		ProfileImage               *string  `json:"profile_image"`
-		FaceReferenceImage         *string  `json:"face_reference_image"`
-		FaceReferenceDescriptor    *string  `json:"face_reference_descriptor"`
-		SchoolName                 *string  `json:"school_name"`
-		SchoolLogo                 *string  `json:"school_logo"`
-		AttendanceLatitude         *float64 `json:"attendance_latitude"`
-		AttendanceLongitude        *float64 `json:"attendance_longitude"`
-		AttendanceRadiusMeters     *int     `json:"attendance_radius_meters"`
-		AttendanceLateAfterTime    *string  `json:"attendance_late_after_time"`
-		AttendanceCheckoutDeadline *string  `json:"attendance_checkout_deadline"`
-		InventoryModuleEnabled     bool     `json:"inventory_module_enabled"`
-		AttendanceModuleEnabled    bool     `json:"attendance_module_enabled"`
-		OfficialExamModuleEnabled  bool     `json:"official_exam_module_enabled"`
-		KoperasiModuleEnabled      bool     `json:"koperasi_module_enabled"`
-		PrivateChatModuleEnabled   bool     `json:"private_chat_module_enabled"`
-		TeachingModuleAIEnabled    bool     `json:"teaching_module_ai_enabled"`
-		PersonalTeacherModeEnabled bool     `json:"personal_teacher_mode_enabled"`
+		ID                             uint     `json:"id"`
+		FullName                       *string  `json:"full_name"`
+		Username                       string   `json:"username"`
+		Role                           string   `json:"role"`
+		SchoolID                       *uint    `json:"school_id"`
+		ParentEmail                    *string  `json:"parent_email"`
+		PhoneNumber                    *string  `json:"phone_number"`
+		ProfileImage                   *string  `json:"profile_image"`
+		FaceReferenceImage             *string  `json:"face_reference_image"`
+		FaceReferenceDescriptor        *string  `json:"face_reference_descriptor"`
+		SchoolName                     *string  `json:"school_name"`
+		SchoolLogo                     *string  `json:"school_logo"`
+		AttendanceLatitude             *float64 `json:"attendance_latitude"`
+		AttendanceLongitude            *float64 `json:"attendance_longitude"`
+		AttendanceRadiusMeters         *int     `json:"attendance_radius_meters"`
+		AttendanceLateAfterTime        *string  `json:"attendance_late_after_time"`
+		AttendanceCheckoutDeadline     *string  `json:"attendance_checkout_deadline"`
+		InventoryModuleEnabled         bool     `json:"inventory_module_enabled"`
+		AttendanceModuleEnabled        bool     `json:"attendance_module_enabled"`
+		AttendanceTeacherModuleEnabled bool     `json:"attendance_teacher_module_enabled"`
+		OfficialExamModuleEnabled      bool     `json:"official_exam_module_enabled"`
+		KoperasiModuleEnabled          bool     `json:"koperasi_module_enabled"`
+		PrivateChatModuleEnabled       bool     `json:"private_chat_module_enabled"`
+		TeachingModuleAIEnabled        bool     `json:"teaching_module_ai_enabled"`
+		PayrollModuleEnabled           bool     `json:"payroll_module_enabled"`
+		PersonalTeacherModeEnabled     bool     `json:"personal_teacher_mode_enabled"`
 	}
 	err := a.DB.Table("users u").
-		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, COALESCE(s.inventory_module_enabled, true) as inventory_module_enabled, COALESCE(s.attendance_module_enabled, true) as attendance_module_enabled, COALESCE(s.official_exam_module_enabled, true) as official_exam_module_enabled, COALESCE(s.koperasi_module_enabled, true) as koperasi_module_enabled, COALESCE(s.private_chat_module_enabled, true) as private_chat_module_enabled, COALESCE(s.teaching_module_ai_enabled, true) as teaching_module_ai_enabled, COALESCE(s.personal_teacher_mode_enabled, false) as personal_teacher_mode_enabled").
+		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, COALESCE(s.inventory_module_enabled, true) as inventory_module_enabled, COALESCE(s.attendance_module_enabled, true) as attendance_module_enabled, COALESCE(s.attendance_teacher_module_enabled, true) as attendance_teacher_module_enabled, COALESCE(s.official_exam_module_enabled, true) as official_exam_module_enabled, COALESCE(s.koperasi_module_enabled, true) as koperasi_module_enabled, COALESCE(s.private_chat_module_enabled, true) as private_chat_module_enabled, COALESCE(s.teaching_module_ai_enabled, true) as teaching_module_ai_enabled, COALESCE(s.payroll_module_enabled, true) as payroll_module_enabled, COALESCE(s.personal_teacher_mode_enabled, false) as personal_teacher_mode_enabled").
 		Joins("left join schools s on s.id = u.school_id").
 		Where("u.id = ?", userID).
 		Scan(&profile).Error

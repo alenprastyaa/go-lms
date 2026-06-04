@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-var userRoleValues = []string{"SUPER_ADMIN", "ADMIN", "SARPRAS", "KOPERASI", "GURU", "SISWA", "ORANG_TUA"}
+var userRoleValues = []string{"SUPER_ADMIN", "ADMIN", "SARPRAS", "KOPERASI", "BENDAHARA", "GURU", "SISWA", "ORANG_TUA"}
 
 func NewDatabase() (*gorm.DB, error) {
 	dsn := fmt.Sprintf(
@@ -72,6 +72,9 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS attendance_module_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS attendance_teacher_module_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS attendance_latitude DOUBLE PRECISION NULL`).Error; err != nil {
 		return nil, err
 	}
@@ -102,6 +105,9 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS teaching_module_ai_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS payroll_module_enabled BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS personal_teacher_mode_enabled BOOLEAN NOT NULL DEFAULT FALSE`).Error; err != nil {
 		return nil, err
 	}
@@ -120,7 +126,7 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check`).Error; err != nil {
 		return nil, err
 	}
-	if err := db.Exec(`ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('SUPER_ADMIN', 'ADMIN', 'SARPRAS', 'KOPERASI', 'GURU', 'SISWA', 'ORANG_TUA'))`).Error; err != nil {
+	if err := db.Exec(`ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('SUPER_ADMIN', 'ADMIN', 'SARPRAS', 'KOPERASI', 'BENDAHARA', 'GURU', 'SISWA', 'ORANG_TUA'))`).Error; err != nil {
 		return nil, err
 	}
 	if err := db.Exec(`ALTER TABLE learning_submissions ADD COLUMN IF NOT EXISTS access_blocked BOOLEAN NOT NULL DEFAULT FALSE`).Error; err != nil {
@@ -377,6 +383,64 @@ func NewDatabase() (*gorm.DB, error) {
 			metadata TEXT NULL,
 			created_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
+		`CREATE TABLE IF NOT EXISTS payroll_settings (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL UNIQUE,
+			hourly_rate BIGINT NOT NULL DEFAULT 40000,
+			lesson_minutes INT NOT NULL DEFAULT 45,
+			teaching_hours_multiplier NUMERIC(10,2) NOT NULL DEFAULT 4,
+			notes TEXT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS payroll_components (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			name TEXT NOT NULL,
+			component_type TEXT NOT NULL DEFAULT 'ALLOWANCE',
+			calculation_type TEXT NOT NULL DEFAULT 'FIXED',
+			default_amount BIGINT NOT NULL DEFAULT 0,
+			default_quantity NUMERIC(10,2) NOT NULL DEFAULT 1,
+			applies_to_all BOOLEAN NOT NULL DEFAULT FALSE,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_by BIGINT NULL,
+			updated_by BIGINT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS teacher_payrolls (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			teacher_id BIGINT NOT NULL,
+			period_month DATE NOT NULL,
+			hourly_rate BIGINT NOT NULL DEFAULT 0,
+			teaching_hours NUMERIC(10,2) NOT NULL DEFAULT 0,
+			base_amount BIGINT NOT NULL DEFAULT 0,
+			allowances_amount BIGINT NOT NULL DEFAULT 0,
+			deductions_amount BIGINT NOT NULL DEFAULT 0,
+			total_amount BIGINT NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'DRAFT',
+			note TEXT NULL,
+			paid_at TIMESTAMP NULL,
+			created_by BIGINT NULL,
+			updated_by BIGINT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			UNIQUE (school_id, teacher_id, period_month)
+		)`,
+		`CREATE TABLE IF NOT EXISTS teacher_payroll_items (
+			id BIGSERIAL PRIMARY KEY,
+			payroll_id BIGINT NOT NULL,
+			component_id BIGINT NULL,
+			name TEXT NOT NULL,
+			component_type TEXT NOT NULL DEFAULT 'ALLOWANCE',
+			calculation_type TEXT NOT NULL DEFAULT 'FIXED',
+			quantity NUMERIC(10,2) NOT NULL DEFAULT 1,
+			unit_amount BIGINT NOT NULL DEFAULT 0,
+			amount BIGINT NOT NULL DEFAULT 0,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
 	}
 	for _, stmt := range curriculumStatements {
 		if err := db.Exec(stmt).Error; err != nil {
@@ -418,6 +482,22 @@ func NewDatabase() (*gorm.DB, error) {
 		return nil, err
 	}
 
+	payrollAlterStatements := []string{
+		`ALTER TABLE payroll_settings ADD COLUMN IF NOT EXISTS teaching_hours_multiplier NUMERIC(10,2) NOT NULL DEFAULT 4`,
+		`ALTER TABLE payroll_components ADD COLUMN IF NOT EXISTS calculation_type TEXT NOT NULL DEFAULT 'FIXED'`,
+		`ALTER TABLE payroll_components ADD COLUMN IF NOT EXISTS default_quantity NUMERIC(10,2) NOT NULL DEFAULT 1`,
+		`ALTER TABLE payroll_components ADD COLUMN IF NOT EXISTS applies_to_all BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE teacher_payroll_items ADD COLUMN IF NOT EXISTS calculation_type TEXT NOT NULL DEFAULT 'FIXED'`,
+		`ALTER TABLE teacher_payroll_items ADD COLUMN IF NOT EXISTS quantity NUMERIC(10,2) NOT NULL DEFAULT 1`,
+		`ALTER TABLE teacher_payroll_items ADD COLUMN IF NOT EXISTS unit_amount BIGINT NOT NULL DEFAULT 0`,
+		`UPDATE teacher_payroll_items SET unit_amount = amount WHERE COALESCE(unit_amount, 0) = 0`,
+	}
+	for _, stmt := range payrollAlterStatements {
+		if err := db.Exec(stmt).Error; err != nil {
+			return nil, err
+		}
+	}
+
 	indexStatements := []string{
 		`CREATE INDEX IF NOT EXISTS idx_users_school_role ON users (school_id, role)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_username ON users (username)`,
@@ -457,6 +537,10 @@ func NewDatabase() (*gorm.DB, error) {
 		`CREATE INDEX IF NOT EXISTS idx_koperasi_orders_buyer_created ON koperasi_orders (buyer_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_koperasi_payment_logs_school_order_created ON koperasi_payment_logs (school_id, order_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_koperasi_order_items_order ON koperasi_order_items (order_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_payroll_components_school_active ON payroll_components (school_id, is_active, name)`,
+		`CREATE INDEX IF NOT EXISTS idx_teacher_payrolls_school_period ON teacher_payrolls (school_id, period_month, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_teacher_payrolls_teacher_period ON teacher_payrolls (teacher_id, period_month)`,
+		`CREATE INDEX IF NOT EXISTS idx_teacher_payroll_items_payroll ON teacher_payroll_items (payroll_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance (user_id, attendance_date)`,
 		`CREATE INDEX IF NOT EXISTS idx_attendance_date_user ON attendance (attendance_date, user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_payment_receipt_user_created ON payment_receipt (user_id, created_at)`,

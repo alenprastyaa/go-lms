@@ -298,7 +298,7 @@ func (a *AppContext) issueParentSession(c *fiber.Ctx, parent *models.User) error
 	var schoolName interface{} = nil
 	var schoolLogo interface{} = nil
 	if parent.SchoolID != nil {
-		_ = a.DB.Select("name", "logo_url", "inventory_module_enabled", "attendance_module_enabled", "official_exam_module_enabled", "koperasi_module_enabled", "private_chat_module_enabled", "teaching_module_ai_enabled", "personal_teacher_mode_enabled").Where("id = ?", *parent.SchoolID).First(&school).Error
+		_ = a.DB.Select("name", "logo_url", "inventory_module_enabled", "attendance_module_enabled", "official_exam_module_enabled", "koperasi_module_enabled", "private_chat_module_enabled", "teaching_module_ai_enabled", "payroll_module_enabled", "personal_teacher_mode_enabled").Where("id = ?", *parent.SchoolID).First(&school).Error
 		schoolName = school.Name
 		schoolLogo = school.LogoURL
 	}
@@ -311,6 +311,7 @@ func (a *AppContext) issueParentSession(c *fiber.Ctx, parent *models.User) error
 			"koperasi_module_enabled":       school.KoperasiModuleEnabled,
 			"private_chat_module_enabled":   school.PrivateChatModuleEnabled,
 			"teaching_module_ai_enabled":    school.TeachingModuleAIEnabled,
+			"payroll_module_enabled":        school.PayrollModuleEnabled,
 			"personal_teacher_mode_enabled": school.PersonalTeacherModeEnabled,
 		}, "profile_image": parent.ProfileImage, "token": token,
 	})

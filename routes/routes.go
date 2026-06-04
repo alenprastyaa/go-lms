@@ -28,12 +28,13 @@ func Register(app *fiber.App, db *gorm.DB, hub *realtime.Hub) {
 	registerSiswa(api, ctx)
 	registerInventory(api, ctx)
 	registerKoperasi(api, ctx)
+	registerPayroll(api, ctx)
 	registerNotifications(api, ctx)
 }
 
 func registerAI(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/ai", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
-	r.Post("/chat", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "GURU", "SISWA", "SARPRAS", "KOPERASI"), ctx.AskSystemChatbot)
+	r.Post("/chat", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "GURU", "SISWA", "SARPRAS", "KOPERASI", "BENDAHARA"), ctx.AskSystemChatbot)
 }
 
 func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
@@ -126,7 +127,7 @@ func registerReceipt(api fiber.Router, ctx *controllers.AppContext) {
 }
 
 func registerPrivateChat(api fiber.Router, ctx *controllers.AppContext) {
-	r := api.Group("/private-chat", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "KOPERASI", "GURU", "SISWA"), middlewares.ModuleAllowed(ctx.DB, "private_chat"))
+	r := api.Group("/private-chat", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "KOPERASI", "BENDAHARA", "GURU", "SISWA"), middlewares.ModuleAllowed(ctx.DB, "private_chat"))
 	r.Get("/summary", ctx.GetPrivateChatSummary)
 	r.Get("/contacts", ctx.SearchPrivateChatContacts)
 	r.Get("/turn/ice-servers", ctx.GetPrivateChatTurnServers)
@@ -136,6 +137,19 @@ func registerPrivateChat(api fiber.Router, ctx *controllers.AppContext) {
 	r.Post("/:peerUserId/read", ctx.MarkPrivateChatAsRead)
 	r.Post("/:peerUserId/calls", ctx.StartPrivateChatCall)
 	r.Post("/:peerUserId/calls/:callId/signal", ctx.RelayPrivateChatCallSignal)
+}
+
+func registerPayroll(api fiber.Router, ctx *controllers.AppContext) {
+	r := api.Group("/payroll", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("BENDAHARA"), middlewares.ModuleAllowed(ctx.DB, "payroll"))
+	r.Get("/overview", ctx.GetPayrollOverview)
+	r.Put("/settings", ctx.UpdatePayrollSettings)
+	r.Post("/components", ctx.CreatePayrollComponent)
+	r.Put("/components/:id", ctx.UpdatePayrollComponent)
+	r.Delete("/components/:id", ctx.DeletePayrollComponent)
+	r.Post("/slips/generate", ctx.GenerateTeacherPayrolls)
+	r.Post("/slips", ctx.UpsertTeacherPayroll)
+	r.Post("/slips/:id/mark-paid", ctx.MarkTeacherPayrollPaid)
+	r.Post("/slips/:id/mark-unpaid", ctx.MarkTeacherPayrollUnpaid)
 }
 
 func registerGuru(api fiber.Router, ctx *controllers.AppContext) {
@@ -189,7 +203,7 @@ func registerSiswa(api fiber.Router, ctx *controllers.AppContext) {
 	d := api.Group("/dashboard", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	d.Get("/siswa", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "GURU", "SISWA"), ctx.GetSiswaDashboard)
 
-	at := api.Group("/attendance", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
+	at := api.Group("/attendance", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("GURU", "SISWA"), middlewares.ModuleAllowed(ctx.DB, "attendance"))
 	at.Post("/", ctx.CheckIn)
 	at.Post("/checkout", ctx.CheckOut)
 	at.Get("/", ctx.GetListAttendance)

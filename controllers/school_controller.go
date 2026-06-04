@@ -28,16 +28,42 @@ func (a *AppContext) CreateSchool(c *fiber.Ctx) error {
 	}
 
 	school := models.School{
-		Name:                      name,
-		InventoryModuleEnabled:    true,
-		AttendanceModuleEnabled:   true,
-		OfficialExamModuleEnabled: true,
-		KoperasiModuleEnabled:     true,
-		PrivateChatModuleEnabled:  true,
-		TeachingModuleAIEnabled:   true,
+		Name:                           name,
+		InventoryModuleEnabled:         true,
+		AttendanceModuleEnabled:        true,
+		AttendanceTeacherModuleEnabled: true,
+		OfficialExamModuleEnabled:      true,
+		KoperasiModuleEnabled:          true,
+		PrivateChatModuleEnabled:       true,
+		TeachingModuleAIEnabled:        true,
+		PayrollModuleEnabled:           true,
 	}
 	if v, ok := parseBoolFormValue(c.FormValue("personal_teacher_mode_enabled")); ok {
 		school.PersonalTeacherModeEnabled = v
+	}
+	if v, ok := parseBoolFormValue(c.FormValue("inventory_module_enabled")); ok {
+		school.InventoryModuleEnabled = v
+	}
+	if v, ok := parseBoolFormValue(c.FormValue("attendance_module_enabled")); ok {
+		school.AttendanceModuleEnabled = v
+	}
+	if v, ok := parseBoolFormValue(c.FormValue("attendance_teacher_module_enabled")); ok {
+		school.AttendanceTeacherModuleEnabled = v
+	}
+	if v, ok := parseBoolFormValue(c.FormValue("official_exam_module_enabled")); ok {
+		school.OfficialExamModuleEnabled = v
+	}
+	if v, ok := parseBoolFormValue(c.FormValue("koperasi_module_enabled")); ok {
+		school.KoperasiModuleEnabled = v
+	}
+	if v, ok := parseBoolFormValue(c.FormValue("private_chat_module_enabled")); ok {
+		school.PrivateChatModuleEnabled = v
+	}
+	if v, ok := parseBoolFormValue(c.FormValue("teaching_module_ai_enabled")); ok {
+		school.TeachingModuleAIEnabled = v
+	}
+	if v, ok := parseBoolFormValue(c.FormValue("payroll_module_enabled")); ok {
+		school.PayrollModuleEnabled = v
 	}
 	if v := strings.TrimSpace(c.FormValue("attendance_latitude")); v != "" {
 		if lat, err := strconv.ParseFloat(v, 64); err == nil {
@@ -125,6 +151,9 @@ func (a *AppContext) UpdateSchool(c *fiber.Ctx) error {
 	if v := strings.TrimSpace(c.FormValue("attendance_module_enabled")); v != "" {
 		updates["attendance_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
 	}
+	if v := strings.TrimSpace(c.FormValue("attendance_teacher_module_enabled")); v != "" {
+		updates["attendance_teacher_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
+	}
 	if v := strings.TrimSpace(c.FormValue("attendance_latitude")); v != "" {
 		lat, err := strconv.ParseFloat(v, 64)
 		if err != nil {
@@ -178,6 +207,9 @@ func (a *AppContext) UpdateSchool(c *fiber.Ctx) error {
 	if v := strings.TrimSpace(c.FormValue("teaching_module_ai_enabled")); v != "" {
 		updates["teaching_module_ai_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
 	}
+	if v := strings.TrimSpace(c.FormValue("payroll_module_enabled")); v != "" {
+		updates["payroll_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
+	}
 	if v := strings.TrimSpace(c.FormValue("personal_teacher_mode_enabled")); v != "" {
 		updates["personal_teacher_mode_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
 	}
@@ -215,6 +247,9 @@ func (a *AppContext) UpdateSchoolModules(c *fiber.Ctx) error {
 	if v, ok := parseBoolFormValue(c.FormValue("attendance_module_enabled")); ok {
 		updates["attendance_module_enabled"] = v
 	}
+	if v, ok := parseBoolFormValue(c.FormValue("attendance_teacher_module_enabled")); ok {
+		updates["attendance_teacher_module_enabled"] = v
+	}
 	if v, ok := parseBoolFormValue(c.FormValue("official_exam_module_enabled")); ok {
 		updates["official_exam_module_enabled"] = v
 	}
@@ -226,6 +261,9 @@ func (a *AppContext) UpdateSchoolModules(c *fiber.Ctx) error {
 	}
 	if v, ok := parseBoolFormValue(c.FormValue("teaching_module_ai_enabled")); ok {
 		updates["teaching_module_ai_enabled"] = v
+	}
+	if v, ok := parseBoolFormValue(c.FormValue("payroll_module_enabled")); ok {
+		updates["payroll_module_enabled"] = v
 	}
 	if v, ok := parseBoolFormValue(c.FormValue("personal_teacher_mode_enabled")); ok {
 		updates["personal_teacher_mode_enabled"] = v
@@ -415,6 +453,7 @@ func schoolListQuery(whereClause string) string {
 			s.logo_url,
 			COALESCE(s.inventory_module_enabled, true) AS inventory_module_enabled,
 			COALESCE(s.attendance_module_enabled, true) AS attendance_module_enabled,
+			COALESCE(s.attendance_teacher_module_enabled, true) AS attendance_teacher_module_enabled,
 			s.attendance_latitude,
 			s.attendance_longitude,
 			s.attendance_radius_meters,
@@ -424,6 +463,7 @@ func schoolListQuery(whereClause string) string {
 			COALESCE(s.koperasi_module_enabled, true) AS koperasi_module_enabled,
 			COALESCE(s.private_chat_module_enabled, true) AS private_chat_module_enabled,
 			COALESCE(s.teaching_module_ai_enabled, true) AS teaching_module_ai_enabled,
+			COALESCE(s.payroll_module_enabled, true) AS payroll_module_enabled,
 			COALESCE(s.personal_teacher_mode_enabled, false) AS personal_teacher_mode_enabled,
 			COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END)::int AS total_admins,
 			COUNT(DISTINCT CASE WHEN u.role = 'GURU' THEN u.id END)::int AS total_teachers,
@@ -439,7 +479,7 @@ func schoolListQuery(whereClause string) string {
 		LEFT JOIN learning_subjects ls ON ls.school_id = s.id
 		LEFT JOIN academic_years ay ON ay.school_id = s.id
 		%s
-		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.attendance_module_enabled, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, s.official_exam_module_enabled, s.koperasi_module_enabled, s.private_chat_module_enabled, s.teaching_module_ai_enabled, s.personal_teacher_mode_enabled
+		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.attendance_module_enabled, s.attendance_teacher_module_enabled, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, s.official_exam_module_enabled, s.koperasi_module_enabled, s.private_chat_module_enabled, s.teaching_module_ai_enabled, s.payroll_module_enabled, s.personal_teacher_mode_enabled
 	`, whereClause)
 }
 

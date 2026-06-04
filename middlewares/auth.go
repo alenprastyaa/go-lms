@@ -132,6 +132,8 @@ func ModuleAllowed(db *gorm.DB, feature string) fiber.Handler {
 		column = "inventory_module_enabled"
 	case "attendance":
 		column = "attendance_module_enabled"
+	case "attendance_teacher":
+		column = "attendance_teacher_module_enabled"
 	case "official_exam":
 		column = "official_exam_module_enabled"
 	case "koperasi":
@@ -140,6 +142,8 @@ func ModuleAllowed(db *gorm.DB, feature string) fiber.Handler {
 		column = "private_chat_module_enabled"
 	case "teaching_module_ai":
 		column = "teaching_module_ai_enabled"
+	case "payroll":
+		column = "payroll_module_enabled"
 	default:
 		return func(c *fiber.Ctx) error {
 			return utils.Error(c, 500, "Unknown module")
@@ -152,8 +156,16 @@ func ModuleAllowed(db *gorm.DB, feature string) fiber.Handler {
 			return utils.Error(c, 403, "Forbidden: School context unavailable")
 		}
 
+		selectedColumn := column
+		if feature == "attendance" {
+			currentRole, _ := c.Locals("userRole").(string)
+			if utils.NormalizeRoleName(currentRole) == "GURU" {
+				selectedColumn = "attendance_teacher_module_enabled"
+			}
+		}
+
 		var enabled bool
-		if err := db.Table("schools").Select(column).Where("id = ?", schoolID).Scan(&enabled).Error; err != nil {
+		if err := db.Table("schools").Select(selectedColumn).Where("id = ?", schoolID).Scan(&enabled).Error; err != nil {
 			return utils.Error(c, 500, "Gagal memeriksa status modul", err.Error())
 		}
 		if !enabled {
