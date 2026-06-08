@@ -90,6 +90,9 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS attendance_checkout_deadline TEXT NULL`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS attendance_seat_map_columns INT NOT NULL DEFAULT 4`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE attendance ADD COLUMN IF NOT EXISTS checkout_note TEXT NULL`).Error; err != nil {
 		return nil, err
 	}

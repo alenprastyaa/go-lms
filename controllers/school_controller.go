@@ -96,6 +96,13 @@ func (a *AppContext) CreateSchool(c *fiber.Ctx) error {
 	} else if ok {
 		school.AttendanceCheckoutDeadline = &value
 	}
+	if columns, ok, err := parseSeatMapColumnsFormValue(c.FormValue("attendance_seat_map_columns")); err != nil {
+		return utils.Error(c, 400, "Jumlah kolom denah bangku harus 1 sampai 24")
+	} else if ok {
+		school.AttendanceSeatMapColumns = columns
+	} else {
+		school.AttendanceSeatMapColumns = 4
+	}
 	if file, err := c.FormFile("logo"); err == nil && file != nil {
 		logoURL, upErr := utils.SaveUploadedFile(c, file)
 		if upErr != nil {
@@ -194,6 +201,11 @@ func (a *AppContext) UpdateSchool(c *fiber.Ctx) error {
 		updates["attendance_checkout_deadline"] = value
 	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_checkout_deadline")), "true") {
 		updates["attendance_checkout_deadline"] = nil
+	}
+	if columns, ok, err := parseSeatMapColumnsFormValue(c.FormValue("attendance_seat_map_columns")); err != nil {
+		return utils.Error(c, 400, "Jumlah kolom denah bangku harus 1 sampai 24")
+	} else if ok {
+		updates["attendance_seat_map_columns"] = columns
 	}
 	if v := strings.TrimSpace(c.FormValue("official_exam_module_enabled")); v != "" {
 		updates["official_exam_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
@@ -381,6 +393,11 @@ func (a *AppContext) UpdateCurrentSchool(c *fiber.Ctx) error {
 	} else if strings.EqualFold(strings.TrimSpace(c.FormValue("clear_attendance_checkout_deadline")), "true") {
 		updates["attendance_checkout_deadline"] = nil
 	}
+	if columns, ok, err := parseSeatMapColumnsFormValue(c.FormValue("attendance_seat_map_columns")); err != nil {
+		return utils.Error(c, 400, "Jumlah kolom denah bangku harus 1 sampai 24")
+	} else if ok {
+		updates["attendance_seat_map_columns"] = columns
+	}
 	if strings.EqualFold(strings.TrimSpace(c.FormValue("remove_logo")), "true") {
 		updates["logo_url"] = nil
 	}
@@ -397,7 +414,7 @@ func (a *AppContext) UpdateCurrentSchool(c *fiber.Ctx) error {
 	}
 
 	var row map[string]interface{}
-	a.DB.Raw(`SELECT id, name, logo_url, attendance_latitude, attendance_longitude, attendance_radius_meters, attendance_late_after_time, attendance_checkout_deadline FROM schools WHERE id = ?`, schoolID).Scan(&row)
+	a.DB.Raw(`SELECT id, name, logo_url, attendance_latitude, attendance_longitude, attendance_radius_meters, attendance_late_after_time, attendance_checkout_deadline, COALESCE(attendance_seat_map_columns, 4) AS attendance_seat_map_columns FROM schools WHERE id = ?`, schoolID).Scan(&row)
 	return utils.Success(c, 200, "Data sekolah berhasil diperbarui", row)
 }
 
@@ -459,6 +476,7 @@ func schoolListQuery(whereClause string) string {
 			s.attendance_radius_meters,
 			s.attendance_late_after_time,
 			s.attendance_checkout_deadline,
+			COALESCE(s.attendance_seat_map_columns, 4) AS attendance_seat_map_columns,
 			COALESCE(s.official_exam_module_enabled, true) AS official_exam_module_enabled,
 			COALESCE(s.koperasi_module_enabled, true) AS koperasi_module_enabled,
 			COALESCE(s.private_chat_module_enabled, true) AS private_chat_module_enabled,
@@ -479,8 +497,20 @@ func schoolListQuery(whereClause string) string {
 		LEFT JOIN learning_subjects ls ON ls.school_id = s.id
 		LEFT JOIN academic_years ay ON ay.school_id = s.id
 		%s
-		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.attendance_module_enabled, s.attendance_teacher_module_enabled, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, s.official_exam_module_enabled, s.koperasi_module_enabled, s.private_chat_module_enabled, s.teaching_module_ai_enabled, s.payroll_module_enabled, s.personal_teacher_mode_enabled
+		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.attendance_module_enabled, s.attendance_teacher_module_enabled, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, s.attendance_seat_map_columns, s.official_exam_module_enabled, s.koperasi_module_enabled, s.private_chat_module_enabled, s.teaching_module_ai_enabled, s.payroll_module_enabled, s.personal_teacher_mode_enabled
 	`, whereClause)
+}
+
+func parseSeatMapColumnsFormValue(value string) (int, bool, error) {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return 0, false, nil
+	}
+	columns, err := strconv.Atoi(raw)
+	if err != nil || columns < 1 || columns > 24 {
+		return 0, false, fmt.Errorf("invalid seat map columns")
+	}
+	return columns, true, nil
 }
 
 func parseAttendanceTimeFormValue(value string) (string, bool, error) {

@@ -12,6 +12,7 @@ type School struct {
 	AttendanceRadiusMeters         *int     `gorm:"column:attendance_radius_meters" json:"attendance_radius_meters"`
 	AttendanceLateAfterTime        *string  `gorm:"column:attendance_late_after_time" json:"attendance_late_after_time"`
 	AttendanceCheckoutDeadline     *string  `gorm:"column:attendance_checkout_deadline" json:"attendance_checkout_deadline"`
+	AttendanceSeatMapColumns       int      `gorm:"column:attendance_seat_map_columns" json:"attendance_seat_map_columns"`
 	OfficialExamModuleEnabled      bool     `gorm:"column:official_exam_module_enabled" json:"official_exam_module_enabled"`
 	KoperasiModuleEnabled          bool     `gorm:"column:koperasi_module_enabled" json:"koperasi_module_enabled"`
 	PrivateChatModuleEnabled       bool     `gorm:"column:private_chat_module_enabled" json:"private_chat_module_enabled"`

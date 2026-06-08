@@ -664,6 +664,7 @@ func allowedOrigin(origin string) string {
 	allowed := map[string]struct{}{
 		"https://school-system.my.id":      {},
 		"https://lms.school-system.my.id":  {},
+		"https://lms.idschoolsystem.com":   {},
 		"https://demo.school-system.my.id": {},
 		"https://alentest.my.id":           {},
 		"http://localhost:8080":            {},
