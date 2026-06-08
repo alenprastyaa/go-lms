@@ -31,6 +31,7 @@ func main() {
 		allowedOrigins = strings.Join([]string{
 			"https://school-system.my.id",
 			"https://lms.school-system.my.id",
+			"https://lms.idschoolsystem.com",
 			"https://demo.school-system.my.id",
 			"https://alentest.my.id",
 			"http://localhost:8080",
