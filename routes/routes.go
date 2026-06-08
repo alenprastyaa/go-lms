@@ -15,6 +15,7 @@ func Register(app *fiber.App, db *gorm.DB, hub *realtime.Hub) {
 
 	registerAuth(api, ctx)
 	registerSchool(api, ctx)
+	registerSchoolVisitTargets(api, ctx)
 	registerClass(api, ctx)
 	registerStudent(api, ctx)
 	registerPublic(api, ctx)
@@ -30,6 +31,15 @@ func Register(app *fiber.App, db *gorm.DB, hub *realtime.Hub) {
 	registerKoperasi(api, ctx)
 	registerPayroll(api, ctx)
 	registerNotifications(api, ctx)
+}
+
+func registerSchoolVisitTargets(api fiber.Router, ctx *controllers.AppContext) {
+	r := api.Group("/school-visit-targets", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("SUPER_ADMIN"))
+	r.Get("/", ctx.GetSchoolVisitTargets)
+	r.Post("/", ctx.CreateSchoolVisitTarget)
+	r.Post("/:id/resolve-address", ctx.ResolveSchoolVisitTargetAddress)
+	r.Put("/:id", ctx.UpdateSchoolVisitTarget)
+	r.Delete("/:id", ctx.DeleteSchoolVisitTarget)
 }
 
 func registerAI(api fiber.Router, ctx *controllers.AppContext) {

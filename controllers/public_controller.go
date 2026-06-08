@@ -97,11 +97,12 @@ func (a *AppContext) SearchPublicLocations(c *fiber.Ctx) error {
 	}
 
 	var rawItems []struct {
-		PlaceID    interface{} `json:"place_id"`
-		DisplayName string      `json:"display_name"`
-		Name       string      `json:"name"`
-		Lat        string      `json:"lat"`
-		Lon        string      `json:"lon"`
+		PlaceID     interface{}       `json:"place_id"`
+		DisplayName string            `json:"display_name"`
+		Name        string            `json:"name"`
+		Lat         string            `json:"lat"`
+		Lon         string            `json:"lon"`
+		Address     map[string]string `json:"address"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&rawItems); err != nil {
 		return utils.Error(c, 500, "Gagal membaca hasil lokasi", err.Error())
@@ -115,6 +116,9 @@ func (a *AppContext) SearchPublicLocations(c *fiber.Ctx) error {
 			"name":         item.Name,
 			"lat":          item.Lat,
 			"lon":          item.Lon,
+			"province":     firstNonEmpty(item.Address["state"], item.Address["province"]),
+			"city":         firstNonEmpty(item.Address["city"], item.Address["town"], item.Address["county"], item.Address["municipality"]),
+			"district":     firstNonEmpty(item.Address["city_district"], item.Address["district"], item.Address["suburb"], item.Address["village"]),
 		})
 	}
 

@@ -144,6 +144,24 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE learning_submissions ADD COLUMN IF NOT EXISTS access_block_reason TEXT`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE school_visit_targets ADD COLUMN IF NOT EXISTS is_visited BOOLEAN NOT NULL DEFAULT FALSE`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE school_visit_targets ADD COLUMN IF NOT EXISTS visited_at TIMESTAMP NULL`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE school_visit_targets ADD COLUMN IF NOT EXISTS wakur TEXT NULL`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE school_visit_targets ADD COLUMN IF NOT EXISTS kepsek TEXT NULL`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE school_visit_targets ADD COLUMN IF NOT EXISTS is_planned BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE school_visit_targets ADD COLUMN IF NOT EXISTS planned_at TIMESTAMP NULL`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE learning_assignments ADD COLUMN IF NOT EXISTS question_duration_mode TEXT NOT NULL DEFAULT 'PER_QUESTION'`).Error; err != nil {
 		return nil, err
 	}
@@ -283,6 +301,28 @@ func NewDatabase() (*gorm.DB, error) {
 			used_at TIMESTAMP NULL,
 			attempts INT NOT NULL DEFAULT 0,
 			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS school_visit_targets (
+			id BIGSERIAL PRIMARY KEY,
+			name TEXT NOT NULL,
+			wakur TEXT NULL,
+			kepsek TEXT NULL,
+			full_address TEXT NULL,
+			province TEXT NULL,
+			city TEXT NULL,
+			district TEXT NULL,
+			latitude DOUBLE PRECISION NULL,
+			longitude DOUBLE PRECISION NULL,
+			google_maps_url TEXT NULL,
+			place_id TEXT NULL,
+			is_planned BOOLEAN NOT NULL DEFAULT TRUE,
+			planned_at TIMESTAMP NULL,
+			is_visited BOOLEAN NOT NULL DEFAULT FALSE,
+			visited_at TIMESTAMP NULL,
+			created_by BIGINT NULL,
+			updated_by BIGINT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE TABLE IF NOT EXISTS inventory_items (
 			id BIGSERIAL PRIMARY KEY,
@@ -527,6 +567,10 @@ func NewDatabase() (*gorm.DB, error) {
 		`CREATE INDEX IF NOT EXISTS idx_parent_students_student ON parent_students (student_user_id, school_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_parent_login_otps_parent_created ON parent_login_otps (parent_user_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_parent_login_otps_email_created ON parent_login_otps (email, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_school_visit_targets_created ON school_visit_targets (created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_school_visit_targets_name ON school_visit_targets (name)`,
+		`CREATE INDEX IF NOT EXISTS idx_school_visit_targets_planned ON school_visit_targets (is_planned, planned_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_school_visit_targets_visited ON school_visit_targets (is_visited, visited_at DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_items_school_code ON inventory_items (school_id, code) WHERE code IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_inventory_items_school_active ON inventory_items (school_id, is_active, name)`,
 		`CREATE INDEX IF NOT EXISTS idx_inventory_loans_school_status ON inventory_loans (school_id, status, borrowed_at)`,
