@@ -22,6 +22,8 @@ func Register(app *fiber.App, db *gorm.DB, hub *realtime.Hub) {
 	registerReceipt(api, ctx)
 	registerAdmin(api, ctx)
 	registerAcademic(api, ctx)
+	registerMajors(api, ctx)
+	registerSPMB(api, ctx)
 	registerLearningAdmin(api, ctx)
 	registerAI(api, ctx)
 	registerPrivateChat(api, ctx)
@@ -44,7 +46,7 @@ func registerSchoolVisitTargets(api fiber.Router, ctx *controllers.AppContext) {
 
 func registerAI(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/ai", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
-	r.Post("/chat", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "GURU", "SISWA", "SARPRAS", "KOPERASI", "BENDAHARA"), ctx.AskSystemChatbot)
+	r.Post("/chat", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "ADMIN_SPMB", "GURU", "SISWA", "SARPRAS", "KOPERASI", "BENDAHARA"), ctx.AskSystemChatbot)
 }
 
 func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
@@ -123,6 +125,9 @@ func registerPublic(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/public")
 	r.Get("/registration-options", ctx.GetPublicRegistrationOptions)
 	r.Get("/geocode", ctx.SearchPublicLocations)
+	r.Get("/spmb/options", ctx.GetSPMBPublicOptions)
+	r.Post("/spmb/register", ctx.RegisterSPMBApplicantPublic)
+	r.Get("/spmb/status/:token", ctx.GetSPMBApplicantPublicStatus)
 	r.Post("/student-registration", ctx.RegisterStudentPublic)
 	r.Get("/check-username", ctx.CheckUsernameAvailability)
 }
@@ -137,7 +142,7 @@ func registerReceipt(api fiber.Router, ctx *controllers.AppContext) {
 }
 
 func registerPrivateChat(api fiber.Router, ctx *controllers.AppContext) {
-	r := api.Group("/private-chat", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "KOPERASI", "BENDAHARA", "GURU", "SISWA"), middlewares.ModuleAllowed(ctx.DB, "private_chat"))
+	r := api.Group("/private-chat", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "ADMIN_SPMB", "KOPERASI", "BENDAHARA", "GURU", "SISWA"), middlewares.ModuleAllowed(ctx.DB, "private_chat"))
 	r.Get("/summary", ctx.GetPrivateChatSummary)
 	r.Get("/contacts", ctx.SearchPrivateChatContacts)
 	r.Get("/turn/ice-servers", ctx.GetPrivateChatTurnServers)
@@ -279,7 +284,7 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	d.Get("/parent", middlewares.RoleAllowed("ORANG_TUA"), ctx.GetParentDashboard)
 
 	announcements := api.Group("/announcements", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
-	announcements.Get("/dashboard", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "KOPERASI", "SARPRAS", "GURU", "SISWA"), ctx.GetDashboardAnnouncements)
+	announcements.Get("/dashboard", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "ADMIN_SPMB", "KOPERASI", "SARPRAS", "GURU", "SISWA"), ctx.GetDashboardAnnouncements)
 
 	adminAnnouncements := api.Group("/announcements", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN"))
 	adminAnnouncements.Get("/", ctx.GetSchoolAnnouncements)
@@ -313,6 +318,26 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	at := api.Group("/attendance", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	at.Post("/report/homeroom-email", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.SendHomeroomAttendanceReport)
 	at.Post("/report/homeroom-whatsapp", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.SendHomeroomAttendanceWhatsAppReport)
+	at.Post("/report/parent-whatsapp", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.SendParentMonthlyReportWhatsApp)
+}
+
+func registerMajors(api fiber.Router, ctx *controllers.AppContext) {
+	r := api.Group("/majors", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
+	r.Get("/", middlewares.RoleAllowed("ADMIN", "ADMIN_SPMB"), ctx.GetMajors)
+	r.Post("/", middlewares.RoleAllowed("ADMIN"), ctx.CreateMajor)
+	r.Put("/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateMajor)
+	r.Delete("/:id", middlewares.RoleAllowed("ADMIN"), ctx.DeleteMajor)
+}
+
+func registerSPMB(api fiber.Router, ctx *controllers.AppContext) {
+	r := api.Group("/spmb", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "ADMIN_SPMB"), middlewares.ModuleAllowed(ctx.DB, "spmb"))
+	r.Get("/overview", ctx.GetSPMBOverview)
+	r.Get("/applicants", ctx.GetSPMBApplicants)
+	r.Post("/applicants", ctx.CreateSPMBApplicant)
+	r.Put("/applicants/:id", ctx.UpdateSPMBApplicant)
+	r.Delete("/applicants/:id", ctx.DeleteSPMBApplicant)
+	r.Post("/applicants/:id/send-link", ctx.SendSPMBApplicantLink)
+	r.Post("/applicants/:id/convert", ctx.ConvertSPMBApplicantToStudent)
 }
 
 func registerAcademic(api fiber.Router, ctx *controllers.AppContext) {

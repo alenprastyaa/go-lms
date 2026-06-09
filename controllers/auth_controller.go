@@ -160,7 +160,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 	var attendanceCheckoutDeadline interface{} = nil
 	var attendanceSeatMapColumns interface{} = nil
 	if user.SchoolID != nil {
-		_ = a.DB.Select("name", "logo_url", "attendance_latitude", "attendance_longitude", "attendance_radius_meters", "attendance_late_after_time", "attendance_checkout_deadline", "attendance_seat_map_columns", "inventory_module_enabled", "attendance_module_enabled", "attendance_teacher_module_enabled", "official_exam_module_enabled", "koperasi_module_enabled", "private_chat_module_enabled", "teaching_module_ai_enabled", "payroll_module_enabled", "personal_teacher_mode_enabled").Where("id = ?", *user.SchoolID).First(&school).Error
+		_ = a.DB.Select("name", "logo_url", "attendance_latitude", "attendance_longitude", "attendance_radius_meters", "attendance_late_after_time", "attendance_checkout_deadline", "attendance_seat_map_columns", "inventory_module_enabled", "attendance_module_enabled", "attendance_teacher_module_enabled", "official_exam_module_enabled", "koperasi_module_enabled", "private_chat_module_enabled", "teaching_module_ai_enabled", "payroll_module_enabled", "spmb_module_enabled", "personal_teacher_mode_enabled").Where("id = ?", *user.SchoolID).First(&school).Error
 		schoolName = school.Name
 		schoolLogo = school.LogoURL
 		schoolLatitude = school.AttendanceLatitude
@@ -181,6 +181,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 			"private_chat_module_enabled":       school.PrivateChatModuleEnabled,
 			"teaching_module_ai_enabled":        school.TeachingModuleAIEnabled,
 			"payroll_module_enabled":            school.PayrollModuleEnabled,
+			"spmb_module_enabled":               school.SPMBModuleEnabled,
 			"personal_teacher_mode_enabled":     school.PersonalTeacherModeEnabled,
 		}, "attendance_latitude": schoolLatitude, "attendance_longitude": schoolLongitude, "attendance_radius_meters": schoolRadius, "attendance_late_after_time": attendanceLateAfterTime, "attendance_checkout_deadline": attendanceCheckoutDeadline, "attendance_seat_map_columns": attendanceSeatMapColumns, "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
 	})
@@ -646,7 +647,11 @@ func (a *AppContext) registerScopedUser(c *fiber.Ctx, asStudent bool) error {
 		role = "SISWA"
 	}
 
-	normalizedRole := strings.ToUpper(strings.TrimSpace(role))
+	normalizedRole := utils.NormalizeRoleName(role)
+	role = normalizedRole
+	if !asStudent && normalizedRole != "ADMIN" && normalizedRole != "ADMIN_SPMB" && normalizedRole != "GURU" && normalizedRole != "SARPRAS" && normalizedRole != "KOPERASI" && normalizedRole != "BENDAHARA" {
+		return utils.Error(c, 400, "Role user sekolah tidak valid")
+	}
 	fullName := strings.TrimSpace(utils.ToString(body["full_name"]))
 	if fullName == "" {
 		return utils.Error(c, 400, "Nama lengkap wajib diisi")
@@ -1891,8 +1896,8 @@ func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ? AND school_id = ?", id, schoolID).First(&current).Error; err != nil {
 		return utils.Error(c, 404, "User school not found")
 	}
-	if current.Role != "ADMIN" && current.Role != "GURU" && current.Role != "SARPRAS" && current.Role != "KOPERASI" && current.Role != "BENDAHARA" {
-		return utils.Error(c, 400, "Only school admin, teacher, sarpras, koperasi, and bendahara can be updated here")
+	if current.Role != "ADMIN" && current.Role != "ADMIN_SPMB" && current.Role != "GURU" && current.Role != "SARPRAS" && current.Role != "KOPERASI" && current.Role != "BENDAHARA" {
+		return utils.Error(c, 400, "Only school admin, admin SPMB, teacher, sarpras, koperasi, and bendahara can be updated here")
 	}
 	nextUsername := current.Username
 	if body.Username != nil {
@@ -1900,7 +1905,10 @@ func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 	}
 	nextRole := current.Role
 	if body.Role != nil {
-		nextRole = *body.Role
+		nextRole = utils.NormalizeRoleName(*body.Role)
+		if nextRole != "ADMIN" && nextRole != "ADMIN_SPMB" && nextRole != "GURU" && nextRole != "SARPRAS" && nextRole != "KOPERASI" && nextRole != "BENDAHARA" {
+			return utils.Error(c, 400, "Role user sekolah tidak valid")
+		}
 	}
 	updates := map[string]interface{}{
 		"full_name":    coalesceStrPtr(body.FullName, current.FullName),
@@ -1978,8 +1986,8 @@ func (a *AppContext) DeleteUserSchool(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ? AND school_id = ?", id, schoolID).First(&current).Error; err != nil {
 		return utils.Error(c, 404, "User school not found")
 	}
-	if current.Role != "ADMIN" && current.Role != "GURU" && current.Role != "SARPRAS" && current.Role != "KOPERASI" && current.Role != "BENDAHARA" {
-		return utils.Error(c, 400, "Only school admin, teacher, sarpras, koperasi, and bendahara can be deleted here")
+	if current.Role != "ADMIN" && current.Role != "ADMIN_SPMB" && current.Role != "GURU" && current.Role != "SARPRAS" && current.Role != "KOPERASI" && current.Role != "BENDAHARA" {
+		return utils.Error(c, 400, "Only school admin, admin SPMB, teacher, sarpras, koperasi, and bendahara can be deleted here")
 	}
 	a.DB.Exec(`DELETE FROM users WHERE id = ? AND school_id = ?`, id, schoolID)
 	return utils.Success(c, 200, fmt.Sprintf(`User "%s" berhasil dihapus`, current.Username), nil)
@@ -2014,10 +2022,11 @@ func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 		PrivateChatModuleEnabled       bool     `json:"private_chat_module_enabled"`
 		TeachingModuleAIEnabled        bool     `json:"teaching_module_ai_enabled"`
 		PayrollModuleEnabled           bool     `json:"payroll_module_enabled"`
+		SPMBModuleEnabled              bool     `json:"spmb_module_enabled"`
 		PersonalTeacherModeEnabled     bool     `json:"personal_teacher_mode_enabled"`
 	}
 	err := a.DB.Table("users u").
-		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, COALESCE(s.attendance_seat_map_columns, 4) as attendance_seat_map_columns, COALESCE(s.inventory_module_enabled, true) as inventory_module_enabled, COALESCE(s.attendance_module_enabled, true) as attendance_module_enabled, COALESCE(s.attendance_teacher_module_enabled, true) as attendance_teacher_module_enabled, COALESCE(s.official_exam_module_enabled, true) as official_exam_module_enabled, COALESCE(s.koperasi_module_enabled, true) as koperasi_module_enabled, COALESCE(s.private_chat_module_enabled, true) as private_chat_module_enabled, COALESCE(s.teaching_module_ai_enabled, true) as teaching_module_ai_enabled, COALESCE(s.payroll_module_enabled, true) as payroll_module_enabled, COALESCE(s.personal_teacher_mode_enabled, false) as personal_teacher_mode_enabled").
+		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, COALESCE(s.attendance_seat_map_columns, 4) as attendance_seat_map_columns, COALESCE(s.inventory_module_enabled, true) as inventory_module_enabled, COALESCE(s.attendance_module_enabled, true) as attendance_module_enabled, COALESCE(s.attendance_teacher_module_enabled, true) as attendance_teacher_module_enabled, COALESCE(s.official_exam_module_enabled, true) as official_exam_module_enabled, COALESCE(s.koperasi_module_enabled, true) as koperasi_module_enabled, COALESCE(s.private_chat_module_enabled, true) as private_chat_module_enabled, COALESCE(s.teaching_module_ai_enabled, true) as teaching_module_ai_enabled, COALESCE(s.payroll_module_enabled, true) as payroll_module_enabled, COALESCE(s.spmb_module_enabled, false) as spmb_module_enabled, COALESCE(s.personal_teacher_mode_enabled, false) as personal_teacher_mode_enabled").
 		Joins("left join schools s on s.id = u.school_id").
 		Where("u.id = ?", userID).
 		Scan(&profile).Error

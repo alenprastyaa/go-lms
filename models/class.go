@@ -5,6 +5,7 @@ type Class struct {
 	ClassName  string `gorm:"column:class_name" json:"class_name"`
 	SchoolID   uint   `gorm:"column:school_id" json:"school_id"`
 	WaliGuruID *uint  `gorm:"column:wali_guru_id" json:"wali_guru_id"`
+	MajorID    *uint  `gorm:"column:major_id" json:"major_id"`
 }
 
 func (Class) TableName() string { return "class" }

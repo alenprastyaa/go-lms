@@ -18,6 +18,7 @@ type School struct {
 	PrivateChatModuleEnabled       bool     `gorm:"column:private_chat_module_enabled" json:"private_chat_module_enabled"`
 	TeachingModuleAIEnabled        bool     `gorm:"column:teaching_module_ai_enabled" json:"teaching_module_ai_enabled"`
 	PayrollModuleEnabled           bool     `gorm:"column:payroll_module_enabled" json:"payroll_module_enabled"`
+	SPMBModuleEnabled              bool     `gorm:"column:spmb_module_enabled" json:"spmb_module_enabled"`
 	PersonalTeacherModeEnabled     bool     `gorm:"column:personal_teacher_mode_enabled" json:"personal_teacher_mode_enabled"`
 }
 

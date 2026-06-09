@@ -144,6 +144,8 @@ func ModuleAllowed(db *gorm.DB, feature string) fiber.Handler {
 		column = "teaching_module_ai_enabled"
 	case "payroll":
 		column = "payroll_module_enabled"
+	case "spmb":
+		column = "spmb_module_enabled"
 	default:
 		return func(c *fiber.Ctx) error {
 			return utils.Error(c, 500, "Unknown module")

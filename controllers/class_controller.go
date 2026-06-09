@@ -9,14 +9,18 @@ func (a *AppContext) CreateClass(c *fiber.Ctx) error {
 	var body struct {
 		ClassName  string `json:"class_name"`
 		WaliGuruID *uint  `json:"wali_guru_id"`
+		MajorID    *uint  `json:"major_id"`
 	}
 	_ = c.BodyParser(&body)
 	schoolID := c.Locals("schoolID").(uint)
+	if body.MajorID != nil && !a.majorBelongsToSchool(*body.MajorID, schoolID) {
+		return utils.Error(c, 400, "Jurusan tidak valid")
+	}
 	var row map[string]interface{}
 	a.DB.Raw(`
-		INSERT INTO class (class_name, school_id, wali_guru_id)
-		VALUES (?, ?, ?) RETURNING id, class_name, school_id, wali_guru_id
-	`, body.ClassName, schoolID, body.WaliGuruID).Scan(&row)
+		INSERT INTO class (class_name, school_id, wali_guru_id, major_id)
+		VALUES (?, ?, ?, ?) RETURNING id, class_name, school_id, wali_guru_id, major_id
+	`, body.ClassName, schoolID, body.WaliGuruID, body.MajorID).Scan(&row)
 	return utils.Success(c, 201, "class registered successfully", row)
 }
 
@@ -41,10 +45,12 @@ func (a *AppContext) GetClasses(c *fiber.Ctx) error {
 
 		var rows []map[string]interface{}
 		a.DB.Raw(`
-			SELECT c.id, c.class_name, c.school_id, c.wali_guru_id,
+			SELECT c.id, c.class_name, c.school_id, c.wali_guru_id, c.major_id,
+			       m.name AS major_name, m.code AS major_code,
 			       u.username AS wali_guru_name, u.parent_email AS wali_guru_email, u.phone_number AS wali_guru_phone_number
 			FROM class c
 			LEFT JOIN users u ON c.wali_guru_id = u.id
+			LEFT JOIN majors m ON m.id = c.major_id
 			WHERE c.school_id = ?
 			ORDER BY c.class_name ASC
 			LIMIT ? OFFSET ?
@@ -59,10 +65,12 @@ func (a *AppContext) GetClasses(c *fiber.Ctx) error {
 
 	var rows []map[string]interface{}
 	a.DB.Raw(`
-		SELECT c.id, c.class_name, c.school_id, c.wali_guru_id,
+		SELECT c.id, c.class_name, c.school_id, c.wali_guru_id, c.major_id,
+		       m.name AS major_name, m.code AS major_code,
 		       u.username AS wali_guru_name, u.parent_email AS wali_guru_email, u.phone_number AS wali_guru_phone_number
 		FROM class c
 		LEFT JOIN users u ON c.wali_guru_id = u.id
+		LEFT JOIN majors m ON m.id = c.major_id
 		WHERE c.school_id = ?
 		ORDER BY c.class_name ASC
 	`, schoolID).Scan(&rows)
@@ -75,13 +83,17 @@ func (a *AppContext) UpdateClass(c *fiber.Ctx) error {
 	var body struct {
 		ClassName  *string `json:"class_name"`
 		WaliGuruID *uint   `json:"wali_guru_id"`
+		MajorID    *uint   `json:"major_id"`
 	}
 	_ = c.BodyParser(&body)
+	var raw map[string]interface{}
+	_ = c.BodyParser(&raw)
 	var current struct {
 		ClassName  string `json:"class_name"`
 		WaliGuruID *uint  `json:"wali_guru_id"`
+		MajorID    *uint  `json:"major_id"`
 	}
-	if err := a.DB.Raw(`SELECT class_name, wali_guru_id FROM class WHERE id = ? AND school_id = ?`, id, schoolID).Scan(&current).Error; err != nil {
+	if err := a.DB.Raw(`SELECT class_name, wali_guru_id, major_id FROM class WHERE id = ? AND school_id = ?`, id, schoolID).Scan(&current).Error; err != nil {
 		return utils.Error(c, 404, "Class not found")
 	}
 	className := current.ClassName
@@ -92,11 +104,22 @@ func (a *AppContext) UpdateClass(c *fiber.Ctx) error {
 	if body.WaliGuruID != nil {
 		waliGuruID = body.WaliGuruID
 	}
+	majorID := current.MajorID
+	if _, ok := raw["major_id"]; ok {
+		parsedMajorID, err := nullableUintFromRaw(raw["major_id"])
+		if err != nil {
+			return utils.Error(c, 400, "Jurusan tidak valid")
+		}
+		if parsedMajorID != nil && !a.majorBelongsToSchool(*parsedMajorID, schoolID) {
+			return utils.Error(c, 400, "Jurusan tidak valid")
+		}
+		majorID = parsedMajorID
+	}
 	var row map[string]interface{}
 	a.DB.Raw(`
-		UPDATE class SET class_name = ?, school_id = ?, wali_guru_id = ?
-		WHERE id = ? RETURNING id, class_name, school_id, wali_guru_id
-	`, className, schoolID, waliGuruID, id).Scan(&row)
+		UPDATE class SET class_name = ?, school_id = ?, wali_guru_id = ?, major_id = ?
+		WHERE id = ? RETURNING id, class_name, school_id, wali_guru_id, major_id
+	`, className, schoolID, waliGuruID, majorID, id).Scan(&row)
 	return utils.Success(c, 200, "Success Update Class", row)
 }
 func (a *AppContext) DeleteClass(c *fiber.Ctx) error {
@@ -118,10 +141,12 @@ func (a *AppContext) GetMyClass(c *fiber.Ctx) error {
 	userID := c.Locals("userID").(uint)
 	var row map[string]interface{}
 	a.DB.Raw(`
-		SELECT c.id, c.class_name, c.school_id, c.wali_guru_id,
+		SELECT c.id, c.class_name, c.school_id, c.wali_guru_id, c.major_id,
+		       m.name AS major_name, m.code AS major_code,
 		       u.username AS wali_guru_name, u.parent_email AS wali_guru_email, u.phone_number AS wali_guru_phone_number
 		FROM class c
 		LEFT JOIN users u ON c.wali_guru_id = u.id
+		LEFT JOIN majors m ON m.id = c.major_id
 		WHERE c.wali_guru_id = ? AND c.school_id = ?
 	`, userID, schoolID).Scan(&row)
 	if len(row) == 0 {
