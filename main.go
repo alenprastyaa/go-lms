@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"lms/config"
+	"lms/controllers"
 	"lms/realtime"
 	"lms/routes"
 
@@ -65,6 +66,9 @@ func main() {
 
 	realtimeHub := realtime.NewHub(db)
 	app.Get("/api/realtime/events", realtimeHub.FiberHandler)
+
+	appContext := &controllers.AppContext{DB: db, Realtime: realtimeHub}
+	controllers.StartParentWhatsAppReportScheduler(appContext)
 
 	routes.Register(app, db, realtimeHub)
 

@@ -228,6 +228,10 @@ func registerSiswa(api fiber.Router, ctx *controllers.AppContext) {
 	at.Post("/checkout", ctx.CheckOut)
 	at.Get("/", ctx.GetListAttendance)
 
+	fe := api.Group("/face-enrollment", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("SISWA"), middlewares.ModuleAllowed(ctx.DB, "attendance"))
+	fe.Get("/request", ctx.GetMyFaceEnrollmentRequest)
+	fe.Post("/", ctx.SubmitFaceEnrollment)
+
 	l := api.Group("/learning", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	l.Get("/subjects/student", middlewares.RoleAllowed("SISWA"), ctx.GetStudentSubjects)
 	l.Get("/grades/student", middlewares.RoleAllowed("SISWA"), ctx.GetStudentGrades)
@@ -323,7 +327,15 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	at := api.Group("/attendance", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	at.Post("/report/homeroom-email", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.SendHomeroomAttendanceReport)
 	at.Post("/report/homeroom-whatsapp", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.SendHomeroomAttendanceWhatsAppReport)
+	at.Get("/report/parent-whatsapp/template", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.PreviewParentMonthlyReportPDF)
+	at.Post("/report/parent-whatsapp/test", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.SendParentMonthlyReportWhatsAppTest)
+	at.Get("/report/parent-whatsapp/settings", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.GetParentWhatsAppReportSettings)
+	at.Put("/report/parent-whatsapp/settings", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.UpdateParentWhatsAppReportSettings)
 	at.Post("/report/parent-whatsapp", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.SendParentMonthlyReportWhatsApp)
+	at.Get("/face-enrollment-requests/pending-count", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.GetFaceEnrollmentPendingCount)
+	at.Get("/face-enrollment-requests/history", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.ListFaceEnrollmentChangeHistory)
+	at.Get("/face-enrollment-requests", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.ListFaceEnrollmentChangeRequests)
+	at.Post("/face-enrollment-requests/:id/review", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"), ctx.ReviewFaceEnrollmentChangeRequest)
 }
 
 func registerMajors(api fiber.Router, ctx *controllers.AppContext) {

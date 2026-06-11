@@ -45,6 +45,22 @@ func isManageableSchoolUserRole(role string) bool {
 	}
 }
 
+func isStudentProfileComplete(role string, fullName, parentEmail, phoneNumber *string) bool {
+	if utils.NormalizeRoleName(role) != "SISWA" {
+		return true
+	}
+	return strings.TrimSpace(ptrStringValue(fullName)) != "" &&
+		strings.TrimSpace(ptrStringValue(parentEmail)) != "" &&
+		strings.TrimSpace(ptrStringValue(phoneNumber)) != ""
+}
+
+func ptrStringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
 func (a *AppContext) RegisterUser(c *fiber.Ctx) error {
 	var body struct {
 		FullName string `json:"full_name"`
@@ -181,7 +197,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 	}
 
 	return utils.Success(c, 200, "Login successful", fiber.Map{
-		"role": normalizedRole, "username": user.Username, "school_id": user.SchoolID, "school_name": schoolName, "school_logo": schoolLogo, "school_features": fiber.Map{
+		"role": normalizedRole, "full_name": user.FullName, "username": user.Username, "school_id": user.SchoolID, "school_name": schoolName, "school_logo": schoolLogo, "school_features": fiber.Map{
 			"inventory_module_enabled":          school.InventoryModuleEnabled,
 			"attendance_module_enabled":         school.AttendanceModuleEnabled,
 			"attendance_teacher_module_enabled": school.AttendanceTeacherModuleEnabled,
@@ -192,7 +208,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 			"payroll_module_enabled":            school.PayrollModuleEnabled,
 			"spmb_module_enabled":               school.SPMBModuleEnabled,
 			"personal_teacher_mode_enabled":     school.PersonalTeacherModeEnabled,
-		}, "attendance_latitude": schoolLatitude, "attendance_longitude": schoolLongitude, "attendance_radius_meters": schoolRadius, "attendance_late_after_time": attendanceLateAfterTime, "attendance_checkout_deadline": attendanceCheckoutDeadline, "attendance_seat_map_columns": attendanceSeatMapColumns, "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
+		}, "attendance_latitude": schoolLatitude, "attendance_longitude": schoolLongitude, "attendance_radius_meters": schoolRadius, "attendance_late_after_time": attendanceLateAfterTime, "attendance_checkout_deadline": attendanceCheckoutDeadline, "attendance_seat_map_columns": attendanceSeatMapColumns, "parent_email": user.ParentEmail, "phone_number": user.PhoneNumber, "profile_complete": isStudentProfileComplete(normalizedRole, user.FullName, user.ParentEmail, user.PhoneNumber), "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
 	})
 }
 
@@ -2041,6 +2057,7 @@ func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 		PayrollModuleEnabled           bool     `json:"payroll_module_enabled"`
 		SPMBModuleEnabled              bool     `json:"spmb_module_enabled"`
 		PersonalTeacherModeEnabled     bool     `json:"personal_teacher_mode_enabled"`
+		ProfileComplete                bool     `json:"profile_complete"`
 	}
 	err := a.DB.Table("users u").
 		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, COALESCE(s.attendance_seat_map_columns, 4) as attendance_seat_map_columns, COALESCE(s.inventory_module_enabled, true) as inventory_module_enabled, COALESCE(s.attendance_module_enabled, true) as attendance_module_enabled, COALESCE(s.attendance_teacher_module_enabled, true) as attendance_teacher_module_enabled, COALESCE(s.official_exam_module_enabled, true) as official_exam_module_enabled, COALESCE(s.koperasi_module_enabled, true) as koperasi_module_enabled, COALESCE(s.private_chat_module_enabled, true) as private_chat_module_enabled, COALESCE(s.teaching_module_ai_enabled, true) as teaching_module_ai_enabled, COALESCE(s.payroll_module_enabled, true) as payroll_module_enabled, COALESCE(s.spmb_module_enabled, false) as spmb_module_enabled, COALESCE(s.personal_teacher_mode_enabled, false) as personal_teacher_mode_enabled").
@@ -2051,6 +2068,7 @@ func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Failed Get Profile", err.Error())
 	}
 	profile.Role = utils.NormalizeRoleName(profile.Role)
+	profile.ProfileComplete = isStudentProfileComplete(profile.Role, profile.FullName, profile.ParentEmail, profile.PhoneNumber)
 	return utils.Success(c, 200, "Success Get Profile", profile)
 }
 
@@ -2115,20 +2133,12 @@ func (a *AppContext) UpdateMyProfile(c *fiber.Ctx) error {
 		}
 		updates["profile_image"] = saved
 	}
-	if strings.EqualFold(strings.TrimSpace(c.FormValue("remove_face_reference")), "true") {
-		updates["face_reference_image"] = nil
-		updates["face_reference_descriptor"] = nil
+	if strings.EqualFold(strings.TrimSpace(c.FormValue("remove_face_reference")), "true") ||
+		strings.TrimSpace(c.FormValue("face_reference_descriptor")) != "" {
+		return utils.Error(c, 403, "Perubahan wajah harus melalui menu Enrol Wajah dan persetujuan admin")
 	}
-	faceReferenceDescriptor := strings.TrimSpace(c.FormValue("face_reference_descriptor"))
 	if f, err := c.FormFile("face_reference_image"); err == nil && f != nil {
-		saved, upErr := utils.SaveUploadedFile(c, f)
-		if upErr != nil {
-			return utils.Error(c, 500, "Gagal upload foto referensi wajah", upErr.Error())
-		}
-		updates["face_reference_image"] = saved
-	}
-	if faceReferenceDescriptor != "" {
-		updates["face_reference_descriptor"] = faceReferenceDescriptor
+		return utils.Error(c, 403, "Perubahan wajah harus melalui menu Enrol Wajah dan persetujuan admin")
 	}
 
 	if len(updates) == 0 {

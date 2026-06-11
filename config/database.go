@@ -123,6 +123,27 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS face_reference_descriptor TEXT`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`CREATE TABLE IF NOT EXISTS face_reference_change_requests (
+		id BIGSERIAL PRIMARY KEY,
+		student_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		school_id BIGINT REFERENCES schools(id) ON DELETE CASCADE,
+		requested_image TEXT NOT NULL,
+		requested_descriptor TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'PENDING',
+		admin_note TEXT,
+		reviewed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+		reviewed_at TIMESTAMP NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+	)`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_face_reference_change_requests_school_status ON face_reference_change_requests (school_id, status, created_at DESC)`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_face_reference_change_requests_one_pending ON face_reference_change_requests (student_id) WHERE status = 'PENDING'`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS initial_password_ciphertext TEXT`).Error; err != nil {
 		return nil, err
 	}
@@ -215,6 +236,25 @@ func NewDatabase() (*gorm.DB, error) {
 		return nil, err
 	}
 	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_spmb_applicants_token_hash ON spmb_applicants (access_token_hash)`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`CREATE TABLE IF NOT EXISTS parent_whatsapp_report_settings (
+		school_id INTEGER PRIMARY KEY REFERENCES schools(id) ON DELETE CASCADE,
+		enabled BOOLEAN NOT NULL DEFAULT FALSE,
+		schedule_type TEXT NOT NULL DEFAULT 'MONTHLY_DATE',
+		send_time TEXT NOT NULL DEFAULT '08:00',
+		day_of_week INT NOT NULL DEFAULT 1,
+		day_of_month INT NOT NULL DEFAULT 1,
+		class_id INTEGER NULL REFERENCES class(id) ON DELETE SET NULL,
+		last_sent_period TEXT NULL,
+		last_sent_at TIMESTAMP NULL,
+		updated_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+	)`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_parent_wa_report_settings_enabled ON parent_whatsapp_report_settings (enabled, send_time)`).Error; err != nil {
 		return nil, err
 	}
 	if err := db.Exec(`ALTER TABLE learning_submissions ADD COLUMN IF NOT EXISTS access_blocked BOOLEAN NOT NULL DEFAULT FALSE`).Error; err != nil {

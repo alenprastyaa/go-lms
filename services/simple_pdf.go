@@ -91,63 +91,158 @@ func BuildSimpleTextPDF(title string, lines []string) []byte {
 	return pdf.Bytes()
 }
 
+var (
+	pdfNavy     = colorRGB{15, 23, 42}
+	pdfSlate700 = colorRGB{51, 65, 85}
+	pdfSlate500 = colorRGB{100, 116, 139}
+	pdfSlate400 = colorRGB{148, 163, 184}
+	pdfSlate200 = colorRGB{226, 232, 240}
+	pdfSlate100 = colorRGB{241, 245, 249}
+	pdfSlate50  = colorRGB{248, 250, 252}
+	pdfWhite    = colorRGB{255, 255, 255}
+	pdfEmerald  = colorRGB{16, 185, 129}
+	pdfTeal     = colorRGB{20, 184, 166}
+	pdfSky      = colorRGB{14, 165, 233}
+	pdfAmber    = colorRGB{245, 158, 11}
+	pdfRose     = colorRGB{244, 63, 94}
+)
+
 func BuildMonthlyStudentReportPDF(input MonthlyStudentReportPDFInput) []byte {
 	canvas := newPDFCanvas()
-	canvas.rect(0, 0, 595, 128, colorRGB{15, 23, 42})
-	canvas.rect(0, 120, 595, 8, colorRGB{16, 185, 129})
-	canvas.text(42, 48, 21, "F2", colorRGB{255, 255, 255}, "Laporan Bulanan Siswa")
-	canvas.text(42, 72, 11, "F1", colorRGB{203, 213, 225}, fallbackPDFText(input.SchoolName, "Sekolah"))
-	canvas.text(42, 94, 12, "F2", colorRGB{167, 243, 208}, fallbackPDFText(input.MonthLabel, "Periode laporan"))
 
-	canvas.roundedCard(42, 150, 511, 86, colorRGB{248, 250, 252})
-	canvas.text(62, 178, 10, "F2", colorRGB{100, 116, 139}, "IDENTITAS SISWA")
-	canvas.text(62, 205, 20, "F2", colorRGB{15, 23, 42}, fallbackPDFText(input.StudentName, "Siswa"))
-	canvas.text(382, 184, 10, "F2", colorRGB{100, 116, 139}, "KELAS")
-	canvas.text(382, 207, 18, "F2", colorRGB{15, 23, 42}, fallbackPDFText(input.ClassName, "-"))
+	// ===== Header =====
+	canvas.rect(0, 0, 595, 116, pdfNavy)
+	canvas.rect(0, 112, 199, 4, pdfEmerald)
+	canvas.rect(199, 112, 198, 4, pdfSky)
+	canvas.rect(397, 112, 198, 4, pdfAmber)
+	canvas.text(42, 40, 8.5, "F2", pdfSlate400, "L A P O R A N   B U L A N A N   S I S W A")
+	canvas.text(42, 68, 19, "F2", pdfWhite, truncatePDFText(fallbackPDFText(input.SchoolName, "Sekolah"), 42))
 
-	canvas.text(42, 274, 15, "F2", colorRGB{15, 23, 42}, "Ringkasan Kehadiran")
-	canvas.statCard(42, 292, "Hadir", strconv.Itoa(input.PresentCount), colorRGB{16, 185, 129})
-	canvas.statCard(172, 292, "Terlambat", strconv.Itoa(input.LateCount), colorRGB{245, 158, 11})
-	canvas.statCard(302, 292, "Catatan Lain", strconv.Itoa(input.AbsentCount), colorRGB{244, 63, 94})
-	canvas.statCard(432, 292, "Total Catatan", strconv.Itoa(input.RecordedCount), colorRGB{14, 165, 233})
+	monthText := strings.ToUpper(fallbackPDFText(input.MonthLabel, "Periode laporan"))
+	pillW := approxPDFTextWidth(monthText, 10, true) + 26
+	canvas.rect(553-pillW, 82, pillW, 22, pdfEmerald)
+	canvas.text(553-pillW+13, 97, 10, "F2", pdfWhite, monthText)
+	canvas.text(42, 97, 9, "F1", pdfSlate400, "Ringkasan kehadiran dan hasil belajar untuk orang tua/wali")
 
-	canvas.text(42, 402, 15, "F2", colorRGB{15, 23, 42}, "Ringkasan Nilai")
-	canvas.statCard(42, 420, "Tugas/Ujian", strconv.Itoa(input.TotalAssignments), colorRGB{99, 102, 241})
-	canvas.statCard(172, 420, "Dikumpulkan", strconv.Itoa(input.SubmittedCount), colorRGB{20, 184, 166})
-	canvas.statCard(302, 420, "Dinilai", strconv.Itoa(input.GradedCount), colorRGB{59, 130, 246})
-	canvas.statCard(432, 420, "Rata-rata", fallbackPDFText(input.AverageScore, "-"), colorRGB{15, 23, 42})
+	// ===== Kartu identitas =====
+	canvas.roundedCard(42, 134, 511, 64, pdfWhite)
+	canvas.rect(42, 134, 4, 64, pdfEmerald)
+	canvas.text(66, 158, 8, "F2", pdfSlate500, "NAMA SISWA")
+	canvas.text(66, 184, 16, "F2", pdfNavy, truncatePDFText(fallbackPDFText(input.StudentName, "Siswa"), 34))
+	canvas.text(372, 158, 8, "F2", pdfSlate500, "KELAS")
+	canvas.text(372, 184, 14, "F2", pdfNavy, truncatePDFText(fallbackPDFText(input.ClassName, "-"), 18))
 
-	canvas.text(42, 530, 15, "F2", colorRGB{15, 23, 42}, "Nilai Terbaru Bulan Ini")
-	canvas.rect(42, 548, 511, 28, colorRGB{226, 232, 240})
-	canvas.text(58, 567, 9, "F2", colorRGB{51, 65, 85}, "Mapel")
-	canvas.text(176, 567, 9, "F2", colorRGB{51, 65, 85}, "Tugas/Ujian")
-	canvas.text(395, 567, 9, "F2", colorRGB{51, 65, 85}, "Nilai")
-	canvas.text(456, 567, 9, "F2", colorRGB{51, 65, 85}, "Status")
+	// ===== Ringkasan kehadiran =====
+	canvas.sectionTitle(230, "Ringkasan Kehadiran", pdfEmerald)
+
+	attended := input.PresentCount + input.LateCount
+	attendanceRate := pdfFraction(attended, input.RecordedCount)
+	rateColor := pdfEmerald
+	switch {
+	case input.RecordedCount == 0:
+		rateColor = pdfSlate400
+	case attendanceRate < 0.70:
+		rateColor = pdfRose
+	case attendanceRate < 0.85:
+		rateColor = pdfAmber
+	}
+
+	canvas.roundedCard(42, 246, 158, 140, pdfSlate50)
+	canvas.text(58, 272, 7.5, "F2", pdfSlate500, "TINGKAT KEHADIRAN")
+	rateText := "-"
+	if input.RecordedCount > 0 {
+		rateText = fmt.Sprintf("%d%%", int(attendanceRate*100+0.5))
+	}
+	canvas.text(58, 308, 30, "F2", rateColor, rateText)
+	canvas.progressBar(58, 322, 126, 8, attendanceRate, rateColor)
+	if input.RecordedCount > 0 {
+		canvas.text(58, 348, 7.5, "F1", pdfSlate500, fmt.Sprintf("%d dari %d hari tercatat", attended, input.RecordedCount))
+		canvas.text(58, 360, 7.5, "F1", pdfSlate500, "hadir atau terlambat")
+	} else {
+		canvas.text(58, 348, 7.5, "F1", pdfSlate500, "Belum ada catatan")
+		canvas.text(58, 360, 7.5, "F1", pdfSlate500, "kehadiran bulan ini")
+	}
+
+	canvas.barRow(222, 252, 331, "Hadir", pdfCountLabel(input.PresentCount, input.RecordedCount, "hari"), pdfFraction(input.PresentCount, input.RecordedCount), pdfEmerald)
+	canvas.barRow(222, 297, 331, "Terlambat", pdfCountLabel(input.LateCount, input.RecordedCount, "hari"), pdfFraction(input.LateCount, input.RecordedCount), pdfAmber)
+	canvas.barRow(222, 342, 331, "Tidak Hadir / Lainnya", pdfCountLabel(input.AbsentCount, input.RecordedCount, "hari"), pdfFraction(input.AbsentCount, input.RecordedCount), pdfRose)
+
+	// ===== Ringkasan nilai =====
+	canvas.sectionTitle(420, "Ringkasan Nilai", pdfSky)
+
+	averageValue, hasAverage := parsePDFScore(input.AverageScore)
+	canvas.roundedCard(42, 436, 158, 140, pdfSlate50)
+	canvas.text(58, 462, 7.5, "F2", pdfSlate500, "RATA-RATA NILAI")
+	if hasAverage {
+		scoreColor, predicate := pdfScorePalette(averageValue)
+		canvas.text(58, 498, 30, "F2", scoreColor, formatPDFScore(averageValue))
+		predicateW := approxPDFTextWidth(predicate, 8, true) + 20
+		canvas.rect(58, 510, predicateW, 17, scoreColor)
+		canvas.text(68, 522, 8, "F2", pdfWhite, predicate)
+		canvas.text(58, 552, 7.5, "F1", pdfSlate500, "Skala penilaian 0 - 100")
+	} else {
+		canvas.text(58, 498, 22, "F2", pdfSlate400, "-")
+		canvas.text(58, 524, 8, "F1", pdfSlate500, "Belum ada nilai yang")
+		canvas.text(58, 536, 8, "F1", pdfSlate500, "tersedia bulan ini")
+	}
+
+	canvas.barRow(222, 442, 331, "Tugas Dikumpulkan", pdfCountLabel(input.SubmittedCount, input.TotalAssignments, "tugas"), pdfFraction(input.SubmittedCount, input.TotalAssignments), pdfTeal)
+	canvas.barRow(222, 487, 331, "Tugas Sudah Dinilai", pdfCountLabel(input.GradedCount, input.TotalAssignments, "tugas"), pdfFraction(input.GradedCount, input.TotalAssignments), pdfSky)
+	canvas.barRow(222, 532, 331, "Belum Dikumpulkan", pdfCountLabel(input.PendingCount, input.TotalAssignments, "tugas"), pdfFraction(input.PendingCount, input.TotalAssignments), pdfAmber)
+
+	// ===== Tabel detail nilai =====
+	canvas.sectionTitle(606, "Detail Nilai Bulan Ini", pdfAmber)
+	canvas.rect(42, 620, 511, 22, colorRGB{30, 41, 59})
+	canvas.text(58, 635, 8, "F2", pdfWhite, "MATA PELAJARAN")
+	canvas.text(170, 635, 8, "F2", pdfWhite, "TUGAS / UJIAN")
+	canvas.text(396, 635, 8, "F2", pdfWhite, "NILAI")
+	canvas.text(462, 635, 8, "F2", pdfWhite, "STATUS")
 
 	rows := input.GradeRows
-	if len(rows) == 0 {
-		canvas.rect(42, 576, 511, 38, colorRGB{248, 250, 252})
-		canvas.text(58, 600, 10, "F1", colorRGB{100, 116, 139}, "Belum ada data nilai pada periode ini.")
+	totalRows := len(rows)
+	if totalRows == 0 {
+		canvas.rect(42, 642, 511, 38, pdfSlate50)
+		canvas.text(58, 666, 9, "F1", pdfSlate500, "Belum ada data nilai pada periode ini.")
 	} else {
-		if len(rows) > 9 {
-			rows = rows[:9]
+		if len(rows) > 6 {
+			rows = rows[:6]
 		}
-		y := 576
+		y := 642.0
 		for index, row := range rows {
-			bg := colorRGB{255, 255, 255}
+			bg := pdfWhite
 			if index%2 == 1 {
-				bg = colorRGB{248, 250, 252}
+				bg = pdfSlate50
 			}
-			canvas.rect(42, float64(y), 511, 42, bg)
-			canvas.text(58, float64(y+18), 9, "F2", colorRGB{15, 23, 42}, truncatePDFText(row.Subject, 18))
-			canvas.text(176, float64(y+18), 9, "F1", colorRGB{51, 65, 85}, truncatePDFText(row.Title, 42))
-			canvas.text(395, float64(y+18), 9, "F2", colorRGB{15, 23, 42}, truncatePDFText(row.Score, 10))
-			canvas.text(456, float64(y+18), 9, "F1", colorRGB{51, 65, 85}, truncatePDFText(row.Status, 18))
-			y += 42
+			canvas.rect(42, y, 511, 25, bg)
+			canvas.text(58, y+16, 9, "F2", pdfNavy, truncatePDFText(row.Subject, 16))
+			canvas.text(170, y+16, 9, "F1", pdfSlate700, truncatePDFText(row.Title, 40))
+
+			if score, ok := parsePDFScore(row.Score); ok {
+				scoreColor, _ := pdfScorePalette(score)
+				canvas.rect(392, y+4.5, 46, 16, scoreColor)
+				scoreText := formatPDFScore(score)
+				canvas.text(392+(46-approxPDFTextWidth(scoreText, 8.5, true))/2, y+16, 8.5, "F2", pdfWhite, scoreText)
+			} else {
+				canvas.text(392, y+16, 8, "F1", pdfSlate400, truncatePDFText(row.Score, 15))
+			}
+
+			statusColor := pdfRose
+			if strings.Contains(strings.ToLower(row.Status), "sudah") {
+				statusColor = pdfEmerald
+			}
+			canvas.circle(465, y+12.5, 3, statusColor)
+			canvas.text(473, y+16, 8, "F1", pdfSlate700, truncatePDFText(row.Status, 19))
+			y += 25
+		}
+		if totalRows > 6 {
+			canvas.text(42, 800, 7.5, "F1", pdfSlate500, fmt.Sprintf("+ %d tugas/ujian lainnya tidak ditampilkan. Detail lengkap dapat dilihat di aplikasi.", totalRows-6))
 		}
 	}
 
-	canvas.text(42, 804, 8, "F1", colorRGB{100, 116, 139}, "Dokumen ini dibuat otomatis oleh sistem sekolah. Silakan hubungi pihak sekolah apabila terdapat data yang perlu dikonfirmasi.")
+	// ===== Footer =====
+	canvas.rect(42, 808, 511, 1, pdfSlate200)
+	canvas.text(42, 822, 8, "F1", pdfSlate500, "Dokumen ini dibuat otomatis oleh sistem sekolah.")
+	canvas.text(42, 833, 8, "F1", pdfSlate500, "Silakan hubungi pihak sekolah apabila terdapat data yang perlu dikonfirmasi.")
 	return canvas.build()
 }
 
@@ -223,11 +318,97 @@ func (p *pdfCanvas) roundedCard(x, yTop, w, h float64, color colorRGB) {
 	p.content.WriteString(fmt.Sprintf("%.1f %.1f %.1f %.1f re S\n", x, 842-yTop-h, w, h))
 }
 
-func (p *pdfCanvas) statCard(x, yTop float64, label, value string, accent colorRGB) {
-	p.roundedCard(x, yTop, 112, 70, colorRGB{248, 250, 252})
-	p.rect(x, yTop, 112, 5, accent)
-	p.text(x+14, yTop+29, 9, "F2", colorRGB{100, 116, 139}, label)
-	p.text(x+14, yTop+55, 18, "F2", colorRGB{15, 23, 42}, value)
+func (p *pdfCanvas) sectionTitle(yTop float64, title string, accent colorRGB) {
+	p.rect(42, yTop-11, 11, 11, accent)
+	p.text(60, yTop, 13, "F2", pdfNavy, title)
+}
+
+func (p *pdfCanvas) progressBar(x, yTop, w, h, fraction float64, color colorRGB) {
+	p.rect(x, yTop, w, h, pdfSlate200)
+	fill := fraction * w
+	if fraction > 0 && fill < 4 {
+		fill = 4
+	}
+	if fill > w {
+		fill = w
+	}
+	if fill > 0 {
+		p.rect(x, yTop, fill, h, color)
+	}
+}
+
+func (p *pdfCanvas) barRow(x, yTop, w float64, label, value string, fraction float64, color colorRGB) {
+	p.text(x, yTop+10, 10, "F2", pdfNavy, label)
+	p.text(x+w-approxPDFTextWidth(value, 9, false), yTop+10, 9, "F1", pdfSlate700, value)
+	p.progressBar(x, yTop+18, w, 9, fraction, color)
+}
+
+func (p *pdfCanvas) circle(cx, cyTop, r float64, color colorRGB) {
+	k := 0.5523 * r
+	cy := 842 - cyTop
+	p.content.WriteString(fmt.Sprintf("%.3f %.3f %.3f rg\n", float64(color.R)/255, float64(color.G)/255, float64(color.B)/255))
+	p.content.WriteString(fmt.Sprintf("%.2f %.2f m\n", cx+r, cy))
+	p.content.WriteString(fmt.Sprintf("%.2f %.2f %.2f %.2f %.2f %.2f c\n", cx+r, cy+k, cx+k, cy+r, cx, cy+r))
+	p.content.WriteString(fmt.Sprintf("%.2f %.2f %.2f %.2f %.2f %.2f c\n", cx-k, cy+r, cx-r, cy+k, cx-r, cy))
+	p.content.WriteString(fmt.Sprintf("%.2f %.2f %.2f %.2f %.2f %.2f c\n", cx-r, cy-k, cx-k, cy-r, cx, cy-r))
+	p.content.WriteString(fmt.Sprintf("%.2f %.2f %.2f %.2f %.2f %.2f c\n", cx+k, cy-r, cx+r, cy-k, cx+r, cy))
+	p.content.WriteString("f\n")
+}
+
+// approxPDFTextWidth estimates Helvetica text width for alignment; the built-in
+// Type1 fonts carry no embedded metrics here, so an average glyph factor is used.
+func approxPDFTextWidth(value string, size float64, bold bool) float64 {
+	factor := 0.50
+	if bold {
+		factor = 0.55
+	}
+	return float64(len(value)) * size * factor
+}
+
+func pdfFraction(part, total int) float64 {
+	if total <= 0 || part <= 0 {
+		return 0
+	}
+	fraction := float64(part) / float64(total)
+	if fraction > 1 {
+		return 1
+	}
+	return fraction
+}
+
+func pdfCountLabel(part, total int, unit string) string {
+	if total <= 0 {
+		return "Belum ada data"
+	}
+	return fmt.Sprintf("%d dari %d %s (%d%%)", part, total, unit, int(pdfFraction(part, total)*100+0.5))
+}
+
+func parsePDFScore(value string) (float64, bool) {
+	score, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || score < 0 {
+		return 0, false
+	}
+	return score, true
+}
+
+func formatPDFScore(score float64) string {
+	if score == float64(int(score)) {
+		return strconv.Itoa(int(score))
+	}
+	return strconv.FormatFloat(score, 'f', 1, 64)
+}
+
+func pdfScorePalette(score float64) (colorRGB, string) {
+	switch {
+	case score >= 85:
+		return pdfEmerald, "SANGAT BAIK"
+	case score >= 75:
+		return pdfSky, "BAIK"
+	case score >= 60:
+		return pdfAmber, "CUKUP"
+	default:
+		return pdfRose, "PERLU BIMBINGAN"
+	}
 }
 
 func (p *pdfCanvas) text(x, yTop, size float64, font string, color colorRGB, value string) {
