@@ -63,9 +63,9 @@ func (a *AppContext) GetAdminSubjects(c *fiber.Ctx) error {
 	whereClause := "WHERE ls.school_id = ?"
 	args := []interface{}{schoolID}
 	if search != "" {
-		whereClause += " AND (LOWER(ls.name) LIKE LOWER(?) OR LOWER(c.class_name) LIKE LOWER(?) OR LOWER(t.username) LIKE LOWER(?))"
+		whereClause += " AND (LOWER(ls.name) LIKE LOWER(?) OR LOWER(COALESCE(cs.name, '')) LIKE LOWER(?) OR LOWER(COALESCE(cs.code, '')) LIKE LOWER(?) OR LOWER(c.class_name) LIKE LOWER(?) OR LOWER(t.username) LIKE LOWER(?))"
 		keyword := "%" + search + "%"
-		args = append(args, keyword, keyword, keyword)
+		args = append(args, keyword, keyword, keyword, keyword, keyword)
 	}
 
 	if usePagination {
@@ -77,15 +77,17 @@ func (a *AppContext) GetAdminSubjects(c *fiber.Ctx) error {
 			FROM learning_subjects ls
 			LEFT JOIN class c ON c.id = ls.class_id
 			LEFT JOIN users t ON t.id = ls.teacher_id
+			LEFT JOIN curriculum_subjects cs ON cs.id = ls.curriculum_subject_id
 		` + whereClause
 		_ = a.DB.Raw(countQuery, args...).Scan(&totalRow).Error
 
 		var rows []map[string]interface{}
 		listQuery := `
-			SELECT ls.*, c.class_name, t.username AS teacher_name
+			SELECT ls.*, c.class_name, t.username AS teacher_name, COALESCE(cs.name, '') AS curriculum_subject_name, COALESCE(cs.code, '') AS curriculum_subject_code
 			FROM learning_subjects ls
 			LEFT JOIN class c ON c.id = ls.class_id
 			LEFT JOIN users t ON t.id = ls.teacher_id
+			LEFT JOIN curriculum_subjects cs ON cs.id = ls.curriculum_subject_id
 		` + whereClause + `
 			ORDER BY ls.created_at DESC
 			LIMIT ? OFFSET ?
@@ -103,86 +105,16 @@ func (a *AppContext) GetAdminSubjects(c *fiber.Ctx) error {
 
 	var rows []map[string]interface{}
 	a.DB.Raw(`
-		SELECT ls.*, c.class_name, t.username AS teacher_name
+		SELECT ls.*, c.class_name, t.username AS teacher_name, COALESCE(cs.name, '') AS curriculum_subject_name, COALESCE(cs.code, '') AS curriculum_subject_code
 		FROM learning_subjects ls
 		LEFT JOIN class c ON c.id = ls.class_id
 		LEFT JOIN users t ON t.id = ls.teacher_id
+		LEFT JOIN curriculum_subjects cs ON cs.id = ls.curriculum_subject_id
 	`+whereClause+`
 		ORDER BY ls.created_at DESC
 	`, args...).Scan(&rows)
 	normalizeJakartaDateTimeRows(rows, "created_at", "updated_at")
 	return utils.Success(c, 200, "Success Get Subjects", rows)
-}
-
-func (a *AppContext) CreateLearningSubject(c *fiber.Ctx) error {
-	schoolID := c.Locals("schoolID").(uint)
-	classID := c.FormValue("class_id")
-	teacherID := c.FormValue("teacher_id")
-	name := c.FormValue("name")
-	description := c.FormValue("description")
-	if name == "" || classID == "" || teacherID == "" {
-		return utils.Error(c, 400, "class_id, teacher_id, and name are required")
-	}
-
-	chatIconURL := ""
-	if f, err := c.FormFile("chat_icon"); err == nil && f != nil {
-		if saved, saveErr := utils.SaveUploadedFile(c, f); saveErr == nil {
-			chatIconURL = saved
-		}
-	}
-
-	var row map[string]interface{}
-	a.DB.Raw(`
-		INSERT INTO learning_subjects (school_id, class_id, teacher_id, name, description, chat_icon_url, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())
-		RETURNING *
-	`, schoolID, classID, teacherID, name, description, nullIfEmpty(chatIconURL)).Scan(&row)
-	normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
-	return utils.Success(c, 201, "Success Create Subject", row)
-}
-
-func (a *AppContext) UpdateLearningSubject(c *fiber.Ctx) error {
-	id := c.Params("id")
-	schoolID := c.Locals("schoolID").(uint)
-
-	var current map[string]interface{}
-	a.DB.Raw(`SELECT * FROM learning_subjects WHERE id = ? AND school_id = ?`, id, schoolID).Scan(&current)
-	if len(current) == 0 {
-		return utils.Error(c, 404, "Subject not found")
-	}
-
-	classID := c.FormValue("class_id", asString(current["class_id"]))
-	teacherID := c.FormValue("teacher_id", asString(current["teacher_id"]))
-	name := c.FormValue("name", asString(current["name"]))
-	description := c.FormValue("description", asString(current["description"]))
-	chatIconURL := asString(current["chat_icon_url"])
-	if f, err := c.FormFile("chat_icon"); err == nil && f != nil {
-		if saved, saveErr := utils.SaveUploadedFile(c, f); saveErr == nil {
-			chatIconURL = saved
-		}
-	}
-
-	var row map[string]interface{}
-	a.DB.Raw(`
-		UPDATE learning_subjects
-		SET class_id = ?, teacher_id = ?, name = ?, description = ?, chat_icon_url = ?, updated_at = NOW()
-		WHERE id = ? AND school_id = ?
-		RETURNING *
-	`, classID, teacherID, name, description, nullIfEmpty(chatIconURL), id, schoolID).Scan(&row)
-	normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
-	return utils.Success(c, 200, "Success Update Subject", row)
-}
-
-func (a *AppContext) DeleteLearningSubject(c *fiber.Ctx) error {
-	id := c.Params("id")
-	schoolID := c.Locals("schoolID").(uint)
-	var row map[string]interface{}
-	a.DB.Raw(`DELETE FROM learning_subjects WHERE id = ? AND school_id = ? RETURNING *`, id, schoolID).Scan(&row)
-	if len(row) == 0 {
-		return utils.Error(c, 404, "Subject not found")
-	}
-	normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
-	return utils.Success(c, 200, "Success Delete Subject", row)
 }
 
 func (a *AppContext) GetSubjectAssignments(c *fiber.Ctx) error {

@@ -486,12 +486,28 @@ func (a *AppContext) ConvertSPMBApplicantToStudent(c *fiber.Ctx) error {
 	if applicant.Status != "ACCEPTED" && applicant.Status != "ACCEPTED_OTHER_MAJOR" && applicant.Status != "RE_REGISTERED" {
 		return utils.Error(c, 400, "Hanya pendaftar yang sudah diterima atau daftar ulang yang bisa dijadikan siswa")
 	}
-	if body.ClassID != nil && *body.ClassID > 0 {
-		var count int64
-		a.DB.Table("class").Where("id = ? AND school_id = ?", *body.ClassID, schoolID).Count(&count)
-		if count == 0 {
-			return utils.Error(c, 400, "Kelas tujuan tidak valid")
+
+	allowedClasses, err := a.allowedSPMBConvertClasses(schoolID, applicant)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal memuat kelas tujuan SPMB", err.Error())
+	}
+	if len(allowedClasses) == 0 {
+		return utils.Error(c, 400, "Belum ada kelas level terendah yang sesuai jurusan pendaftar")
+	}
+
+	if body.ClassID == nil || *body.ClassID == 0 {
+		return utils.Error(c, 400, "Kelas awal wajib dipilih dari kelas level terendah yang sesuai jurusan pendaftar")
+	}
+
+	selectedAllowed := false
+	for _, classID := range allowedClasses {
+		if classID == *body.ClassID {
+			selectedAllowed = true
+			break
 		}
+	}
+	if !selectedAllowed {
+		return utils.Error(c, 400, "Kelas tujuan harus berasal dari jurusan pendaftar dan level kelas terendah")
 	}
 
 	existingUsernames, _ := loadUsernameSet(a.DB)
@@ -541,6 +557,78 @@ func (a *AppContext) ConvertSPMBApplicantToStudent(c *fiber.Ctx) error {
 		"username":     student.Username,
 		"password":     rawPassword,
 	})
+}
+
+func (a *AppContext) allowedSPMBConvertClasses(schoolID uint, applicant models.SPMBApplicant) ([]uint, error) {
+	majorIDs := orderedSPMBApplicantMajorIDs(applicant)
+	if len(majorIDs) == 0 {
+		return nil, nil
+	}
+
+	type classOption struct {
+		ID              uint  `gorm:"column:id"`
+		ClassLevelOrder *int  `gorm:"column:class_level_order"`
+		MajorID         *uint `gorm:"column:major_id"`
+	}
+
+	var rows []classOption
+	if err := a.DB.Raw(`
+		SELECT c.id, c.major_id, cl.sort_order AS class_level_order
+		FROM class c
+		LEFT JOIN class_levels cl ON cl.id = c.class_level_id
+		WHERE c.school_id = ?
+		  AND c.major_id IN ?
+		ORDER BY COALESCE(cl.sort_order, 9999) ASC, c.class_name ASC
+	`, schoolID, majorIDs).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	lowestOrder := int(^uint(0) >> 1)
+	foundOrderedLevel := false
+	for _, row := range rows {
+		if row.ClassLevelOrder == nil {
+			continue
+		}
+		if !foundOrderedLevel || *row.ClassLevelOrder < lowestOrder {
+			lowestOrder = *row.ClassLevelOrder
+			foundOrderedLevel = true
+		}
+	}
+
+	allowed := make([]uint, 0, len(rows))
+	for _, row := range rows {
+		if foundOrderedLevel {
+			if row.ClassLevelOrder == nil || *row.ClassLevelOrder != lowestOrder {
+				continue
+			}
+		}
+		allowed = append(allowed, row.ID)
+	}
+	return allowed, nil
+}
+
+func orderedSPMBApplicantMajorIDs(applicant models.SPMBApplicant) []uint {
+	seen := map[uint]struct{}{}
+	ordered := make([]uint, 0, 4)
+	appendID := func(value *uint) {
+		if value == nil || *value == 0 {
+			return
+		}
+		if _, exists := seen[*value]; exists {
+			return
+		}
+		seen[*value] = struct{}{}
+		ordered = append(ordered, *value)
+	}
+
+	appendID(applicant.AcceptedMajorID)
+	appendID(applicant.FirstMajorID)
+	appendID(applicant.SecondMajorID)
+	appendID(applicant.ThirdMajorID)
+	return ordered
 }
 
 func (a *AppContext) GetSPMBApplicantPublicStatus(c *fiber.Ctx) error {

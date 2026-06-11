@@ -148,13 +148,33 @@ func NewDatabase() (*gorm.DB, error) {
 	)`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`CREATE TABLE IF NOT EXISTS class_levels (
+		id SERIAL PRIMARY KEY,
+		school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		sort_order INTEGER NOT NULL DEFAULT 0,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		UNIQUE (school_id, name)
+	)`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`ALTER TABLE class ADD COLUMN IF NOT EXISTS major_id INTEGER NULL REFERENCES majors(id) ON DELETE SET NULL`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE class ADD COLUMN IF NOT EXISTS class_level_id INTEGER NULL REFERENCES class_levels(id) ON DELETE SET NULL`).Error; err != nil {
 		return nil, err
 	}
 	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_majors_school_active ON majors (school_id, is_active, name)`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_class_levels_school_order ON class_levels (school_id, sort_order, name)`).Error; err != nil {
+		return nil, err
+	}
 	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_class_major_id ON class (major_id)`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_class_level_id ON class (class_level_id)`).Error; err != nil {
 		return nil, err
 	}
 	if err := db.Exec(`CREATE TABLE IF NOT EXISTS spmb_applicants (
@@ -247,8 +267,24 @@ func NewDatabase() (*gorm.DB, error) {
 			name TEXT NOT NULL,
 			description TEXT NULL,
 			weekly_hours INT NOT NULL DEFAULT 2,
+			required_room_type TEXT NOT NULL DEFAULT 'CLASSROOM',
+			preferred_room_id BIGINT NULL,
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS curriculum_rooms (
+			id BIGSERIAL PRIMARY KEY,
+			school_id BIGINT NOT NULL,
+			code TEXT NOT NULL,
+			name TEXT NOT NULL,
+			room_type TEXT NOT NULL DEFAULT 'CLASSROOM',
+			color TEXT NOT NULL DEFAULT '#E2E8F0',
+			capacity INT NOT NULL DEFAULT 0,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			notes TEXT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			UNIQUE (school_id, code)
 		)`,
 		`CREATE TABLE IF NOT EXISTS curriculum_teacher_loads (
 			id BIGSERIAL PRIMARY KEY,
@@ -290,6 +326,7 @@ func NewDatabase() (*gorm.DB, error) {
 			curriculum_subject_id BIGINT NOT NULL,
 			teacher_id BIGINT NOT NULL,
 			schedule_slot_id BIGINT NOT NULL,
+			room_id BIGINT NULL,
 			learning_subject_id BIGINT NULL,
 			generated_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -556,6 +593,17 @@ func NewDatabase() (*gorm.DB, error) {
 		}
 	}
 
+	curriculumAlterStatements := []string{
+		`ALTER TABLE curriculum_subjects ADD COLUMN IF NOT EXISTS required_room_type TEXT NOT NULL DEFAULT 'CLASSROOM'`,
+		`ALTER TABLE curriculum_subjects ADD COLUMN IF NOT EXISTS preferred_room_id BIGINT NULL`,
+		`ALTER TABLE curriculum_schedule_entries ADD COLUMN IF NOT EXISTS room_id BIGINT NULL`,
+	}
+	for _, stmt := range curriculumAlterStatements {
+		if err := db.Exec(stmt).Error; err != nil {
+			return nil, err
+		}
+	}
+
 	chatAlterStatements := []string{
 		`ALTER TABLE IF EXISTS private_chat_messages ADD COLUMN IF NOT EXISTS attachment_preview_url TEXT NULL`,
 		`ALTER TABLE IF EXISTS learning_chat_messages ADD COLUMN IF NOT EXISTS attachment_preview_url TEXT NULL`,
@@ -658,12 +706,14 @@ func NewDatabase() (*gorm.DB, error) {
 		`CREATE INDEX IF NOT EXISTS idx_payment_receipt_user_created ON payment_receipt (user_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_payment_receipt_created_user ON payment_receipt (created_at, user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_curriculum_subjects_school ON curriculum_subjects (school_id, name)`,
+		`CREATE INDEX IF NOT EXISTS idx_curriculum_rooms_school_type ON curriculum_rooms (school_id, room_type, is_active)`,
 		`CREATE INDEX IF NOT EXISTS idx_curriculum_teacher_loads_school_teacher ON curriculum_teacher_loads (school_id, teacher_id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_curriculum_teacher_loads_unique_subject ON curriculum_teacher_loads (school_id, teacher_id, curriculum_subject_id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_curriculum_class_distributions_unique ON curriculum_class_distributions (school_id, curriculum_teacher_load_id, class_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_curriculum_class_distributions_school_load ON curriculum_class_distributions (school_id, curriculum_teacher_load_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_curriculum_schedule_slots_school_day ON curriculum_schedule_slots (school_id, day_order, session_order)`,
 		`CREATE INDEX IF NOT EXISTS idx_curriculum_schedule_entries_school_class ON curriculum_schedule_entries (school_id, class_id, schedule_slot_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_curriculum_schedule_entries_school_room ON curriculum_schedule_entries (school_id, room_id, schedule_slot_id)`,
 		`CREATE TABLE IF NOT EXISTS school_billings (
 			id BIGSERIAL PRIMARY KEY,
 			school_id BIGINT NOT NULL UNIQUE,

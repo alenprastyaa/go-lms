@@ -11,12 +11,30 @@ import (
 )
 
 type curriculumSubjectRow struct {
-	ID          uint   `gorm:"column:id" json:"id"`
-	SchoolID    uint   `gorm:"column:school_id" json:"school_id"`
-	Code        string `gorm:"column:code" json:"code"`
-	Name        string `gorm:"column:name" json:"name"`
-	Description string `gorm:"column:description" json:"description"`
-	WeeklyHours int    `gorm:"column:weekly_hours" json:"weekly_hours"`
+	ID                 uint   `gorm:"column:id" json:"id"`
+	SchoolID           uint   `gorm:"column:school_id" json:"school_id"`
+	Code               string `gorm:"column:code" json:"code"`
+	Name               string `gorm:"column:name" json:"name"`
+	Description        string `gorm:"column:description" json:"description"`
+	WeeklyHours        int    `gorm:"column:weekly_hours" json:"weekly_hours"`
+	RequiredRoomType   string `gorm:"column:required_room_type" json:"required_room_type"`
+	PreferredRoomID    uint   `gorm:"column:preferred_room_id" json:"preferred_room_id"`
+	PreferredRoomCode  string `gorm:"column:preferred_room_code" json:"preferred_room_code"`
+	PreferredRoomName  string `gorm:"column:preferred_room_name" json:"preferred_room_name"`
+	PreferredRoomColor string `gorm:"column:preferred_room_color" json:"preferred_room_color"`
+	AssignedTeacherIDs []uint `gorm:"-" json:"assigned_teacher_ids"`
+}
+
+type curriculumRoomRow struct {
+	ID       uint   `gorm:"column:id" json:"id"`
+	SchoolID uint   `gorm:"column:school_id" json:"school_id"`
+	Code     string `gorm:"column:code" json:"code"`
+	Name     string `gorm:"column:name" json:"name"`
+	RoomType string `gorm:"column:room_type" json:"room_type"`
+	Color    string `gorm:"column:color" json:"color"`
+	Capacity int    `gorm:"column:capacity" json:"capacity"`
+	IsActive bool   `gorm:"column:is_active" json:"is_active"`
+	Notes    string `gorm:"column:notes" json:"notes"`
 }
 
 type curriculumTeacherLoadRow struct {
@@ -67,12 +85,17 @@ type curriculumScheduleEntryRow struct {
 	CurriculumSubject uint   `gorm:"column:curriculum_subject_id" json:"curriculum_subject_id"`
 	TeacherID         uint   `gorm:"column:teacher_id" json:"teacher_id"`
 	ScheduleSlotID    uint   `gorm:"column:schedule_slot_id" json:"schedule_slot_id"`
+	RoomID            uint   `gorm:"column:room_id" json:"room_id"`
 	LearningSubjectID uint   `gorm:"column:learning_subject_id" json:"learning_subject_id"`
 	GeneratedAt       string `gorm:"column:generated_at" json:"generated_at"`
 	ClassName         string `gorm:"column:class_name" json:"class_name"`
 	TeacherName       string `gorm:"column:teacher_name" json:"teacher_name"`
 	SubjectName       string `gorm:"column:subject_name" json:"subject_name"`
 	SubjectCode       string `gorm:"column:subject_code" json:"subject_code"`
+	RoomName          string `gorm:"column:room_name" json:"room_name"`
+	RoomCode          string `gorm:"column:room_code" json:"room_code"`
+	RoomType          string `gorm:"column:room_type" json:"room_type"`
+	RoomColor         string `gorm:"column:room_color" json:"room_color"`
 	DayName           string `gorm:"column:day_name" json:"day_name"`
 	DayOrder          int    `gorm:"column:day_order" json:"day_order"`
 	SessionOrder      int    `gorm:"column:session_order" json:"session_order"`
@@ -84,9 +107,10 @@ type curriculumScheduleEntryRow struct {
 func (a *AppContext) GetCurriculumOverview(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 
-	subjects, teacherLoads, classDistributions, scheduleSlots, generatedEntries := a.loadCurriculumOverviewData(schoolID)
+	subjects, rooms, teacherLoads, classDistributions, scheduleSlots, generatedEntries := a.loadCurriculumOverviewData(schoolID)
 	summary := fiber.Map{
 		"subjects":            len(subjects),
+		"rooms":               len(rooms),
 		"teacher_loads":       len(teacherLoads),
 		"class_distributions": len(classDistributions),
 		"schedule_slots":      len(scheduleSlots),
@@ -95,6 +119,7 @@ func (a *AppContext) GetCurriculumOverview(c *fiber.Ctx) error {
 
 	return utils.Success(c, 200, "Success Get Curriculum Overview", fiber.Map{
 		"subjects":            subjects,
+		"rooms":               rooms,
 		"teacher_loads":       teacherLoads,
 		"class_distributions": classDistributions,
 		"schedule_slots":      scheduleSlots,
@@ -106,10 +131,12 @@ func (a *AppContext) GetCurriculumOverview(c *fiber.Ctx) error {
 func (a *AppContext) CreateCurriculumSubject(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 	var body struct {
-		Code        string `json:"code"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		WeeklyHours int    `json:"weekly_hours"`
+		Code             string `json:"code"`
+		Name             string `json:"name"`
+		Description      string `json:"description"`
+		WeeklyHours      int    `json:"weekly_hours"`
+		RequiredRoomType string `json:"required_room_type"`
+		PreferredRoomID  uint   `json:"preferred_room_id"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return utils.Error(c, 400, "Invalid request body")
@@ -122,13 +149,18 @@ func (a *AppContext) CreateCurriculumSubject(c *fiber.Ctx) error {
 	if body.WeeklyHours <= 0 {
 		body.WeeklyHours = 2
 	}
+	roomType := normalizeCurriculumRoomType(body.RequiredRoomType)
+	if body.PreferredRoomID > 0 && !a.curriculumRoomBelongsToSchool(schoolID, body.PreferredRoomID) {
+		return utils.Error(c, 400, "Ruang pilihan tidak valid")
+	}
 
 	var row curriculumSubjectRow
 	a.DB.Raw(`
-		INSERT INTO curriculum_subjects (school_id, code, name, description, weekly_hours, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, NOW(), NOW())
-		RETURNING id, school_id, COALESCE(code, '') AS code, name, COALESCE(description, '') AS description, weekly_hours
-	`, schoolID, nullIfEmpty(strings.ToUpper(strings.TrimSpace(body.Code))), name, nullIfEmpty(body.Description), body.WeeklyHours).Scan(&row)
+		INSERT INTO curriculum_subjects (school_id, code, name, description, weekly_hours, required_room_type, preferred_room_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+		RETURNING id, school_id, COALESCE(code, '') AS code, name, COALESCE(description, '') AS description, weekly_hours, required_room_type, COALESCE(preferred_room_id, 0) AS preferred_room_id
+	`, schoolID, nullIfEmpty(strings.ToUpper(strings.TrimSpace(body.Code))), name, nullIfEmpty(body.Description), body.WeeklyHours, roomType, nullIfZero(int(body.PreferredRoomID))).Scan(&row)
+	a.DB.Raw(curriculumSubjectQuery()+` WHERE cs.id = ?`, row.ID).Scan(&row)
 
 	return utils.Success(c, 201, "Success Create Curriculum Subject", row)
 }
@@ -137,10 +169,12 @@ func (a *AppContext) UpdateCurriculumSubject(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 	id := c.Params("id")
 	var body struct {
-		Code        string `json:"code"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		WeeklyHours int    `json:"weekly_hours"`
+		Code             string `json:"code"`
+		Name             string `json:"name"`
+		Description      string `json:"description"`
+		WeeklyHours      int    `json:"weekly_hours"`
+		RequiredRoomType string `json:"required_room_type"`
+		PreferredRoomID  uint   `json:"preferred_room_id"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return utils.Error(c, 400, "Invalid request body")
@@ -153,17 +187,22 @@ func (a *AppContext) UpdateCurriculumSubject(c *fiber.Ctx) error {
 	if body.WeeklyHours <= 0 {
 		body.WeeklyHours = 2
 	}
+	roomType := normalizeCurriculumRoomType(body.RequiredRoomType)
+	if body.PreferredRoomID > 0 && !a.curriculumRoomBelongsToSchool(schoolID, body.PreferredRoomID) {
+		return utils.Error(c, 400, "Ruang pilihan tidak valid")
+	}
 
 	var row curriculumSubjectRow
 	a.DB.Raw(`
 		UPDATE curriculum_subjects
-		SET code = ?, name = ?, description = ?, weekly_hours = ?, updated_at = NOW()
+		SET code = ?, name = ?, description = ?, weekly_hours = ?, required_room_type = ?, preferred_room_id = ?, updated_at = NOW()
 		WHERE id = ? AND school_id = ?
-		RETURNING id, school_id, COALESCE(code, '') AS code, name, COALESCE(description, '') AS description, weekly_hours
-	`, nullIfEmpty(strings.ToUpper(strings.TrimSpace(body.Code))), name, nullIfEmpty(body.Description), body.WeeklyHours, id, schoolID).Scan(&row)
+		RETURNING id, school_id, COALESCE(code, '') AS code, name, COALESCE(description, '') AS description, weekly_hours, required_room_type, COALESCE(preferred_room_id, 0) AS preferred_room_id
+	`, nullIfEmpty(strings.ToUpper(strings.TrimSpace(body.Code))), name, nullIfEmpty(body.Description), body.WeeklyHours, roomType, nullIfZero(int(body.PreferredRoomID)), id, schoolID).Scan(&row)
 	if row.ID == 0 {
 		return utils.Error(c, 404, "Data mapel kurikulum tidak ditemukan")
 	}
+	a.DB.Raw(curriculumSubjectQuery()+` WHERE cs.id = ?`, row.ID).Scan(&row)
 
 	return utils.Success(c, 200, "Success Update Curriculum Subject", row)
 }
@@ -186,6 +225,110 @@ func (a *AppContext) DeleteCurriculumSubject(c *fiber.Ctx) error {
 	a.DB.Exec(`DELETE FROM curriculum_teacher_loads WHERE school_id = ? AND curriculum_subject_id = ?`, schoolID, row.ID)
 	a.DB.Exec(`DELETE FROM curriculum_schedule_entries WHERE school_id = ? AND curriculum_subject_id = ?`, schoolID, row.ID)
 	return utils.Success(c, 200, "Success Delete Curriculum Subject", row)
+}
+
+func (a *AppContext) CreateCurriculumRoom(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	var body struct {
+		Code     string `json:"code"`
+		Name     string `json:"name"`
+		RoomType string `json:"room_type"`
+		Color    string `json:"color"`
+		Capacity int    `json:"capacity"`
+		IsActive *bool  `json:"is_active"`
+		Notes    string `json:"notes"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return utils.Error(c, 400, "Invalid request body")
+	}
+
+	code := strings.ToUpper(strings.TrimSpace(body.Code))
+	name := strings.TrimSpace(body.Name)
+	if code == "" || name == "" {
+		return utils.Error(c, 400, "Kode dan nama ruang wajib diisi")
+	}
+	active := true
+	if body.IsActive != nil {
+		active = *body.IsActive
+	}
+
+	var row curriculumRoomRow
+	a.DB.Raw(`
+		INSERT INTO curriculum_rooms (school_id, code, name, room_type, color, capacity, is_active, notes, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+		ON CONFLICT (school_id, code)
+		DO UPDATE SET name = EXCLUDED.name, room_type = EXCLUDED.room_type, color = EXCLUDED.color, capacity = EXCLUDED.capacity, is_active = EXCLUDED.is_active, notes = EXCLUDED.notes, updated_at = NOW()
+		RETURNING id, school_id, code, name, room_type, color, capacity, is_active, COALESCE(notes, '') AS notes
+	`, schoolID, code, name, normalizeCurriculumRoomType(body.RoomType), normalizeRoomColor(body.Color), body.Capacity, active, nullIfEmpty(body.Notes)).Scan(&row)
+
+	return utils.Success(c, 201, "Success Save Curriculum Room", row)
+}
+
+func (a *AppContext) UpdateCurriculumRoom(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	id := c.Params("id")
+	var body struct {
+		Code     string `json:"code"`
+		Name     string `json:"name"`
+		RoomType string `json:"room_type"`
+		Color    string `json:"color"`
+		Capacity int    `json:"capacity"`
+		IsActive *bool  `json:"is_active"`
+		Notes    string `json:"notes"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return utils.Error(c, 400, "Invalid request body")
+	}
+
+	code := strings.ToUpper(strings.TrimSpace(body.Code))
+	name := strings.TrimSpace(body.Name)
+	if code == "" || name == "" {
+		return utils.Error(c, 400, "Kode dan nama ruang wajib diisi")
+	}
+	active := true
+	if body.IsActive != nil {
+		active = *body.IsActive
+	}
+
+	var row curriculumRoomRow
+	a.DB.Raw(`
+		UPDATE curriculum_rooms
+		SET code = ?, name = ?, room_type = ?, color = ?, capacity = ?, is_active = ?, notes = ?, updated_at = NOW()
+		WHERE id = ? AND school_id = ?
+		RETURNING id, school_id, code, name, room_type, color, capacity, is_active, COALESCE(notes, '') AS notes
+	`, code, name, normalizeCurriculumRoomType(body.RoomType), normalizeRoomColor(body.Color), body.Capacity, active, nullIfEmpty(body.Notes), id, schoolID).Scan(&row)
+	if row.ID == 0 {
+		return utils.Error(c, 404, "Data ruang tidak ditemukan")
+	}
+
+	return utils.Success(c, 200, "Success Update Curriculum Room", row)
+}
+
+func (a *AppContext) DeleteCurriculumRoom(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	id := c.Params("id")
+
+	var usageCount int64
+	a.DB.Raw(`
+		SELECT
+			(SELECT COUNT(*) FROM curriculum_subjects WHERE school_id = ? AND preferred_room_id = ?) +
+			(SELECT COUNT(*) FROM curriculum_schedule_entries WHERE school_id = ? AND room_id = ?)
+	`, schoolID, id, schoolID, id).Scan(&usageCount)
+	if usageCount > 0 {
+		return utils.Error(c, 400, "Ruang masih dipakai oleh mapel atau hasil jadwal")
+	}
+
+	var row curriculumRoomRow
+	a.DB.Raw(`
+		DELETE FROM curriculum_rooms
+		WHERE id = ? AND school_id = ?
+		RETURNING id, school_id, code, name, room_type, color, capacity, is_active, COALESCE(notes, '') AS notes
+	`, id, schoolID).Scan(&row)
+	if row.ID == 0 {
+		return utils.Error(c, 404, "Data ruang tidak ditemukan")
+	}
+
+	return utils.Success(c, 200, "Success Delete Curriculum Room", row)
 }
 
 func (a *AppContext) CreateCurriculumTeacherLoad(c *fiber.Ctx) error {
@@ -698,7 +841,7 @@ func (a *AppContext) BulkDeleteCurriculumScheduleSlots(c *fiber.Ctx) error {
 func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 
-	subjects, teacherLoads, classDistributions, scheduleSlots, _ := a.loadCurriculumOverviewData(schoolID)
+	subjects, rooms, teacherLoads, classDistributions, scheduleSlots, _ := a.loadCurriculumOverviewData(schoolID)
 	if len(teacherLoads) == 0 {
 		return utils.Error(c, 400, "Beban guru belum tersedia")
 	}
@@ -756,8 +899,18 @@ func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
 		classNameByKey[key] = distribution.ClassName
 	}
 	subjectWeeklyHours := map[uint]int{}
+	subjectByID := map[uint]curriculumSubjectRow{}
 	for _, subject := range subjects {
 		subjectWeeklyHours[subject.ID] = subject.WeeklyHours
+		subjectByID[subject.ID] = subject
+	}
+	activeRoomsByType := map[string][]curriculumRoomRow{}
+	roomByID := map[uint]curriculumRoomRow{}
+	for _, room := range rooms {
+		roomByID[room.ID] = room
+		if room.IsActive {
+			activeRoomsByType[normalizeCurriculumRoomType(room.RoomType)] = append(activeRoomsByType[normalizeCurriculumRoomType(room.RoomType)], room)
+		}
 	}
 	for key, totalHours := range classSubjectHours {
 		requiredHours := subjectWeeklyHours[key.SubjectID]
@@ -769,6 +922,11 @@ func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
 		return utils.Error(c, 400, strings.Join(issues, " "))
 	}
 
+	type generatedSlotAssignment struct {
+		SlotID uint
+		RoomID uint
+	}
+
 	type generatedAssignment struct {
 		ClassID             uint
 		ClassName           string
@@ -778,44 +936,255 @@ func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
 		TeacherID           uint
 		TeacherName         string
 		RequestedWeeklyHour int
-		AssignedSlotIDs     []uint
+		AssignedSlots       []generatedSlotAssignment
+	}
+
+	type classSubjectKeyWithTeacher struct {
+		ClassID   uint
+		SubjectID uint
+		TeacherID uint
+	}
+
+	slotsByDay := map[int][]curriculumScheduleSlotRow{}
+	for _, slot := range scheduleSlots {
+		slotsByDay[slot.DayOrder] = append(slotsByDay[slot.DayOrder], slot)
+	}
+	for dayOrder := range slotsByDay {
+		sort.Slice(slotsByDay[dayOrder], func(i, j int) bool {
+			return slotsByDay[dayOrder][i].SessionOrder < slotsByDay[dayOrder][j].SessionOrder
+		})
 	}
 
 	classOccupied := map[uint]map[uint]bool{}
 	teacherOccupied := map[uint]map[uint]bool{}
-	assignments := make([]generatedAssignment, 0)
-	for _, distribution := range classDistributions {
+	roomOccupied := map[uint]map[uint]bool{}
+	classDayLoad := map[uint]map[int]int{}
+	teacherDayLoad := map[uint]map[int]int{}
+	roomDayLoad := map[uint]map[int]int{}
+	classSubjectDayLoad := map[classSubjectKey]map[int]int{}
+	assignmentsByKey := map[classSubjectKeyWithTeacher]*generatedAssignment{}
+	assignments := make([]generatedAssignment, 0, len(classDistributions))
+
+	distributionQueue := append([]curriculumClassDistributionRow(nil), classDistributions...)
+	sort.SliceStable(distributionQueue, func(i, j int) bool {
+		if distributionQueue[i].WeeklyHours == distributionQueue[j].WeeklyHours {
+			if distributionQueue[i].ClassName == distributionQueue[j].ClassName {
+				return distributionQueue[i].SubjectName < distributionQueue[j].SubjectName
+			}
+			return distributionQueue[i].ClassName < distributionQueue[j].ClassName
+		}
+		return distributionQueue[i].WeeklyHours > distributionQueue[j].WeeklyHours
+	})
+
+	ensureSlotMap := func(target map[uint]map[uint]bool, id uint) map[uint]bool {
+		if target[id] == nil {
+			target[id] = map[uint]bool{}
+		}
+		return target[id]
+	}
+	ensureDayLoad := func(target map[uint]map[int]int, id uint) map[int]int {
+		if target[id] == nil {
+			target[id] = map[int]int{}
+		}
+		return target[id]
+	}
+	ensureSubjectDayLoad := func(key classSubjectKey) map[int]int {
+		if classSubjectDayLoad[key] == nil {
+			classSubjectDayLoad[key] = map[int]int{}
+		}
+		return classSubjectDayLoad[key]
+	}
+	pickCandidateRoom := func(subject curriculumSubjectRow, slotIDs []uint, dayOrder int) (uint, bool, int) {
+		preferredRoomID := subject.PreferredRoomID
+		if preferredRoomID > 0 {
+			room := roomByID[preferredRoomID]
+			if room.ID == 0 || !room.IsActive {
+				return 0, false, 0
+			}
+			for _, slotID := range slotIDs {
+				if roomOccupied[preferredRoomID] != nil && roomOccupied[preferredRoomID][slotID] {
+					return 0, false, 0
+				}
+			}
+			return preferredRoomID, true, roomDayLoad[preferredRoomID][dayOrder]
+		}
+
+		roomType := normalizeCurriculumRoomType(subject.RequiredRoomType)
+		if roomType == "" || roomType == "CLASSROOM" || roomType == "UMUM" {
+			return 0, true, 0
+		}
+
+		candidates := activeRoomsByType[roomType]
+		if len(candidates) == 0 {
+			return 0, false, 0
+		}
+
+		bestRoomID := uint(0)
+		bestScore := 1<<31 - 1
+		for _, room := range candidates {
+			valid := true
+			for _, slotID := range slotIDs {
+				if roomOccupied[room.ID] != nil && roomOccupied[room.ID][slotID] {
+					valid = false
+					break
+				}
+			}
+			if !valid {
+				continue
+			}
+			score := roomDayLoad[room.ID][dayOrder]*12 + int(room.ID)
+			if score < bestScore {
+				bestScore = score
+				bestRoomID = room.ID
+			}
+		}
+		return bestRoomID, bestRoomID > 0, bestScore
+	}
+
+	findBestBlock := func(distribution curriculumClassDistributionRow, load curriculumTeacherLoadRow, blockSize int) []generatedSlotAssignment {
+		type candidate struct {
+			slots  []generatedSlotAssignment
+			score  int
+			roomID uint
+		}
+		best := candidate{score: 1<<31 - 1}
+		subjectKey := classSubjectKey{ClassID: distribution.ClassID, SubjectID: load.CurriculumSubject}
+		subject := subjectByID[load.CurriculumSubject]
+
+		for dayOrder, daySlots := range slotsByDay {
+			if blockSize <= 1 {
+				for _, slot := range daySlots {
+					if classOccupied[distribution.ClassID][slot.ID] || teacherOccupied[load.TeacherID][slot.ID] {
+						continue
+					}
+					roomID, roomOK, roomScore := pickCandidateRoom(subject, []uint{slot.ID}, dayOrder)
+					if !roomOK {
+						continue
+					}
+					score := classDayLoad[distribution.ClassID][dayOrder]*20 +
+						teacherDayLoad[load.TeacherID][dayOrder]*14 +
+						classSubjectDayLoad[subjectKey][dayOrder]*55 +
+						roomScore +
+						dayOrder*3 +
+						slot.SessionOrder
+					if score < best.score {
+						best = candidate{slots: []generatedSlotAssignment{{SlotID: slot.ID, RoomID: roomID}}, score: score, roomID: roomID}
+					}
+				}
+				continue
+			}
+
+			for startIdx := 0; startIdx+blockSize <= len(daySlots); startIdx += 1 {
+				block := daySlots[startIdx : startIdx+blockSize]
+				valid := true
+				for idx := range block {
+					if idx > 0 && block[idx].SessionOrder != block[idx-1].SessionOrder+1 {
+						valid = false
+						break
+					}
+					if classOccupied[distribution.ClassID][block[idx].ID] || teacherOccupied[load.TeacherID][block[idx].ID] {
+						valid = false
+						break
+					}
+				}
+				if !valid {
+					continue
+				}
+				blockSlotIDs := make([]uint, 0, len(block))
+				for _, slot := range block {
+					blockSlotIDs = append(blockSlotIDs, slot.ID)
+				}
+				roomID, roomOK, roomScore := pickCandidateRoom(subject, blockSlotIDs, dayOrder)
+				if !roomOK {
+					continue
+				}
+				score := classDayLoad[distribution.ClassID][dayOrder]*20 +
+					teacherDayLoad[load.TeacherID][dayOrder]*14 +
+					classSubjectDayLoad[subjectKey][dayOrder]*55 +
+					roomScore +
+					dayOrder*3 +
+					block[0].SessionOrder
+				if score < best.score {
+					assignments := make([]generatedSlotAssignment, 0, len(block))
+					for _, slot := range block {
+						assignments = append(assignments, generatedSlotAssignment{SlotID: slot.ID, RoomID: roomID})
+					}
+					best = candidate{slots: assignments, score: score, roomID: roomID}
+				}
+			}
+		}
+
+		return best.slots
+	}
+
+	for _, distribution := range distributionQueue {
 		load := loadByID[distribution.CurriculumTeacherLoad]
 		if load.ID == 0 {
 			issues = append(issues, fmt.Sprintf("Distribusi kelas %s tidak punya referensi beban guru yang valid.", distribution.ClassName))
 			continue
 		}
-		if classOccupied[distribution.ClassID] == nil {
-			classOccupied[distribution.ClassID] = map[uint]bool{}
-		}
-		if teacherOccupied[load.TeacherID] == nil {
-			teacherOccupied[load.TeacherID] = map[uint]bool{}
-		}
+		ensureSlotMap(classOccupied, distribution.ClassID)
+		ensureSlotMap(teacherOccupied, load.TeacherID)
+		ensureDayLoad(classDayLoad, distribution.ClassID)
+		ensureDayLoad(teacherDayLoad, load.TeacherID)
+		subjectKey := classSubjectKey{ClassID: distribution.ClassID, SubjectID: load.CurriculumSubject}
+		ensureSubjectDayLoad(subjectKey)
 
-		selectedSlotIDs := make([]uint, 0, distribution.WeeklyHours)
-		for _, slot := range scheduleSlots {
-			if classOccupied[distribution.ClassID][slot.ID] || teacherOccupied[load.TeacherID][slot.ID] {
-				continue
+		selectedSlots := make([]generatedSlotAssignment, 0, distribution.WeeklyHours)
+		remainingHours := distribution.WeeklyHours
+		for remainingHours > 0 {
+			blockSize := 1
+			if remainingHours >= 2 {
+				blockSize = 2
 			}
-			selectedSlotIDs = append(selectedSlotIDs, slot.ID)
-			classOccupied[distribution.ClassID][slot.ID] = true
-			teacherOccupied[load.TeacherID][slot.ID] = true
-			if len(selectedSlotIDs) >= distribution.WeeklyHours {
+			block := findBestBlock(distribution, load, blockSize)
+			if len(block) == 0 && blockSize > 1 {
+				block = findBestBlock(distribution, load, 1)
+			}
+			if len(block) == 0 {
 				break
 			}
+			for _, assignedSlot := range block {
+				var slot curriculumScheduleSlotRow
+				for _, item := range scheduleSlots {
+					if item.ID == assignedSlot.SlotID {
+						slot = item
+						break
+					}
+				}
+				selectedSlots = append(selectedSlots, assignedSlot)
+				classOccupied[distribution.ClassID][assignedSlot.SlotID] = true
+				teacherOccupied[load.TeacherID][assignedSlot.SlotID] = true
+				if assignedSlot.RoomID > 0 {
+					ensureSlotMap(roomOccupied, assignedSlot.RoomID)
+					ensureDayLoad(roomDayLoad, assignedSlot.RoomID)
+					roomOccupied[assignedSlot.RoomID][assignedSlot.SlotID] = true
+					roomDayLoad[assignedSlot.RoomID][slot.DayOrder] += 1
+				}
+				classDayLoad[distribution.ClassID][slot.DayOrder] += 1
+				teacherDayLoad[load.TeacherID][slot.DayOrder] += 1
+				classSubjectDayLoad[subjectKey][slot.DayOrder] += 1
+			}
+			remainingHours -= len(block)
 		}
 
-		if len(selectedSlotIDs) == 0 {
+		if len(selectedSlots) == 0 {
 			issues = append(issues, fmt.Sprintf("Tidak ada slot tersedia untuk %s mengajar %s di kelas %s.", load.TeacherName, load.SubjectName, distribution.ClassName))
 			continue
 		}
-		if len(selectedSlotIDs) < distribution.WeeklyHours {
-			issues = append(issues, fmt.Sprintf("Alokasi %s di kelas %s hanya mendapat %d dari %d jam.", load.SubjectName, distribution.ClassName, len(selectedSlotIDs), distribution.WeeklyHours))
+		if len(selectedSlots) < distribution.WeeklyHours {
+			issues = append(issues, fmt.Sprintf("Alokasi %s di kelas %s hanya mendapat %d dari %d jam.", load.SubjectName, distribution.ClassName, len(selectedSlots), distribution.WeeklyHours))
+		}
+
+		assignmentKey := classSubjectKeyWithTeacher{
+			ClassID:   distribution.ClassID,
+			SubjectID: load.CurriculumSubject,
+			TeacherID: load.TeacherID,
+		}
+		if existing := assignmentsByKey[assignmentKey]; existing != nil {
+			existing.RequestedWeeklyHour += distribution.WeeklyHours
+			existing.AssignedSlots = append(existing.AssignedSlots, selectedSlots...)
+			continue
 		}
 
 		assignments = append(assignments, generatedAssignment{
@@ -827,8 +1196,9 @@ func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
 			TeacherID:           load.TeacherID,
 			TeacherName:         load.TeacherName,
 			RequestedWeeklyHour: distribution.WeeklyHours,
-			AssignedSlotIDs:     selectedSlotIDs,
+			AssignedSlots:       selectedSlots,
 		})
+		assignmentsByKey[assignmentKey] = &assignments[len(assignments)-1]
 	}
 
 	if len(assignments) == 0 {
@@ -876,17 +1246,17 @@ func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
 	a.DB.Exec(`DELETE FROM curriculum_schedule_entries WHERE school_id = ?`, schoolID)
 	for _, assignment := range assignments {
 		learningSubjectID := learningSubjectByKey[fmt.Sprintf("%d:%d", assignment.ClassID, assignment.SubjectID)]
-		for _, slotID := range assignment.AssignedSlotIDs {
+		for _, assignedSlot := range assignment.AssignedSlots {
 			a.DB.Exec(`
 				INSERT INTO curriculum_schedule_entries (
-					school_id, class_id, curriculum_subject_id, teacher_id, schedule_slot_id, learning_subject_id, generated_at, created_at, updated_at
+					school_id, class_id, curriculum_subject_id, teacher_id, schedule_slot_id, room_id, learning_subject_id, generated_at, created_at, updated_at
 				)
-				VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())
-			`, schoolID, assignment.ClassID, assignment.SubjectID, assignment.TeacherID, slotID, nullIfZero(int(learningSubjectID)))
+				VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())
+			`, schoolID, assignment.ClassID, assignment.SubjectID, assignment.TeacherID, assignedSlot.SlotID, nullIfZero(int(assignedSlot.RoomID)), nullIfZero(int(learningSubjectID)))
 		}
 	}
 
-	_, _, _, _, generatedEntries := a.loadCurriculumOverviewData(schoolID)
+	_, _, _, _, _, generatedEntries := a.loadCurriculumOverviewData(schoolID)
 	classCounter := map[uint]struct{}{}
 	subjectCounter := map[uint]struct{}{}
 	for _, assignment := range assignments {
@@ -908,19 +1278,51 @@ func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
 	})
 }
 
-func (a *AppContext) loadCurriculumOverviewData(schoolID uint) ([]curriculumSubjectRow, []curriculumTeacherLoadRow, []curriculumClassDistributionRow, []curriculumScheduleSlotRow, []curriculumScheduleEntryRow) {
+func (a *AppContext) loadCurriculumOverviewData(schoolID uint) ([]curriculumSubjectRow, []curriculumRoomRow, []curriculumTeacherLoadRow, []curriculumClassDistributionRow, []curriculumScheduleSlotRow, []curriculumScheduleEntryRow) {
 	var subjects []curriculumSubjectRow
+	var rooms []curriculumRoomRow
 	var teacherLoads []curriculumTeacherLoadRow
 	var classDistributions []curriculumClassDistributionRow
 	var scheduleSlots []curriculumScheduleSlotRow
 	var generatedEntries []curriculumScheduleEntryRow
 
+	a.DB.Raw(curriculumSubjectQuery()+` WHERE cs.school_id = ? ORDER BY cs.name ASC`, schoolID).Scan(&subjects)
+	if len(subjects) > 0 {
+		var subjectAssignments []struct {
+			CurriculumSubjectID uint `gorm:"column:curriculum_subject_id"`
+			TeacherID           uint `gorm:"column:teacher_id"`
+		}
+		a.DB.Raw(`
+			SELECT DISTINCT curriculum_subject_id, teacher_id
+			FROM learning_subjects
+			WHERE school_id = ?
+			  AND curriculum_subject_id IS NOT NULL
+			  AND teacher_id IS NOT NULL
+			ORDER BY curriculum_subject_id ASC, teacher_id ASC
+		`, schoolID).Scan(&subjectAssignments)
+
+		teacherIDsBySubject := make(map[uint][]uint, len(subjectAssignments))
+		for _, assignment := range subjectAssignments {
+			if assignment.CurriculumSubjectID == 0 || assignment.TeacherID == 0 {
+				continue
+			}
+			teacherIDsBySubject[assignment.CurriculumSubjectID] = append(
+				teacherIDsBySubject[assignment.CurriculumSubjectID],
+				assignment.TeacherID,
+			)
+		}
+
+		for idx := range subjects {
+			subjects[idx].AssignedTeacherIDs = teacherIDsBySubject[subjects[idx].ID]
+		}
+	}
+
 	a.DB.Raw(`
-		SELECT id, school_id, COALESCE(code, '') AS code, name, COALESCE(description, '') AS description, weekly_hours
-		FROM curriculum_subjects
+		SELECT id, school_id, code, name, room_type, color, capacity, is_active, COALESCE(notes, '') AS notes
+		FROM curriculum_rooms
 		WHERE school_id = ?
-		ORDER BY name ASC
-	`, schoolID).Scan(&subjects)
+		ORDER BY room_type ASC, code ASC, name ASC
+	`, schoolID).Scan(&rooms)
 
 	a.DB.Raw(curriculumTeacherLoadQuery()+` WHERE ctl.school_id = ? ORDER BY teacher_name ASC, subject_name ASC`, schoolID).Scan(&teacherLoads)
 	a.DB.Raw(curriculumClassDistributionQuery()+` WHERE ccd.school_id = ? ORDER BY class_name ASC, teacher_name ASC, subject_name ASC`, schoolID).Scan(&classDistributions)
@@ -940,12 +1342,17 @@ func (a *AppContext) loadCurriculumOverviewData(schoolID uint) ([]curriculumSubj
 			cse.curriculum_subject_id,
 			cse.teacher_id,
 			cse.schedule_slot_id,
+			COALESCE(cse.room_id, 0) AS room_id,
 			COALESCE(cse.learning_subject_id, 0) AS learning_subject_id,
 			TO_CHAR(cse.generated_at, 'YYYY-MM-DD HH24:MI:SS') AS generated_at,
 			COALESCE(cls.class_name, '-') AS class_name,
 			COALESCE(u.full_name, u.username, '-') AS teacher_name,
 			COALESCE(cs.name, '-') AS subject_name,
 			COALESCE(cs.code, '') AS subject_code,
+			COALESCE(room.name, '') AS room_name,
+			COALESCE(room.code, '') AS room_code,
+			COALESCE(room.room_type, '') AS room_type,
+			COALESCE(room.color, '') AS room_color,
 			slot.day_name,
 			slot.day_order,
 			slot.session_order,
@@ -956,6 +1363,7 @@ func (a *AppContext) loadCurriculumOverviewData(schoolID uint) ([]curriculumSubj
 		LEFT JOIN class cls ON cls.id = cse.class_id
 		LEFT JOIN users u ON u.id = cse.teacher_id
 		LEFT JOIN curriculum_subjects cs ON cs.id = cse.curriculum_subject_id
+		LEFT JOIN curriculum_rooms room ON room.id = cse.room_id
 		LEFT JOIN curriculum_schedule_slots slot ON slot.id = cse.schedule_slot_id
 		WHERE cse.school_id = ?
 		ORDER BY cls.class_name ASC, slot.day_order ASC, slot.session_order ASC, subject_name ASC
@@ -970,7 +1378,55 @@ func (a *AppContext) loadCurriculumOverviewData(schoolID uint) ([]curriculumSubj
 		}
 	}
 
-	return subjects, teacherLoads, classDistributions, scheduleSlots, generatedEntries
+	return subjects, rooms, teacherLoads, classDistributions, scheduleSlots, generatedEntries
+}
+
+func curriculumSubjectQuery() string {
+	return `
+		SELECT
+			cs.id,
+			cs.school_id,
+			COALESCE(cs.code, '') AS code,
+			cs.name,
+			COALESCE(cs.description, '') AS description,
+			cs.weekly_hours,
+			COALESCE(cs.required_room_type, 'CLASSROOM') AS required_room_type,
+			COALESCE(cs.preferred_room_id, 0) AS preferred_room_id,
+			COALESCE(room.code, '') AS preferred_room_code,
+			COALESCE(room.name, '') AS preferred_room_name,
+			COALESCE(room.color, '') AS preferred_room_color
+		FROM curriculum_subjects cs
+		LEFT JOIN curriculum_rooms room ON room.id = cs.preferred_room_id
+	`
+}
+
+func normalizeCurriculumRoomType(value string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	if normalized == "" {
+		return "CLASSROOM"
+	}
+	normalized = strings.ReplaceAll(normalized, " ", "_")
+	return normalized
+}
+
+func normalizeRoomColor(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "#E2E8F0"
+	}
+	if strings.HasPrefix(trimmed, "#") && len(trimmed) == 7 {
+		return strings.ToUpper(trimmed)
+	}
+	return trimmed
+}
+
+func (a *AppContext) curriculumRoomBelongsToSchool(schoolID uint, roomID uint) bool {
+	if roomID == 0 {
+		return true
+	}
+	var count int64
+	a.DB.Raw(`SELECT COUNT(*) FROM curriculum_rooms WHERE id = ? AND school_id = ?`, roomID, schoolID).Scan(&count)
+	return count > 0
 }
 
 func curriculumTeacherLoadQuery() string {

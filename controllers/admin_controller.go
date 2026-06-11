@@ -380,14 +380,14 @@ func (a *AppContext) GetAdminDashboard(c *fiber.Ctx) error {
 		filteredModules := []map[string]interface{}{}
 		for _, module := range adminModules {
 			key, _ := module["key"].(string)
-			if allowed[key] {
-				if key == "learning" {
-					module["label"] = "Guru Mapel"
-					module["to"] = "/learning-subjects"
-					module["caption"] = "Atur guru pengampu per kelas"
+				if allowed[key] {
+					if key == "learning" {
+						module["label"] = "Guru Mapel"
+						module["to"] = "/learning-admin/class-distributions"
+						module["caption"] = "Distribusi guru pengampu per kelas"
+					}
+					filteredModules = append(filteredModules, module)
 				}
-				filteredModules = append(filteredModules, module)
-			}
 		}
 		adminModules = filteredModules
 	}

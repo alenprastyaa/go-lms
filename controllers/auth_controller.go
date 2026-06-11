@@ -36,6 +36,15 @@ const (
 	failedLoginLockDuration = time.Minute
 )
 
+func isManageableSchoolUserRole(role string) bool {
+	switch utils.NormalizeRoleName(role) {
+	case "ADMIN", "ADMIN_SPMB", "GURU", "SARPRAS", "KOPERASI", "BENDAHARA", "ORANG_TUA":
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *AppContext) RegisterUser(c *fiber.Ctx) error {
 	var body struct {
 		FullName string `json:"full_name"`
@@ -340,10 +349,6 @@ func (a *AppContext) ImportUserSchoolTeachers(c *fiber.Ctx) error {
 		}
 
 		if record["full_name"] == "" {
-			failedRows = append(failedRows, fiber.Map{
-				"row":     rowIndex + 1,
-				"message": "nama lengkap wajib diisi",
-			})
 			continue
 		}
 
@@ -649,7 +654,7 @@ func (a *AppContext) registerScopedUser(c *fiber.Ctx, asStudent bool) error {
 
 	normalizedRole := utils.NormalizeRoleName(role)
 	role = normalizedRole
-	if !asStudent && normalizedRole != "ADMIN" && normalizedRole != "ADMIN_SPMB" && normalizedRole != "GURU" && normalizedRole != "SARPRAS" && normalizedRole != "KOPERASI" && normalizedRole != "BENDAHARA" {
+	if !asStudent && !isManageableSchoolUserRole(normalizedRole) {
 		return utils.Error(c, 400, "Role user sekolah tidak valid")
 	}
 	fullName := strings.TrimSpace(utils.ToString(body["full_name"]))
@@ -1896,8 +1901,8 @@ func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ? AND school_id = ?", id, schoolID).First(&current).Error; err != nil {
 		return utils.Error(c, 404, "User school not found")
 	}
-	if current.Role != "ADMIN" && current.Role != "ADMIN_SPMB" && current.Role != "GURU" && current.Role != "SARPRAS" && current.Role != "KOPERASI" && current.Role != "BENDAHARA" {
-		return utils.Error(c, 400, "Only school admin, admin SPMB, teacher, sarpras, koperasi, and bendahara can be updated here")
+	if !isManageableSchoolUserRole(current.Role) {
+		return utils.Error(c, 400, "Only school admin, admin SPMB, teacher, sarpras, koperasi, bendahara, and parent accounts can be updated here")
 	}
 	nextUsername := current.Username
 	if body.Username != nil {
@@ -1906,7 +1911,7 @@ func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 	nextRole := current.Role
 	if body.Role != nil {
 		nextRole = utils.NormalizeRoleName(*body.Role)
-		if nextRole != "ADMIN" && nextRole != "ADMIN_SPMB" && nextRole != "GURU" && nextRole != "SARPRAS" && nextRole != "KOPERASI" && nextRole != "BENDAHARA" {
+		if !isManageableSchoolUserRole(nextRole) {
 			return utils.Error(c, 400, "Role user sekolah tidak valid")
 		}
 	}
@@ -1986,10 +1991,22 @@ func (a *AppContext) DeleteUserSchool(c *fiber.Ctx) error {
 	if err := a.DB.Where("id = ? AND school_id = ?", id, schoolID).First(&current).Error; err != nil {
 		return utils.Error(c, 404, "User school not found")
 	}
-	if current.Role != "ADMIN" && current.Role != "ADMIN_SPMB" && current.Role != "GURU" && current.Role != "SARPRAS" && current.Role != "KOPERASI" && current.Role != "BENDAHARA" {
-		return utils.Error(c, 400, "Only school admin, admin SPMB, teacher, sarpras, koperasi, and bendahara can be deleted here")
+	if !isManageableSchoolUserRole(current.Role) {
+		return utils.Error(c, 400, "Only school admin, admin SPMB, teacher, sarpras, koperasi, bendahara, and parent accounts can be deleted here")
 	}
-	a.DB.Exec(`DELETE FROM users WHERE id = ? AND school_id = ?`, id, schoolID)
+	if err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if current.Role == "ORANG_TUA" {
+			if err := tx.Exec(`DELETE FROM parent_login_otps WHERE parent_user_id = ?`, current.ID).Error; err != nil {
+				return err
+			}
+			if err := tx.Exec(`DELETE FROM parent_students WHERE school_id = ? AND parent_user_id = ?`, schoolID, current.ID).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Exec(`DELETE FROM users WHERE id = ? AND school_id = ?`, id, schoolID).Error
+	}); err != nil {
+		return utils.Error(c, 500, "Gagal menghapus user sekolah", err.Error())
+	}
 	return utils.Success(c, 200, fmt.Sprintf(`User "%s" berhasil dihapus`, current.Username), nil)
 }
 
