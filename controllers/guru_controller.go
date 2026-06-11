@@ -2248,14 +2248,15 @@ func (a *AppContext) SaveGeneratedLearningQuestionBankItems(c *fiber.Ctx) error 
 		return utils.Error(c, 400, "items are required")
 	}
 	saved := make([]map[string]interface{}, 0, len(body.Items))
+	batchCreatedAt := time.Now()
 	for _, item := range body.Items {
 		var row map[string]interface{}
 		a.DB.Raw(`
 			INSERT INTO learning_question_bank (subject_id, question_type, question_text, options, correct_option, rubric, created_by, created_at)
-			VALUES (?, ?, ?, ?::jsonb, ?, ?, ?, NOW())
+			VALUES (?, ?, ?, ?::jsonb, ?, ?, ?, ?)
 			RETURNING *
 		`, subjectID, strings.ToUpper(fmt.Sprint(item["question_type"])), fmt.Sprint(item["question_text"]),
-			toJSONRaw(item["options"]), item["correct_option"], nullIfEmpty(fmt.Sprint(item["rubric"])), userID).Scan(&row)
+			toJSONRaw(item["options"]), item["correct_option"], nullIfEmpty(fmt.Sprint(item["rubric"])), userID, batchCreatedAt).Scan(&row)
 		if len(row) > 0 {
 			normalizeJakartaDateTimeFields(row, "created_at", "updated_at")
 			saved = append(saved, row)

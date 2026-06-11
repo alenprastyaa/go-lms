@@ -776,17 +776,14 @@ func cleanOptionLabel(value string) string {
 	if text == "" {
 		return ""
 	}
-	if len(text) >= 3 {
-		prefix := strings.ToUpper(strings.TrimSpace(text[:2]))
-		if (prefix[0] >= 'A' && prefix[0] <= 'E') && prefix[1] == '.' {
-			return strings.TrimSpace(text[2:])
-		}
-	}
 	if len(text) >= 2 {
-		prefix := strings.ToUpper(strings.TrimSpace(text[:1]))
-		if prefix[0] >= 'A' && prefix[0] <= 'E' {
+		letter := text[0]
+		if letter >= 'a' && letter <= 'e' {
+			letter -= 'a' - 'A'
+		}
+		if letter >= 'A' && letter <= 'E' {
 			next := text[1]
-			if next == ')' || next == ':' {
+			if next == '.' || next == ')' || next == ':' {
 				return strings.TrimSpace(text[2:])
 			}
 		}

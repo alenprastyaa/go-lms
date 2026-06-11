@@ -228,7 +228,7 @@ func registerSiswa(api fiber.Router, ctx *controllers.AppContext) {
 	at.Post("/checkout", ctx.CheckOut)
 	at.Get("/", ctx.GetListAttendance)
 
-	fe := api.Group("/face-enrollment", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("SISWA"), middlewares.ModuleAllowed(ctx.DB, "attendance"))
+	fe := api.Group("/face-enrollment", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("GURU", "SISWA"), middlewares.ModuleAllowed(ctx.DB, "attendance"))
 	fe.Get("/request", ctx.GetMyFaceEnrollmentRequest)
 	fe.Post("/", ctx.SubmitFaceEnrollment)
 

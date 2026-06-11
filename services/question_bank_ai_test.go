@@ -45,3 +45,20 @@ func TestBuildQuestionBankPromptIncludesNaturalLanguageGuidance(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanOptionLabelDoesNotPanicOnShortOrSpacedLabels(t *testing.T) {
+	cases := map[string]string{
+		"A ":            "A",
+		"A. Jakarta":    "Jakarta",
+		"b) Bandung":    "Bandung",
+		"C: Surabaya":   "Surabaya",
+		"Pilihan bebas": "Pilihan bebas",
+		"":              "",
+	}
+
+	for input, expected := range cases {
+		if got := cleanOptionLabel(input); got != expected {
+			t.Fatalf("cleanOptionLabel(%q) = %q, want %q", input, got, expected)
+		}
+	}
+}

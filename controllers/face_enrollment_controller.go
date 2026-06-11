@@ -35,8 +35,9 @@ func (a *AppContext) SubmitFaceEnrollment(c *fiber.Ctx) error {
 	if err := a.DB.Table("users").Select("role, face_reference_image, face_reference_descriptor").Where("id = ?", userID).Scan(&current).Error; err != nil {
 		return utils.Error(c, 500, "Gagal membaca data wajah", err.Error())
 	}
-	if utils.NormalizeRoleName(current.Role) != "SISWA" {
-		return utils.Error(c, 403, "Enrol wajah hanya tersedia untuk siswa")
+	normalizedRole := utils.NormalizeRoleName(current.Role)
+	if normalizedRole != "SISWA" && normalizedRole != "GURU" {
+		return utils.Error(c, 403, "Enrol wajah hanya tersedia untuk siswa dan guru")
 	}
 
 	hasReference := strings.TrimSpace(ptrStringValue(current.FaceReferenceImage)) != "" ||
