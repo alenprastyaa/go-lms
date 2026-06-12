@@ -52,7 +52,7 @@ func (p *ProposalPDFParams) applyDefaults() {
 		p.FounderTitle = "Founder"
 	}
 	if strings.TrimSpace(p.DemoURL) == "" {
-		p.DemoURL = "demo.school-system.my.id"
+		p.DemoURL = "demo.idschoolsystem.com"
 	}
 	if strings.TrimSpace(p.WhatsApp) == "" {
 		p.WhatsApp = "0857-1957-8195"

@@ -34,6 +34,7 @@ func main() {
 			"https://lms.school-system.my.id",
 			"https://lms.idschoolsystem.com",
 			"https://demo.school-system.my.id",
+			"https://demo.idschoolsystem.com",
 			"https://alentest.my.id",
 			"http://localhost:8080",
 			"http://localhost:8081",
