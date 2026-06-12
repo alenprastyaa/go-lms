@@ -21,12 +21,21 @@ type GmailSMTPConfig struct {
 	FromName string
 }
 
+type EmailAttachment struct {
+	Filename string
+	Content  []byte
+	MimeType string
+}
+
 type OutboundEmail struct {
-	To       string
-	Subject  string
-	TextBody string
-	HTMLBody string
-	ReplyTo  string
+	To          string
+	Subject     string
+	TextBody    string
+	HTMLBody    string
+	ReplyTo     string
+	FromEmail   string
+	Headers     map[string]string
+	Attachments []EmailAttachment
 }
 
 func LoadGmailSMTPConfigFromEnv() (GmailSMTPConfig, error) {

@@ -147,6 +147,9 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS initial_password_ciphertext TEXT`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE IF EXISTS school_visit_targets ADD COLUMN IF NOT EXISTS email TEXT`).Error; err != nil {
+		return nil, err
+	}
 	if err := ensurePostgresEnumValues(db, "user_role", userRoleValues); err != nil {
 		return nil, err
 	}
@@ -281,7 +284,10 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE school_visit_targets ADD COLUMN IF NOT EXISTS kepsek TEXT NULL`).Error; err != nil {
 		return nil, err
 	}
-	if err := db.Exec(`ALTER TABLE school_visit_targets ADD COLUMN IF NOT EXISTS is_planned BOOLEAN NOT NULL DEFAULT TRUE`).Error; err != nil {
+	if err := db.Exec(`ALTER TABLE school_visit_targets ADD COLUMN IF NOT EXISTS is_planned BOOLEAN NOT NULL DEFAULT FALSE`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE school_visit_targets ALTER COLUMN is_planned SET DEFAULT FALSE`).Error; err != nil {
 		return nil, err
 	}
 	if err := db.Exec(`ALTER TABLE school_visit_targets ADD COLUMN IF NOT EXISTS planned_at TIMESTAMP NULL`).Error; err != nil {
@@ -447,6 +453,7 @@ func NewDatabase() (*gorm.DB, error) {
 		`CREATE TABLE IF NOT EXISTS school_visit_targets (
 			id BIGSERIAL PRIMARY KEY,
 			name TEXT NOT NULL,
+			email TEXT NULL,
 			wakur TEXT NULL,
 			kepsek TEXT NULL,
 			full_address TEXT NULL,
@@ -457,12 +464,23 @@ func NewDatabase() (*gorm.DB, error) {
 			longitude DOUBLE PRECISION NULL,
 			google_maps_url TEXT NULL,
 			place_id TEXT NULL,
-			is_planned BOOLEAN NOT NULL DEFAULT TRUE,
+			is_planned BOOLEAN NOT NULL DEFAULT FALSE,
 			planned_at TIMESTAMP NULL,
 			is_visited BOOLEAN NOT NULL DEFAULT FALSE,
 			visited_at TIMESTAMP NULL,
 			created_by BIGINT NULL,
 			updated_by BIGINT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS marketing_email_offer_logs (
+			id BIGSERIAL PRIMARY KEY,
+			email TEXT NOT NULL,
+			school_name TEXT NULL,
+			contact_name TEXT NULL,
+			success BOOLEAN NOT NULL DEFAULT FALSE,
+			source TEXT NOT NULL DEFAULT 'brevo',
+			sent_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
@@ -724,6 +742,7 @@ func NewDatabase() (*gorm.DB, error) {
 		`CREATE INDEX IF NOT EXISTS idx_school_visit_targets_name ON school_visit_targets (name)`,
 		`CREATE INDEX IF NOT EXISTS idx_school_visit_targets_planned ON school_visit_targets (is_planned, planned_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_school_visit_targets_visited ON school_visit_targets (is_visited, visited_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_marketing_email_offer_logs_email_success ON marketing_email_offer_logs (LOWER(email), success, sent_at DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_items_school_code ON inventory_items (school_id, code) WHERE code IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_inventory_items_school_active ON inventory_items (school_id, is_active, name)`,
 		`CREATE INDEX IF NOT EXISTS idx_inventory_loans_school_status ON inventory_loans (school_id, status, borrowed_at)`,

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,9 +14,19 @@ import (
 	"time"
 )
 
-const defaultHuggingFaceModel = "Qwen/Qwen2.5-7B-Instruct"
+const defaultHuggingFaceModel = "deepseek-ai/DeepSeek-V4-Pro"
 
 const defaultHuggingFaceAPIURL = "https://router.huggingface.co/v1/chat/completions"
+
+const huggingFaceModelTimeout = 35 * time.Second
+
+var defaultHuggingFaceModels = []string{
+	"deepseek-ai/DeepSeek-V4-Pro",
+	"deepseek-ai/DeepSeek-V4-Flash",
+	"Qwen/Qwen2.5-7B-Instruct",
+	"mistralai/Mistral-7B-Instruct-v0.3",
+	"Qwen/Qwen2.5-3B-Instruct",
+}
 
 type huggingFaceCompletionResponse struct {
 	Choices []huggingFaceChoice `json:"choices"`
@@ -54,13 +65,50 @@ func huggingFaceAPIKey() string {
 }
 
 func huggingFaceModel() string {
-	if model := strings.TrimSpace(os.Getenv("HUGGINGFACE_MODEL")); model != "" {
-		return model
-	}
-	if model := strings.TrimSpace(os.Getenv("HF_MODEL")); model != "" {
-		return model
+	models := huggingFaceModels()
+	if len(models) > 0 {
+		return models[0]
 	}
 	return defaultHuggingFaceModel
+}
+
+func huggingFaceModels() []string {
+	values := make([]string, 0, len(defaultHuggingFaceModels)+1)
+	appendModels := func(raw string) {
+		for _, item := range strings.FieldsFunc(raw, func(r rune) bool {
+			return r == ',' || r == '\n' || r == ';'
+		}) {
+			model := strings.TrimSpace(item)
+			if model != "" {
+				values = append(values, model)
+			}
+		}
+	}
+
+	appendModels(os.Getenv("HUGGINGFACE_MODELS"))
+	appendModels(os.Getenv("HF_MODELS"))
+	if model := strings.TrimSpace(os.Getenv("HUGGINGFACE_MODEL")); model != "" {
+		values = append(values, model)
+	}
+	if model := strings.TrimSpace(os.Getenv("HF_MODEL")); model != "" {
+		values = append(values, model)
+	}
+	values = append(values, defaultHuggingFaceModels...)
+
+	seen := map[string]bool{}
+	models := make([]string, 0, len(values))
+	for _, model := range values {
+		key := strings.ToLower(model)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		models = append(models, model)
+	}
+	if len(models) == 0 {
+		return []string{defaultHuggingFaceModel}
+	}
+	return models
 }
 
 func huggingFaceAPIURL() string {
@@ -91,24 +139,29 @@ func normalizeHuggingFaceError(message string) string {
 }
 
 func callHuggingFace(prompt, systemMessage string, temperature float64) (string, error) {
-	return callHuggingFaceWithOptions(prompt, systemMessage, temperature, true)
+	return callHuggingFaceWithOptions(prompt, systemMessage, temperature, true, 1800)
 }
 
 func callHuggingFaceText(prompt, systemMessage string, temperature float64) (string, error) {
-	return callHuggingFaceWithOptions(prompt, systemMessage, temperature, false)
+	return callHuggingFaceWithOptions(prompt, systemMessage, temperature, false, 1800)
 }
 
-func callHuggingFaceWithOptions(prompt, systemMessage string, temperature float64, preferJSON bool) (string, error) {
+func callHuggingFaceJSONWithMaxTokens(prompt, systemMessage string, temperature float64, maxTokens int) (string, error) {
+	return callHuggingFaceWithOptions(prompt, systemMessage, temperature, true, maxTokens)
+}
+
+func callHuggingFaceWithOptions(prompt, systemMessage string, temperature float64, preferJSON bool, maxTokens int) (string, error) {
 	apiKey := huggingFaceAPIKey()
 	if apiKey == "" {
 		return "", fmt.Errorf("HF_API_KEY belum diatur di server")
 	}
+	if maxTokens <= 0 {
+		maxTokens = 1800
+	}
 
-	model := huggingFaceModel()
 	basePayload := map[string]interface{}{
-		"model":       model,
 		"temperature": temperature,
-		"max_tokens":  1800,
+		"max_tokens":  maxTokens,
 		"messages": []map[string]string{
 			{
 				"role":    "system",
@@ -121,14 +174,16 @@ func callHuggingFaceWithOptions(prompt, systemMessage string, temperature float6
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-
-	callProvider := func(payload map[string]interface{}) (*huggingFaceCompletionResponse, error) {
+	callProvider := func(model string, payload map[string]interface{}) (*huggingFaceCompletionResponse, error) {
+		payload = cloneMap(payload)
+		payload["model"] = model
 		body, err := json.Marshal(payload)
 		if err != nil {
 			return nil, err
 		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), huggingFaceModelTimeout)
+		defer cancel()
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, huggingFaceAPIURL(), bytes.NewReader(body))
 		if err != nil {
@@ -163,42 +218,61 @@ func callHuggingFaceWithOptions(prompt, systemMessage string, temperature float6
 		return &parsed, nil
 	}
 
-	var completion *huggingFaceCompletionResponse
-	var err error
-	if preferJSON {
-		payloadWithResponseFormat := cloneMap(basePayload)
-		payloadWithResponseFormat["response_format"] = map[string]string{"type": "json_object"}
+	var lastErr error
+	models := huggingFaceModels()
+	for index, model := range models {
+		var completion *huggingFaceCompletionResponse
+		var err error
+		if preferJSON {
+			payloadWithResponseFormat := cloneMap(basePayload)
+			payloadWithResponseFormat["response_format"] = map[string]string{"type": "json_object"}
 
-		completion, err = callProvider(payloadWithResponseFormat)
-		if err != nil {
-			completion, err = callProvider(basePayload)
-			if err != nil {
-				return "", err
+			completion, err = callProvider(model, payloadWithResponseFormat)
+			if shouldRetryHuggingFaceWithoutResponseFormat(err) {
+				completion, err = callProvider(model, basePayload)
 			}
+		} else {
+			completion, err = callProvider(model, basePayload)
 		}
-	} else {
-		completion, err = callProvider(basePayload)
 		if err != nil {
-			return "", err
+			lastErr = err
+			if index < len(models)-1 {
+				log.Printf("Hugging Face model fallback model=%s next=%s error=%v", model, models[index+1], err)
+				continue
+			}
+			break
 		}
+
+		text := extractHuggingFaceResponseText(completion)
+		if strings.TrimSpace(text) == "" {
+			lastErr = fmt.Errorf("Hugging Face model %s tidak mengembalikan isi yang dapat diproses", model)
+			if index < len(models)-1 {
+				log.Printf("Hugging Face model fallback model=%s next=%s error=%v", model, models[index+1], lastErr)
+				continue
+			}
+			break
+		}
+
+		if index > 0 {
+			log.Printf("Hugging Face fallback succeeded model=%s attempt=%d", model, index+1)
+		}
+		if completion != nil && (completion.Usage.PromptTokens > 0 || completion.Usage.CompletionTokens > 0 || completion.Usage.TotalTokens > 0) {
+			log.Printf(
+				"Hugging Face token usage model=%s prompt=%d completion=%d total=%d",
+				model,
+				completion.Usage.PromptTokens,
+				completion.Usage.CompletionTokens,
+				completion.Usage.TotalTokens,
+			)
+		}
+
+		return text, nil
 	}
 
-	text := extractHuggingFaceResponseText(completion)
-	if strings.TrimSpace(text) == "" {
-		return "", fmt.Errorf("Hugging Face tidak mengembalikan isi yang dapat diproses")
+	if lastErr != nil {
+		return "", fmt.Errorf("semua model Hugging Face gagal dipakai: %w", lastErr)
 	}
-
-	if completion != nil && (completion.Usage.PromptTokens > 0 || completion.Usage.CompletionTokens > 0 || completion.Usage.TotalTokens > 0) {
-		log.Printf(
-			"Hugging Face token usage model=%s prompt=%d completion=%d total=%d",
-			model,
-			completion.Usage.PromptTokens,
-			completion.Usage.CompletionTokens,
-			completion.Usage.TotalTokens,
-		)
-	}
-
-	return text, nil
+	return "", fmt.Errorf("semua model Hugging Face gagal dipakai")
 }
 
 func providerStatusError(provider string, statusCode int, raw []byte) error {
@@ -206,16 +280,38 @@ func providerStatusError(provider string, statusCode int, raw []byte) error {
 	if len(message) > 500 {
 		message = message[:500] + "..."
 	}
+	return &providerHTTPError{provider: provider, statusCode: statusCode, message: message}
+}
 
-	if statusCode == http.StatusPaymentRequired {
-		return fmt.Errorf("%s mengembalikan 402 Payment Required. Aktifkan billing/kredit Inference Providers, atau gunakan provider Qwen cadangan", provider)
+type providerHTTPError struct {
+	provider   string
+	statusCode int
+	message    string
+}
+
+func (e *providerHTTPError) Error() string {
+	if e == nil {
+		return "request provider gagal"
 	}
-
-	if message == "" {
-		return fmt.Errorf("request %s gagal dengan status %d", provider, statusCode)
+	if e.statusCode == http.StatusPaymentRequired {
+		return fmt.Sprintf("%s mengembalikan 402 Payment Required. Model berikutnya akan dicoba jika tersedia.", e.provider)
 	}
+	if strings.TrimSpace(e.message) == "" {
+		return fmt.Sprintf("request %s gagal dengan status %d", e.provider, e.statusCode)
+	}
+	return fmt.Sprintf("request %s gagal dengan status %d: %s", e.provider, e.statusCode, normalizeHuggingFaceError(e.message))
+}
 
-	return fmt.Errorf("request %s gagal dengan status %d: %s", provider, statusCode, normalizeHuggingFaceError(message))
+func shouldRetryHuggingFaceWithoutResponseFormat(err error) bool {
+	var httpErr *providerHTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	if httpErr.statusCode != http.StatusBadRequest {
+		return false
+	}
+	lowered := strings.ToLower(httpErr.message)
+	return strings.Contains(lowered, "response_format") || strings.Contains(lowered, "json_object")
 }
 
 func cloneMap(src map[string]interface{}) map[string]interface{} {

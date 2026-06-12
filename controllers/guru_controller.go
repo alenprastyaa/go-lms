@@ -2147,7 +2147,7 @@ func (a *AppContext) GetLearningQuestionBankTopicSuggestions(c *fiber.Ctx) error
 		curriculumName = "Kurikulum Merdeka"
 	}
 
-	topics, err := services.GenerateCurriculumTopicSuggestionsWithGemini(services.CurriculumTopicSuggestionInput{
+	topics, err := services.GenerateCurriculumTopicSuggestionsWithHuggingFace(services.CurriculumTopicSuggestionInput{
 		SubjectName:    subject.Name,
 		ClassName:      subject.ClassName,
 		GradeLabel:     gradeLabel,
@@ -2171,6 +2171,7 @@ func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
 		Count                  int    `json:"question_count"`
 		LegacyCount            int    `json:"count"`
 		Difficulty             string `json:"difficulty"`
+		QuestionStyle          string `json:"question_style"`
 		IncludeIllustration    bool   `json:"include_illustration"`
 		GradeLabel             string `json:"grade_label"`
 		PhaseName              string `json:"phase_name"`
@@ -2211,7 +2212,7 @@ func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
 		return utils.Error(c, code, message)
 	}
 
-	items, err := services.GenerateQuestionBankItemsWithGemini(services.QuestionBankAIInput{
+	items, err := services.GenerateQuestionBankItemsWithHuggingFace(services.QuestionBankAIInput{
 		SubjectName:            subject.Name,
 		ClassName:              subject.ClassName,
 		GradeLabel:             strings.TrimSpace(body.GradeLabel),
@@ -2221,6 +2222,7 @@ func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
 		QuestionType:           qType,
 		QuestionCount:          body.Count,
 		Difficulty:             difficulty,
+		QuestionStyle:          strings.TrimSpace(body.QuestionStyle),
 		IncludeIllustration:    body.IncludeIllustration,
 		AdditionalInstructions: strings.TrimSpace(body.AdditionalInstructions),
 	})
@@ -2228,7 +2230,7 @@ func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Failed Generate Question Bank With AI", err.Error())
 	}
 	if len(items) == 0 {
-		return utils.Error(c, 500, "Failed Generate Question Bank With AI", "Hasil OpenRouter tidak valid untuk dijadikan bank soal")
+		return utils.Error(c, 500, "Failed Generate Question Bank With AI", "Hasil Hugging Face tidak valid untuk dijadikan bank soal")
 	}
 
 	return utils.Success(c, 200, "Success Generate Question Bank Preview", fiber.Map{

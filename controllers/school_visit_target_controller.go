@@ -19,6 +19,7 @@ import (
 
 type schoolVisitTargetPayload struct {
 	Name          *string  `json:"name"`
+	Email         *string  `json:"email"`
 	Wakur         *string  `json:"wakur"`
 	Kepsek        *string  `json:"kepsek"`
 	FullAddress   *string  `json:"full_address"`
@@ -62,14 +63,15 @@ func (a *AppContext) GetSchoolVisitTargets(c *fiber.Ctx) error {
 	if search != "" {
 		like := "%" + search + "%"
 		query = query.Where(`
-			name ILIKE ?
-			OR COALESCE(wakur, '') ILIKE ?
+				name ILIKE ?
+				OR COALESCE(email, '') ILIKE ?
+				OR COALESCE(wakur, '') ILIKE ?
 			OR COALESCE(kepsek, '') ILIKE ?
 			OR COALESCE(full_address, '') ILIKE ?
 			OR COALESCE(province, '') ILIKE ?
 			OR COALESCE(city, '') ILIKE ?
 			OR COALESCE(district, '') ILIKE ?
-		`, like, like, like, like, like, like, like)
+			`, like, like, like, like, like, like, like, like)
 	}
 	if rawVisited := strings.TrimSpace(c.Query("is_visited")); rawVisited != "" {
 		if visited, err := strconv.ParseBool(rawVisited); err == nil {
@@ -132,6 +134,7 @@ func (a *AppContext) CreateSchoolVisitTarget(c *fiber.Ctx) error {
 	now := time.Now()
 	item := models.SchoolVisitTarget{
 		Name:          name,
+		Email:         trimPtr(body.Email),
 		Wakur:         trimPtr(body.Wakur),
 		Kepsek:        trimPtr(body.Kepsek),
 		FullAddress:   trimPtr(body.FullAddress),
@@ -142,8 +145,8 @@ func (a *AppContext) CreateSchoolVisitTarget(c *fiber.Ctx) error {
 		Longitude:     body.Longitude,
 		GoogleMapsURL: trimPtr(body.GoogleMapsURL),
 		PlaceID:       trimPtr(body.PlaceID),
-		IsPlanned:     true,
-		PlannedAt:     &now,
+		IsPlanned:     false,
+		PlannedAt:     nil,
 		CreatedBy:     userIDPtr(userID),
 		UpdatedBy:     userIDPtr(userID),
 	}
@@ -200,6 +203,9 @@ func (a *AppContext) UpdateSchoolVisitTarget(c *fiber.Ctx) error {
 	}
 	if body.FullAddress != nil {
 		updates["full_address"] = nullableTrim(*body.FullAddress)
+	}
+	if body.Email != nil {
+		updates["email"] = nullableTrim(*body.Email)
 	}
 	if body.Wakur != nil {
 		updates["wakur"] = nullableTrim(*body.Wakur)

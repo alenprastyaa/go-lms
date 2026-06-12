@@ -5,6 +5,7 @@ import "time"
 type SchoolVisitTarget struct {
 	ID            uint       `gorm:"column:id;primaryKey" json:"id"`
 	Name          string     `gorm:"column:name" json:"name"`
+	Email         *string    `gorm:"column:email" json:"email"`
 	Wakur         *string    `gorm:"column:wakur" json:"wakur"`
 	Kepsek        *string    `gorm:"column:kepsek" json:"kepsek"`
 	FullAddress   *string    `gorm:"column:full_address" json:"full_address"`

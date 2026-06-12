@@ -311,6 +311,9 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	a.Post("/reset", ctx.ResetAdminScope)
 
 	marketing := api.Group("/super-admin/marketing", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("SUPER_ADMIN"))
+	marketing.Get("/email-offers/status", ctx.GetSuperAdminMarketingEmailStatuses)
+	marketing.Get("/email-offers/proposal-pdf", ctx.GetSuperAdminMarketingProposalPDF)
+	marketing.Post("/email-offers/test", ctx.SendSuperAdminMarketingEmailTest)
 	marketing.Post("/email-offers", ctx.SendSuperAdminMarketingEmail)
 
 	api.Post("/billing/xendit/webhook", ctx.XenditWebhook)

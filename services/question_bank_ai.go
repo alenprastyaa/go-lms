@@ -19,6 +19,7 @@ type QuestionBankAIInput struct {
 	QuestionType           string
 	QuestionCount          int
 	Difficulty             string
+	QuestionStyle          string
 	IncludeIllustration    bool
 	AdditionalInstructions string
 }
@@ -77,7 +78,32 @@ func GenerateCurriculumTopicSuggestionsWithGemini(input CurriculumTopicSuggestio
 }
 
 func GenerateCurriculumTopicSuggestionsWithHuggingFace(input CurriculumTopicSuggestionInput) ([]string, error) {
-	return GenerateCurriculumTopicSuggestionsWithGemini(input)
+	fallbackTopics := buildFallbackCurriculumTopicSuggestions(input)
+	prompt := buildCurriculumTopicSuggestionPrompt(input)
+	text, err := callHuggingFace(
+		prompt,
+		"Anda adalah asisten kurikulum sekolah Indonesia yang hanya mengembalikan JSON valid tanpa markdown.",
+		0.3,
+	)
+	if err != nil {
+		return fallbackTopics, nil
+	}
+
+	extracted := extractJSONObject(text)
+	if !json.Valid([]byte(extracted)) {
+		return fallbackTopics, nil
+	}
+
+	var parsed curriculumTopicSuggestionResponse
+	if err := json.Unmarshal([]byte(extracted), &parsed); err != nil {
+		return fallbackTopics, nil
+	}
+
+	topics := normalizeTopicSuggestions(parsed.Topics)
+	if len(topics) == 0 {
+		return fallbackTopics, nil
+	}
+	return topics, nil
 }
 
 func buildCurriculumTopicSuggestionPrompt(input CurriculumTopicSuggestionInput) string {
@@ -286,6 +312,10 @@ func buildQuestionBankPrompt(input QuestionBankAIInput) string {
 		fmt.Sprintf("Tingkat kesulitan: %s.", fallbackText(strings.TrimSpace(input.Difficulty), "MENENGAH")),
 	)
 
+	if styleInstruction := buildQuestionStyleInstruction(input); styleInstruction != "" {
+		parts = append(parts, styleInstruction)
+	}
+
 	if strings.TrimSpace(input.AdditionalInstructions) != "" {
 		parts = append(parts, fmt.Sprintf("Instruksi tambahan: %s.", strings.TrimSpace(input.AdditionalInstructions)))
 	}
@@ -312,6 +342,51 @@ func buildQuestionBankPrompt(input QuestionBankAIInput) string {
 	)
 
 	return strings.Join(parts, "\n")
+}
+
+func buildQuestionStyleInstruction(input QuestionBankAIInput) string {
+	style := strings.ToUpper(strings.TrimSpace(input.QuestionStyle))
+	if style == "" {
+		style = "AUTO"
+	}
+
+	subjectCategory := inferTeachingModuleSubjectCategory(input.SubjectName)
+	if style == "AUTO" {
+		switch subjectCategory {
+		case "Numerasi":
+			style = "STORY"
+		case "Bahasa":
+			style = "READING_COMPREHENSION"
+		case "Sains", "Sosial":
+			style = "CAUSE_EFFECT"
+		case "Kejuruan":
+			style = "PROCEDURE"
+		case "Seni", "Olahraga":
+			style = "PERFORMANCE"
+		default:
+			style = "HOTS"
+		}
+	}
+
+	instructions := map[string]string{
+		"HOTS":                  "Model soal: HOTS. Buat soal yang menuntut analisis, evaluasi, penalaran, atau penerapan konsep; hindari soal hafalan langsung.",
+		"STORY":                 "Model soal: soal cerita. Gunakan konteks kehidupan sehari-hari yang natural dan relevan dengan topik.",
+		"MULTI_STEP":            "Model soal: soal beranak/bertahap. Satu stem soal memerlukan 2-3 langkah berpikir yang saling terkait, tetapi tetap jawabannya satu.",
+		"CASE_STUDY":            "Model soal: studi kasus. Sajikan situasi singkat, lalu tanyakan keputusan, analisis, atau solusi yang paling tepat.",
+		"DATA_INTERPRETATION":   "Model soal: interpretasi data. Sertakan data sederhana berupa angka, tabel ringkas, pola, atau informasi terstruktur dalam teks.",
+		"PROBLEM_SOLVING":       "Model soal: pemecahan masalah. Fokus pada strategi penyelesaian dan penerapan konsep, bukan sekadar mengingat rumus.",
+		"READING_COMPREHENSION": "Model soal: pemahaman bacaan. Sertakan kutipan/teks pendek lalu tanyakan makna, informasi penting, simpulan, atau tujuan teks.",
+		"TEXT_ANALYSIS":         "Model soal: analisis teks. Minta siswa menganalisis struktur, unsur bahasa, ide pokok, maksud, atau bukti dalam teks.",
+		"CAUSE_EFFECT":          "Model soal: sebab-akibat. Arahkan siswa menghubungkan penyebab, proses, dampak, atau konsekuensi dari suatu konsep/peristiwa.",
+		"EXPERIMENT":            "Model soal: eksperimen/observasi. Gunakan konteks pengamatan, data percobaan sederhana, variabel, atau kesimpulan hasil observasi.",
+		"PROCEDURE":             "Model soal: prosedur kerja. Tanyakan urutan langkah, standar kerja, alat/bahan, keselamatan, atau alasan suatu prosedur.",
+		"TROUBLESHOOTING":       "Model soal: troubleshooting. Sajikan gejala masalah lalu minta siswa menentukan penyebab, pemeriksaan, atau tindakan perbaikan.",
+		"PERFORMANCE":           "Model soal: praktik/performa. Fokus pada kriteria pelaksanaan, teknik, proses, atau penilaian praktik yang sesuai mapel.",
+		"REFLECTION":            "Model soal: refleksi. Dorong siswa menjelaskan alasan, evaluasi proses, nilai yang dipelajari, atau perbaikan diri.",
+		"COMPARISON":            "Model soal: perbandingan. Minta siswa membandingkan dua konsep, situasi, tokoh, metode, atau karakteristik secara bermakna.",
+	}
+
+	return instructions[style]
 }
 
 func normalizeQuestionType(value string) string {
@@ -372,7 +447,40 @@ func GenerateQuestionBankItemsWithGemini(input QuestionBankAIInput) ([]QuestionB
 }
 
 func GenerateQuestionBankItemsWithHuggingFace(input QuestionBankAIInput) ([]QuestionBankAIItem, error) {
-	return GenerateQuestionBankItemsWithGemini(input)
+	if input.QuestionCount <= 0 {
+		input.QuestionCount = 5
+	}
+
+	systemMessage := "Anda adalah penyusun bank soal sekolah. Kembalikan JSON valid saja tanpa markdown, tanpa penjelasan tambahan."
+
+	target := input.QuestionCount
+	for _, batch := range []int{target, minInt(5, target), minInt(3, target), 1} {
+		if batch <= 0 {
+			continue
+		}
+		batchInput := input
+		batchInput.QuestionCount = batch
+		prompt := buildQuestionBankPrompt(batchInput)
+
+		items, err := generateQuestionBankItemsWithHuggingFace(prompt, systemMessage, input.QuestionType, batch)
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "json") {
+				continue
+			}
+			return nil, err
+		}
+
+		seen := make(map[string]bool, len(items))
+		unique := appendUniqueQuestionBankItems(nil, items, seen, batch, 0)
+		if len(unique) < batch {
+			continue
+		}
+
+		unique = populateQuestionBankIllustrations(batchInput, unique)
+		return unique, nil
+	}
+
+	return nil, fmt.Errorf("AI gagal menghasilkan JSON bank soal yang valid. Coba generate ulang.")
 }
 
 func generateQuestionBankItemsWithGemini(prompt, systemMessage, questionType string, questionCount int) ([]QuestionBankAIItem, error) {
@@ -403,6 +511,33 @@ func generateQuestionBankItemsWithGemini(prompt, systemMessage, questionType str
 	items, err := parseQuestionBankItemsFromJSON(extracted, questionType)
 	if err != nil {
 		return nil, fmt.Errorf("hasil OpenRouter tidak bisa diparsing sebagai JSON bank soal: %w", err)
+	}
+
+	return items, nil
+}
+
+func generateQuestionBankItemsWithHuggingFace(prompt, systemMessage, questionType string, questionCount int) ([]QuestionBankAIItem, error) {
+	maxTokens := 1800
+	if questionCount > 0 {
+		maxTokens = 700 + (questionCount * 450)
+		if maxTokens > 6000 {
+			maxTokens = 6000
+		}
+	}
+
+	text, err := callHuggingFaceJSONWithMaxTokens(prompt, systemMessage, 0.7, maxTokens)
+	if err != nil {
+		return nil, err
+	}
+
+	extracted := extractJSONObject(text)
+	if !json.Valid([]byte(extracted)) {
+		return nil, fmt.Errorf("hasil Hugging Face tidak bisa diparsing sebagai JSON bank soal: JSON tidak valid")
+	}
+
+	items, err := parseQuestionBankItemsFromJSON(extracted, questionType)
+	if err != nil {
+		return nil, fmt.Errorf("hasil Hugging Face tidak bisa diparsing sebagai JSON bank soal: %w", err)
 	}
 
 	return items, nil

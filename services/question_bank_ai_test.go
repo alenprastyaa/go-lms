@@ -46,6 +46,21 @@ func TestBuildQuestionBankPromptIncludesNaturalLanguageGuidance(t *testing.T) {
 	}
 }
 
+func TestBuildQuestionBankPromptIncludesQuestionStyleInstruction(t *testing.T) {
+	prompt := buildQuestionBankPrompt(QuestionBankAIInput{
+		SubjectName:   "Matematika",
+		ClassName:     "X",
+		Topic:         "Fungsi Kuadrat",
+		QuestionType:  "MCQ",
+		QuestionCount: 5,
+		QuestionStyle: "MULTI_STEP",
+	})
+
+	if !strings.Contains(prompt, "Model soal: soal beranak/bertahap") {
+		t.Fatalf("prompt does not contain multi-step question style instruction: %q", prompt)
+	}
+}
+
 func TestCleanOptionLabelDoesNotPanicOnShortOrSpacedLabels(t *testing.T) {
 	cases := map[string]string{
 		"A ":            "A",
