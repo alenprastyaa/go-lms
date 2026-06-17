@@ -867,7 +867,213 @@ func NewDatabase() (*gorm.DB, error) {
 	}
 	_ = db.Exec(`UPDATE school_billings SET due_date = (DATE_TRUNC('month', CURRENT_DATE) + ((due_day_of_month - 1) || ' days')::interval)::timestamp WHERE due_date IS NULL`).Error
 
+	if err := db.Exec(`CREATE TABLE IF NOT EXISTS lms_packages (
+		id BIGSERIAL PRIMARY KEY,
+		name TEXT NOT NULL,
+		tagline TEXT NOT NULL DEFAULT '',
+		price NUMERIC(14,2) NOT NULL DEFAULT 0,
+		original_price NUMERIC(14,2) NULL,
+		billing_period TEXT NOT NULL DEFAULT 'bulan',
+		badge_text TEXT NOT NULL DEFAULT '',
+		logo_url TEXT NOT NULL DEFAULT '',
+		is_popular BOOLEAN NOT NULL DEFAULT FALSE,
+		is_active BOOLEAN NOT NULL DEFAULT TRUE,
+		sort_order INTEGER NOT NULL DEFAULT 0,
+		cta_label TEXT NOT NULL DEFAULT 'Pilih Paket',
+		cta_url TEXT NOT NULL DEFAULT '',
+		modules JSONB NOT NULL DEFAULT '[]'::jsonb,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+	)`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_lms_packages_active_order ON lms_packages (is_active, sort_order, id)`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE lms_packages ADD COLUMN IF NOT EXISTS logo_url TEXT NOT NULL DEFAULT ''`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`CREATE TABLE IF NOT EXISTS package_checkout_orders (
+		id BIGSERIAL PRIMARY KEY,
+		reference_id TEXT NOT NULL UNIQUE,
+		package_id BIGINT NOT NULL REFERENCES lms_packages(id) ON DELETE RESTRICT,
+		package_name TEXT NOT NULL,
+		school_name TEXT NOT NULL,
+		email TEXT NOT NULL,
+		amount BIGINT NOT NULL DEFAULT 0,
+		status TEXT NOT NULL DEFAULT 'PENDING',
+		payment_method TEXT NULL,
+		transaction_id TEXT NULL,
+		payment_url TEXT NULL,
+		invoice_sent_at TIMESTAMP NULL,
+		credential_sent_at TIMESTAMP NULL,
+		school_id BIGINT NULL REFERENCES schools(id) ON DELETE SET NULL,
+		admin_user_id BIGINT NULL REFERENCES users(id) ON DELETE SET NULL,
+		paid_at TIMESTAMP NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+	)`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_package_checkout_orders_status ON package_checkout_orders (status, created_at DESC)`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_package_checkout_orders_email ON package_checkout_orders (LOWER(email), created_at DESC)`).Error; err != nil {
+		return nil, err
+	}
+	if err := seedDefaultPackages(db); err != nil {
+		return nil, err
+	}
+	if err := ensureLandingTables(db); err != nil {
+		return nil, err
+	}
+
 	return db, nil
+}
+
+func ensureLandingTables(db *gorm.DB) error {
+	if err := db.Exec(`CREATE TABLE IF NOT EXISTS landing_sections (
+		id BIGSERIAL PRIMARY KEY,
+		section_key TEXT NOT NULL UNIQUE,
+		label TEXT NOT NULL DEFAULT '',
+		content JSONB NOT NULL DEFAULT '{}'::jsonb,
+		is_active BOOLEAN NOT NULL DEFAULT TRUE,
+		sort_order INTEGER NOT NULL DEFAULT 0,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+	)`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_landing_sections_active_order ON landing_sections (is_active, sort_order, section_key)`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`CREATE TABLE IF NOT EXISTS landing_blog_posts (
+		id BIGSERIAL PRIMARY KEY,
+		title TEXT NOT NULL,
+		slug TEXT NOT NULL UNIQUE,
+		excerpt TEXT NOT NULL DEFAULT '',
+		content TEXT NOT NULL DEFAULT '',
+		cover_image_url TEXT NOT NULL DEFAULT '',
+		author_name TEXT NOT NULL DEFAULT '',
+		category TEXT NOT NULL DEFAULT '',
+		tags TEXT NOT NULL DEFAULT '',
+		meta_title TEXT NOT NULL DEFAULT '',
+		meta_description TEXT NOT NULL DEFAULT '',
+		is_published BOOLEAN NOT NULL DEFAULT FALSE,
+		is_featured BOOLEAN NOT NULL DEFAULT FALSE,
+		sort_order INTEGER NOT NULL DEFAULT 0,
+		published_at TIMESTAMP NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+	)`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_landing_blog_posts_public ON landing_blog_posts (is_published, is_featured, sort_order, published_at DESC, id DESC)`).Error; err != nil {
+		return err
+	}
+	return seedLandingSections(db)
+}
+
+func seedLandingSections(db *gorm.DB) error {
+	type seedSection struct {
+		key, label, content string
+		sort                int
+	}
+	seeds := []seedSection{
+		{"seo", "SEO & Metadata", `{"title":"School System LMS - Bitwize Digital Platform","description":"Platform LMS dan operasional sekolah untuk pembelajaran, absensi, ujian, billing, SPMB, koperasi, payroll, dan komunikasi."}`, 1},
+		{"brand", "Brand", `{"name":"Bitwize Digital Platform","shortName":"Bitwize","logoUrl":"/logob.png","tagline":"Digital Platform"}`, 2},
+		{"hero", "Hero / Jumbotron", `{"eyebrow":"","title":"Rapikan operasional sekolah dalam satu sistem yang bisa langsung dipakai.","subtitle":"Bitwize membantu sekolah mengelola pembelajaran, absensi, ujian, tagihan, SPMB, koperasi, payroll, dan komunikasi tanpa rekap manual yang berulang.","primaryLabel":"Konsultasi Paket","primaryHref":"#harga","secondaryLabel":"Cek Modul","secondaryHref":"#fitur"}`, 3},
+		{"metrics", "Hero Metrics", `{"items":[{"value":"10+","label":"Modul operasional"},{"value":"4","label":"Role pengguna utama"},{"value":"1","label":"Sumber data sekolah"},{"value":"24/7","label":"Akses online"}]}`, 4},
+		{"dashboard", "Dashboard Preview", `{"schoolName":"SMA Nusantara","summaryCards":[{"icon":"ph:buildings","label":"Total Kelas","value":"36","caption":"Rombel aktif","cardClass":"bg-sky-600"},{"icon":"ph:student","label":"Total Siswa","value":"1.248","caption":"Siswa terdaftar","cardClass":"bg-amber-500"},{"icon":"ph:chalkboard-teacher","label":"Total Guru","value":"84","caption":"Pengajar aktif","cardClass":"bg-emerald-600"},{"icon":"ph:clipboard-text","label":"Tugas Aktif","value":"36","caption":"Berjalan minggu ini","cardClass":"bg-indigo-600"}]}`, 5},
+		{"pain", "Masalah yang Diselesaikan", `{"eyebrow":"Masalah yang diselesaikan","title":"Stop rekap manual. Satukan data sekolah sebelum pekerjaan makin menumpuk.","items":[{"icon":"ph:files","title":"Rekap manual menghabiskan jam kerja","desc":"Absensi, nilai, tagihan, dan laporan tidak perlu dipindahkan berkali-kali ke file berbeda."},{"icon":"ph:chat-circle-dots","title":"Informasi sekolah harus mudah dicari","desc":"Pengumuman, tugas, dan status pembayaran punya tempat yang jelas, bukan tercecer di chat."},{"icon":"ph:chart-line-down","title":"Manajemen butuh data hari ini","desc":"Pimpinan bisa membaca kondisi sekolah tanpa menunggu laporan manual selesai dibuat."}]}`, 6},
+		{"features", "Fitur / Modul", `{"eyebrow":"Modul produk","title":"Modul penting untuk menjalankan sekolah modern tanpa alat yang terpisah-pisah.","ctaLabel":"Bandingkan paket","ctaHref":"#harga","items":[{"icon":"ph:warehouse","title":"Sarpras","desc":"Catat aset sekolah, kondisi barang, dan kebutuhan fasilitas tanpa spreadsheet terpisah."},{"icon":"ph:calendar-check","title":"Absensi Siswa & Guru","desc":"Kehadiran harian, keterlambatan, dan rekap kelas otomatis masuk laporan."},{"icon":"ph:exam","title":"Ujian Resmi","desc":"Bank soal, jadwal ujian, pengerjaan online, dan hasil evaluasi dalam satu alur."},{"icon":"ph:notebook","title":"Modul Ajar AI","desc":"Bantu guru menyiapkan rancangan modul ajar lebih cepat dan tetap bisa diedit."},{"icon":"ph:storefront","title":"Koperasi","desc":"Transaksi koperasi sekolah tercatat rapi untuk dipantau admin."},{"icon":"ph:money","title":"Payroll","desc":"Komponen gaji, slip payroll, dan pembayaran pegawai dikelola lebih tertib."}]}`, 7},
+		{"workflow", "Alur Kerja", `{"eyebrow":"Cara kerja harian","title":"Alur kerja dibuat jelas: input sekali, dipakai banyak bagian.","description":"Data yang dimasukkan admin, guru, dan siswa bergerak ke rekap yang bisa dibaca manajemen.","items":[{"title":"Admin input data inti","desc":"Kelas, siswa, guru, jurusan, tahun ajaran, dan modul aktif disiapkan sebagai dasar sistem."},{"title":"Guru menjalankan kelas","desc":"Materi, tugas, ujian, nilai, dan absensi dikelola dari tampilan guru."},{"title":"Siswa mengikuti instruksi","desc":"Tugas, pengumuman, hasil belajar, dan informasi sekolah lebih mudah ditemukan."},{"title":"Manajemen membaca angka","desc":"Data operasional terkumpul untuk evaluasi harian, mingguan, atau bulanan."}]}`, 8},
+		{"roles", "Target Role", `{"eyebrow":"Untuk semua peran","title":"Setiap peran mendapat menu yang tepat, tanpa akses yang membingungkan.","items":[{"icon":"ph:briefcase","title":"Admin Sekolah","desc":"Mengendalikan data akademik, absensi, pembayaran, dan laporan operasional."},{"icon":"ph:chalkboard-teacher","title":"Guru","desc":"Mengajar, memberi tugas, membuat ujian, menilai, dan memantau kelas."},{"icon":"ph:student","title":"Siswa & Orang Tua","desc":"Melihat tugas, informasi sekolah, hasil belajar, dan riwayat pembayaran."}]}`, 9},
+		{"pricing", "Pricing Intro", `{"eyebrow":"Paket berlangganan","title":"Pilih paket yang jelas. Aktifkan modul sesuai kebutuhan sekolah.","description":"Paket dapat disesuaikan dari modul yang tersedia, sehingga sekolah tidak membayar fitur yang belum dipakai."}`, 10},
+		{"blog", "Blog Section", `{"eyebrow":"Blog","title":"Insight terbaru untuk operasional sekolah digital.","description":"Artikel praktis tentang LMS, absensi, pembayaran, SPMB, dan manajemen sekolah.","ctaLabel":"Lihat semua artikel","ctaHref":"/blog"}`, 11},
+		{"faq", "FAQ", `{"eyebrow":"FAQ","title":"Pertanyaan umum","items":[{"q":"Apakah modul bisa dipilih sesuai kebutuhan sekolah?","a":"Bisa. Sekolah dapat mulai dari modul utama lalu menambah fitur ketika operasional sudah membutuhkan."},{"q":"Apakah sistem ini hanya untuk pembelajaran online?","a":"Tidak. Bitwize mencakup LMS, absensi, ujian, SPMB, koperasi, payroll, billing, dan komunikasi."},{"q":"Apakah tersedia demo sebelum berlangganan?","a":"Ya. Sekolah dapat menghubungi tim Bitwize melalui WhatsApp atau email untuk menjadwalkan demo singkat."}]}`, 12},
+		{"contact", "Kontak", `{"eyebrow":"Kontak","title":"Siap melihat sistemnya berjalan?","description":"Hubungi Bitwize Digital Platform untuk konsultasi paket, demo singkat, atau penyesuaian modul sekolah.","phone":"085719578195","email":"bitwizedigitalplatform@gmail.com","address":"Jalan Harun II No.126 A, Palmerah, Jakarta Barat","whatsappUrl":"https://wa.me/6285719578195","mapUrl":"https://www.google.com/maps/search/?api=1&query=Jalan%20Harun%20II%20No.126%20A%2C%20Palmerah%2C%20Jakarta%20Barat"}`, 13},
+		{"cta", "CTA Penutup", `{"eyebrow":"Siap dipakai sekolah Anda","title":"Mulai dari modul paling mendesak. Kembangkan saat sekolah siap.","description":"Kami bantu sekolah masuk ke sistem digital secara bertahap, tanpa mengganggu operasional harian.","primaryLabel":"Pilih Paket","primaryHref":"#harga","secondaryLabel":"Login","secondaryHref":"/auth/login"}`, 14},
+		{"footer", "Footer", `{"description":"Platform LMS dan administrasi untuk membantu sekolah mengelola pembelajaran, absensi, tagihan, SPMB, payroll, dan komunikasi dalam satu sistem.","badges":["LMS","Absensi","SPMB","Billing","Payroll"]}`, 15},
+	}
+	for _, seed := range seeds {
+		if err := db.Exec(`INSERT INTO landing_sections (section_key, label, content, sort_order, created_at, updated_at)
+			VALUES (?, ?, ?::jsonb, ?, NOW(), NOW())
+			ON CONFLICT (section_key) DO NOTHING`, seed.key, seed.label, seed.content, seed.sort).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func seedDefaultPackages(db *gorm.DB) error {
+	var count int64
+	if err := db.Table("lms_packages").Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+
+	type seedPkg struct {
+		name, tagline, badge, ctaLabel, ctaURL string
+		price, original                        float64
+		popular                                bool
+		sort                                   int
+		modules                                string
+	}
+	wa := "https://wa.me/6281234567890?text=Halo%2C%20saya%20tertarik%20paket%20"
+	seeds := []seedPkg{
+		{
+			name: "Starter", tagline: "Untuk sekolah / guru yang baru mulai digitalisasi.",
+			price: 149000, original: 249000, sort: 1, ctaLabel: "Pilih Starter", ctaURL: wa + "Starter",
+			modules: `[
+				{"label":"Manajemen Kelas & Siswa","icon":"ph:users-three","included":true},
+				{"label":"Absensi Digital","icon":"ph:calendar-check","included":true},
+				{"label":"Materi & Tugas","icon":"ph:book-open","included":true},
+				{"label":"Ujian & Bank Soal","icon":"ph:exam","included":false},
+				{"label":"Modul Ajar AI","icon":"ph:robot","included":false},
+				{"label":"Payroll & Keuangan","icon":"ph:wallet","included":false}
+			]`,
+		},
+		{
+			name: "Pro", tagline: "Paket terlengkap untuk sekolah yang serius bertumbuh.",
+			price: 349000, original: 499000, badge: "Paling Populer", popular: true, sort: 2,
+			ctaLabel: "Pilih Pro", ctaURL: wa + "Pro",
+			modules: `[
+				{"label":"Manajemen Kelas & Siswa","icon":"ph:users-three","included":true},
+				{"label":"Absensi Digital","icon":"ph:calendar-check","included":true},
+				{"label":"Materi & Tugas","icon":"ph:book-open","included":true},
+				{"label":"Ujian & Bank Soal","icon":"ph:exam","included":true},
+				{"label":"Modul Ajar AI","icon":"ph:robot","included":true},
+				{"label":"Payroll & Keuangan","icon":"ph:wallet","included":false}
+			]`,
+		},
+		{
+			name: "Enterprise", tagline: "Skala yayasan / multi-sekolah dengan dukungan penuh.",
+			price: 749000, original: 999000, badge: "Skala Besar", sort: 3,
+			ctaLabel: "Hubungi Sales", ctaURL: wa + "Enterprise",
+			modules: `[
+				{"label":"Semua fitur paket Pro","icon":"ph:check-circle","included":true},
+				{"label":"Payroll & Keuangan","icon":"ph:wallet","included":true},
+				{"label":"Multi-Sekolah / Yayasan","icon":"ph:buildings","included":true},
+				{"label":"SPMB / PPDB Online","icon":"ph:identification-card","included":true},
+				{"label":"Prioritas Support 24/7","icon":"ph:headset","included":true},
+				{"label":"Onboarding & Pelatihan","icon":"ph:graduation-cap","included":true}
+			]`,
+		},
+	}
+
+	for _, s := range seeds {
+		if err := db.Exec(`INSERT INTO lms_packages
+			(name, tagline, price, original_price, billing_period, badge_text, is_popular, is_active, sort_order, cta_label, cta_url, modules)
+			VALUES (?, ?, ?, ?, 'bulan', ?, ?, TRUE, ?, ?, ?, ?::jsonb)`,
+			s.name, s.tagline, s.price, s.original, s.badge, s.popular, s.sort, s.ctaLabel, s.ctaURL, s.modules,
+		).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func getEnvInt(key string, fallback int) int {

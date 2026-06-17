@@ -33,6 +33,38 @@ func Register(app *fiber.App, db *gorm.DB, hub *realtime.Hub) {
 	registerKoperasi(api, ctx)
 	registerPayroll(api, ctx)
 	registerNotifications(api, ctx)
+	registerPackages(api, ctx)
+	registerLandingCMS(api, ctx)
+}
+
+func registerLandingCMS(api fiber.Router, ctx *controllers.AppContext) {
+	api.Get("/landing/public", ctx.GetPublicLandingContent)
+	api.Get("/blog/posts", ctx.GetPublicBlogPosts)
+	api.Get("/blog/posts/:slug", ctx.GetPublicBlogPost)
+
+	r := api.Group("/landing-cms", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("SUPER_ADMIN"))
+	r.Get("/sections", ctx.GetLandingSections)
+	r.Put("/sections/:key", ctx.UpdateLandingSection)
+	r.Post("/upload", ctx.UploadLandingAsset)
+	r.Get("/blog-posts", ctx.GetLandingBlogPosts)
+	r.Post("/blog-posts", ctx.CreateLandingBlogPost)
+	r.Put("/blog-posts/:id", ctx.UpdateLandingBlogPost)
+	r.Delete("/blog-posts/:id", ctx.DeleteLandingBlogPost)
+}
+
+func registerPackages(api fiber.Router, ctx *controllers.AppContext) {
+	// Public endpoint for the sales landing page (no auth).
+	api.Get("/packages/public", ctx.GetPublicPackages)
+	api.Post("/packages/checkout", ctx.CreatePackageCheckout)
+
+	// Super Admin CMS management.
+	r := api.Group("/packages", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("SUPER_ADMIN"))
+	r.Get("/", ctx.GetPackages)
+	r.Post("/", ctx.CreatePackage)
+	r.Put("/:id", ctx.UpdatePackage)
+	r.Post("/:id/logo", ctx.UploadPackageLogo)
+	r.Delete("/:id/logo", ctx.ClearPackageLogo)
+	r.Delete("/:id", ctx.DeletePackage)
 }
 
 func registerSchoolVisitTargets(api fiber.Router, ctx *controllers.AppContext) {
@@ -317,6 +349,7 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	marketing.Post("/email-offers", ctx.SendSuperAdminMarketingEmail)
 
 	api.Post("/billing/xendit/webhook", ctx.XenditWebhook)
+	api.Post("/billing/ipaymu/webhook", ctx.IPaymuPackageWebhook)
 	api.Post("/koperasi/xendit/webhook", ctx.XenditKoperasiWebhook)
 
 	b := api.Group("/billing", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
