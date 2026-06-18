@@ -39,9 +39,6 @@ func (a *AppContext) CreateSchool(c *fiber.Ctx) error {
 		PayrollModuleEnabled:           true,
 		SPMBModuleEnabled:              false,
 	}
-	if v, ok := parseBoolFormValue(c.FormValue("personal_teacher_mode_enabled")); ok {
-		school.PersonalTeacherModeEnabled = v
-	}
 	if v, ok := parseBoolFormValue(c.FormValue("inventory_module_enabled")); ok {
 		school.InventoryModuleEnabled = v
 	}
@@ -229,9 +226,6 @@ func (a *AppContext) UpdateSchool(c *fiber.Ctx) error {
 	if v := strings.TrimSpace(c.FormValue("spmb_module_enabled")); v != "" {
 		updates["spmb_module_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
 	}
-	if v := strings.TrimSpace(c.FormValue("personal_teacher_mode_enabled")); v != "" {
-		updates["personal_teacher_mode_enabled"] = strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "on")
-	}
 	if strings.EqualFold(strings.TrimSpace(c.FormValue("remove_logo")), "true") {
 		updates["logo_url"] = nil
 	}
@@ -286,9 +280,6 @@ func (a *AppContext) UpdateSchoolModules(c *fiber.Ctx) error {
 	}
 	if v, ok := parseBoolFormValue(c.FormValue("spmb_module_enabled")); ok {
 		updates["spmb_module_enabled"] = v
-	}
-	if v, ok := parseBoolFormValue(c.FormValue("personal_teacher_mode_enabled")); ok {
-		updates["personal_teacher_mode_enabled"] = v
 	}
 	if len(updates) == 0 {
 		return utils.Error(c, 400, "Tidak ada perubahan modul")
@@ -493,7 +484,6 @@ func schoolListQuery(whereClause string) string {
 			COALESCE(s.teaching_module_ai_enabled, true) AS teaching_module_ai_enabled,
 			COALESCE(s.payroll_module_enabled, true) AS payroll_module_enabled,
 			COALESCE(s.spmb_module_enabled, false) AS spmb_module_enabled,
-			COALESCE(s.personal_teacher_mode_enabled, false) AS personal_teacher_mode_enabled,
 			COUNT(DISTINCT CASE WHEN u.role = 'ADMIN' THEN u.id END)::int AS total_admins,
 			COUNT(DISTINCT CASE WHEN u.role = 'GURU' THEN u.id END)::int AS total_teachers,
 			COUNT(DISTINCT CASE WHEN u.role = 'SISWA' THEN u.id END)::int AS total_students,
@@ -508,7 +498,7 @@ func schoolListQuery(whereClause string) string {
 		LEFT JOIN learning_subjects ls ON ls.school_id = s.id
 		LEFT JOIN academic_years ay ON ay.school_id = s.id
 		%s
-		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.attendance_module_enabled, s.attendance_teacher_module_enabled, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, s.attendance_seat_map_columns, s.official_exam_module_enabled, s.koperasi_module_enabled, s.private_chat_module_enabled, s.teaching_module_ai_enabled, s.payroll_module_enabled, s.spmb_module_enabled, s.personal_teacher_mode_enabled
+		GROUP BY s.id, s.name, s.logo_url, s.inventory_module_enabled, s.attendance_module_enabled, s.attendance_teacher_module_enabled, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, s.attendance_seat_map_columns, s.official_exam_module_enabled, s.koperasi_module_enabled, s.private_chat_module_enabled, s.teaching_module_ai_enabled, s.payroll_module_enabled, s.spmb_module_enabled
 	`, whereClause)
 }
 

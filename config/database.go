@@ -114,9 +114,6 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS spmb_module_enabled BOOLEAN NOT NULL DEFAULT FALSE`).Error; err != nil {
 		return nil, err
 	}
-	if err := db.Exec(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS personal_teacher_mode_enabled BOOLEAN NOT NULL DEFAULT FALSE`).Error; err != nil {
-		return nil, err
-	}
 	if err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS face_reference_image TEXT`).Error; err != nil {
 		return nil, err
 	}

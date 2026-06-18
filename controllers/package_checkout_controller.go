@@ -485,7 +485,6 @@ func schoolFromPackageModules(name string, modules models.PackageModules) models
 		TeachingModuleAIEnabled:        included("modul ajar ai"),
 		PayrollModuleEnabled:           included("payroll"),
 		SPMBModuleEnabled:              included("spmb"),
-		PersonalTeacherModeEnabled:     included("guru personal"),
 		AttendanceSeatMapColumns:       4,
 	}
 }
