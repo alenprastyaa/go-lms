@@ -25,11 +25,15 @@ type packagePayload struct {
 	Modules       []models.PackageModule `json:"modules"`
 }
 
+func packageModuleKey(label string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(label))), "_")
+}
+
 func sanitizePackageModules(in []models.PackageModule) models.PackageModules {
 	out := models.PackageModules{}
 	for _, m := range in {
 		label := strings.TrimSpace(m.Label)
-		if label == "" {
+		if label == "" || packageModuleKey(label) == "guru_personal" {
 			continue
 		}
 		out = append(out, models.PackageModule{
@@ -39,6 +43,18 @@ func sanitizePackageModules(in []models.PackageModule) models.PackageModules {
 		})
 	}
 	return out
+}
+
+func sanitizePackageItems(items []models.Package) []models.Package {
+	for i := range items {
+		items[i].Modules = sanitizePackageModules([]models.PackageModule(items[i].Modules))
+	}
+	return items
+}
+
+func sanitizePackageItem(item models.Package) models.Package {
+	item.Modules = sanitizePackageModules([]models.PackageModule(item.Modules))
+	return item
 }
 
 func applyPackagePayload(p *models.Package, body packagePayload) {
@@ -117,6 +133,7 @@ func (a *AppContext) GetPublicPackages(c *fiber.Ctx) error {
 		Find(&items).Error; err != nil {
 		return utils.Error(c, 500, "Gagal memuat daftar paket", err.Error())
 	}
+	items = sanitizePackageItems(items)
 	return utils.Success(c, 200, "Daftar paket publik", fiber.Map{"packages": items})
 }
 
@@ -126,6 +143,7 @@ func (a *AppContext) GetPackages(c *fiber.Ctx) error {
 	if err := a.DB.Order("sort_order ASC, id ASC").Find(&items).Error; err != nil {
 		return utils.Error(c, 500, "Gagal memuat daftar paket", err.Error())
 	}
+	items = sanitizePackageItems(items)
 	return utils.Success(c, 200, "Daftar paket", fiber.Map{"packages": items})
 }
 
@@ -148,6 +166,7 @@ func (a *AppContext) CreatePackage(c *fiber.Ctx) error {
 	if err := a.DB.Create(&item).Error; err != nil {
 		return utils.Error(c, 500, "Gagal membuat paket", err.Error())
 	}
+	item = sanitizePackageItem(item)
 	return utils.Success(c, 201, "Paket berhasil dibuat", fiber.Map{"package": item})
 }
 
@@ -196,6 +215,7 @@ func (a *AppContext) UpdatePackage(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Gagal memperbarui paket", err.Error())
 	}
 
+	current = sanitizePackageItem(current)
 	return utils.Success(c, 200, "Paket berhasil diperbarui", fiber.Map{"package": current})
 }
 
