@@ -147,6 +147,15 @@ func NewDatabase() (*gorm.DB, error) {
 	if err := db.Exec(`ALTER TABLE IF EXISTS school_visit_targets ADD COLUMN IF NOT EXISTS email TEXT`).Error; err != nil {
 		return nil, err
 	}
+	if err := db.Exec(`ALTER TABLE IF EXISTS school_visit_targets ADD COLUMN IF NOT EXISTS npsn TEXT`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE IF EXISTS school_visit_targets ADD COLUMN IF NOT EXISTS status TEXT`).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Exec(`ALTER TABLE IF EXISTS school_visit_targets ADD COLUMN IF NOT EXISTS phone TEXT`).Error; err != nil {
+		return nil, err
+	}
 	if err := ensurePostgresEnumValues(db, "user_role", userRoleValues); err != nil {
 		return nil, err
 	}
@@ -449,7 +458,10 @@ func NewDatabase() (*gorm.DB, error) {
 		)`,
 		`CREATE TABLE IF NOT EXISTS school_visit_targets (
 			id BIGSERIAL PRIMARY KEY,
+			npsn TEXT NULL,
 			name TEXT NOT NULL,
+			status TEXT NULL,
+			phone TEXT NULL,
 			email TEXT NULL,
 			wakur TEXT NULL,
 			kepsek TEXT NULL,

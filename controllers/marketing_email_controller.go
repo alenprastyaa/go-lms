@@ -125,25 +125,6 @@ func (a *AppContext) GetSuperAdminMarketingEmailStatuses(c *fiber.Ctx) error {
 		statuses[row.Email] = item
 	}
 
-	if cfg, err := services.LoadBrevoEmailConfigFromEnv(); err == nil {
-		for _, email := range emails {
-			if statuses[email].Sent {
-				continue
-			}
-			sent, err := services.HasBrevoTransactionalEvent(cfg, email)
-			if err != nil || !sent {
-				continue
-			}
-			statuses[email] = marketingEmailStatus{
-				Email:  email,
-				Sent:   true,
-				Status: "Penawaran terkirim",
-				Source: "brevo",
-			}
-			_ = a.recordMarketingEmailOffer(marketingEmailRecipient{Email: email}, true, "brevo-history")
-		}
-	}
-
 	items := make([]marketingEmailStatus, 0, len(emails))
 	for _, email := range emails {
 		items = append(items, statuses[email])
@@ -378,17 +359,7 @@ func (a *AppContext) marketingEmailAlreadySent(email string) (bool, error) {
 	if count > 0 {
 		return true, nil
 	}
-
-	cfg, err := services.LoadBrevoEmailConfigFromEnv()
-	if err != nil {
-		return false, nil
-	}
-	sent, err := services.HasBrevoTransactionalEvent(cfg, normalized)
-	if err != nil || !sent {
-		return false, err
-	}
-	_ = a.recordMarketingEmailOffer(marketingEmailRecipient{Email: normalized}, true, "brevo-history")
-	return true, nil
+	return false, nil
 }
 
 func (a *AppContext) recordMarketingEmailOffer(recipient marketingEmailRecipient, success bool, source string) error {

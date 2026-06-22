@@ -4,7 +4,10 @@ import "time"
 
 type SchoolVisitTarget struct {
 	ID            uint       `gorm:"column:id;primaryKey" json:"id"`
+	NPSN          *string    `gorm:"column:npsn" json:"npsn"`
 	Name          string     `gorm:"column:name" json:"name"`
+	Status        *string    `gorm:"column:status" json:"status"`
+	Phone         *string    `gorm:"column:phone" json:"phone"`
 	Email         *string    `gorm:"column:email" json:"email"`
 	Wakur         *string    `gorm:"column:wakur" json:"wakur"`
 	Kepsek        *string    `gorm:"column:kepsek" json:"kepsek"`

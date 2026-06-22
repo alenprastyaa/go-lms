@@ -12,10 +12,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"gorm.io/gorm"
 	"lms/services"
 	"lms/utils"
+
+	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 )
 
 func (a *AppContext) GetSuperAdminDashboard(c *fiber.Ctx) error {
@@ -820,7 +821,7 @@ func (a *AppContext) RunAdminLoadTest(c *fiber.Ctx) error {
 
 	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
-		port = "9900"
+		port = "6210"
 	}
 	targetURL := fmt.Sprintf("http://127.0.0.1:%s/api/admin-settings/summary", port)
 	client := &http.Client{Timeout: 60 * time.Second}
@@ -942,7 +943,7 @@ func (a *AppContext) RunAdminLoginLoadTest(c *fiber.Ctx) error {
 
 	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
-		port = "9900"
+		port = "6210"
 	}
 	targetURL := fmt.Sprintf("http://127.0.0.1:%s/api/auth/login", port)
 	client := &http.Client{Timeout: 60 * time.Second}

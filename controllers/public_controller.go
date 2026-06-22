@@ -126,3 +126,56 @@ func (a *AppContext) SearchPublicLocations(c *fiber.Ctx) error {
 		"items": items,
 	})
 }
+
+func (a *AppContext) GetPublicWilayahProvinces(c *fiber.Ctx) error {
+	return proxyWilayahList(c, "https://wilayah.id/api/provinces.json")
+}
+
+func (a *AppContext) GetPublicWilayahRegencies(c *fiber.Ctx) error {
+	provinceCode := strings.TrimSpace(c.Params("provinceCode"))
+	if provinceCode == "" {
+		return utils.Error(c, 400, "Kode provinsi wajib diisi")
+	}
+	return proxyWilayahList(c, "https://wilayah.id/api/regencies/"+url.PathEscape(provinceCode)+".json")
+}
+
+func (a *AppContext) GetPublicWilayahDistricts(c *fiber.Ctx) error {
+	regencyCode := strings.TrimSpace(c.Params("regencyCode"))
+	if regencyCode == "" {
+		return utils.Error(c, 400, "Kode kabupaten/kota wajib diisi")
+	}
+	return proxyWilayahList(c, "https://wilayah.id/api/districts/"+url.PathEscape(regencyCode)+".json")
+}
+
+func proxyWilayahList(c *fiber.Ctx, targetURL string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return utils.Error(c, 500, "Gagal menyiapkan request wilayah")
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", "SchoolSystem/1.0")
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return utils.Error(c, 502, "Gagal mengambil data wilayah", err.Error())
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return utils.Error(c, 502, "Layanan wilayah gagal", fmt.Sprintf("status %d", response.StatusCode))
+	}
+
+	var payload struct {
+		Data []map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return utils.Error(c, 500, "Gagal membaca data wilayah", err.Error())
+	}
+
+	return utils.Success(c, 200, "Success Get Wilayah", fiber.Map{
+		"items": payload.Data,
+	})
+}

@@ -18,7 +18,10 @@ import (
 )
 
 type schoolVisitTargetPayload struct {
+	NPSN          *string  `json:"npsn"`
 	Name          *string  `json:"name"`
+	Status        *string  `json:"status"`
+	Phone         *string  `json:"phone"`
 	Email         *string  `json:"email"`
 	Wakur         *string  `json:"wakur"`
 	Kepsek        *string  `json:"kepsek"`
@@ -63,7 +66,10 @@ func (a *AppContext) GetSchoolVisitTargets(c *fiber.Ctx) error {
 	if search != "" {
 		like := "%" + search + "%"
 		query = query.Where(`
-				name ILIKE ?
+				COALESCE(npsn, '') ILIKE ?
+				OR name ILIKE ?
+				OR COALESCE(status, '') ILIKE ?
+				OR COALESCE(phone, '') ILIKE ?
 				OR COALESCE(email, '') ILIKE ?
 				OR COALESCE(wakur, '') ILIKE ?
 			OR COALESCE(kepsek, '') ILIKE ?
@@ -71,7 +77,7 @@ func (a *AppContext) GetSchoolVisitTargets(c *fiber.Ctx) error {
 			OR COALESCE(province, '') ILIKE ?
 			OR COALESCE(city, '') ILIKE ?
 			OR COALESCE(district, '') ILIKE ?
-			`, like, like, like, like, like, like, like, like)
+			`, like, like, like, like, like, like, like, like, like, like, like)
 	}
 	if rawVisited := strings.TrimSpace(c.Query("is_visited")); rawVisited != "" {
 		if visited, err := strconv.ParseBool(rawVisited); err == nil {
@@ -133,7 +139,10 @@ func (a *AppContext) CreateSchoolVisitTarget(c *fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(uint)
 	now := time.Now()
 	item := models.SchoolVisitTarget{
+		NPSN:          trimPtr(body.NPSN),
 		Name:          name,
+		Status:        trimPtr(body.Status),
+		Phone:         trimPtr(body.Phone),
 		Email:         trimPtr(body.Email),
 		Wakur:         trimPtr(body.Wakur),
 		Kepsek:        trimPtr(body.Kepsek),
@@ -200,6 +209,15 @@ func (a *AppContext) UpdateSchoolVisitTarget(c *fiber.Ctx) error {
 		}
 		updates["name"] = name
 		current.Name = name
+	}
+	if body.NPSN != nil {
+		updates["npsn"] = nullableTrim(*body.NPSN)
+	}
+	if body.Status != nil {
+		updates["status"] = nullableTrim(*body.Status)
+	}
+	if body.Phone != nil {
+		updates["phone"] = nullableTrim(*body.Phone)
 	}
 	if body.FullAddress != nil {
 		updates["full_address"] = nullableTrim(*body.FullAddress)
