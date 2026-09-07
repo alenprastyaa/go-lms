@@ -484,7 +484,6 @@ func schoolFromPackageModules(name string, modules models.PackageModules) models
 		PrivateChatModuleEnabled:       included("chat pribadi"),
 		TeachingModuleAIEnabled:        included("modul ajar ai"),
 		PayrollModuleEnabled:           included("payroll"),
-		SPMBModuleEnabled:              included("spmb"),
 		AttendanceSeatMapColumns:       4,
 	}
 }

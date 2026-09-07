@@ -1,0 +1,12 @@
+.git
+.github
+.gocache
+tmp
+uploads
+*.log
+lms
+main
+.env
+.env.*
+.air.toml
+**/*_test.go

@@ -67,7 +67,7 @@ func buildPowerPointPrompt(input PowerPointAIInput) string {
 	return strings.Join(parts, "\n")
 }
 
-func GeneratePowerPointOutlineWithHuggingFace(input PowerPointAIInput) (*PowerPointAIOutline, error) {
+func GeneratePowerPointOutlineWithAI(input PowerPointAIInput) (*PowerPointAIOutline, error) {
 	if input.SlideCount < 3 {
 		input.SlideCount = 3
 	}
@@ -75,10 +75,12 @@ func GeneratePowerPointOutlineWithHuggingFace(input PowerPointAIInput) (*PowerPo
 		input.SlideCount = 15
 	}
 
-	text, err := callHuggingFace(
+	text, err := callOpenRouterText(
+		"powerpoint-outline",
 		buildPowerPointPrompt(input),
 		"Anda adalah asisten guru yang membuat outline presentasi dan wajib mengembalikan JSON valid tanpa markdown.",
 		0.7,
+		0,
 	)
 	if err != nil {
 		return nil, err
@@ -86,12 +88,12 @@ func GeneratePowerPointOutlineWithHuggingFace(input PowerPointAIInput) (*PowerPo
 
 	var parsed powerPointAIResponse
 	if err := json.Unmarshal([]byte(extractJSONObject(text)), &parsed); err != nil {
-		return nil, fmt.Errorf("hasil Hugging Face tidak bisa diparsing sebagai JSON presentasi: %w", err)
+		return nil, fmt.Errorf("hasil AI tidak bisa diparsing sebagai JSON presentasi: %w", err)
 	}
 
 	slides := normalizePowerPointSlides(parsed.Slides, input.MaterialTitle, input.SlideCount)
 	if len(slides) == 0 {
-		return nil, fmt.Errorf("hasil Hugging Face tidak valid untuk dijadikan presentasi")
+		return nil, fmt.Errorf("hasil AI tidak valid untuk dijadikan presentasi")
 	}
 
 	presentationTitle := strings.TrimSpace(parsed.PresentationTitle)

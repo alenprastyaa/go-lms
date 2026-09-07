@@ -23,6 +23,9 @@ type curriculumSubjectRow struct {
 	PreferredRoomName  string `gorm:"column:preferred_room_name" json:"preferred_room_name"`
 	PreferredRoomColor string `gorm:"column:preferred_room_color" json:"preferred_room_color"`
 	AssignedTeacherIDs []uint `gorm:"-" json:"assigned_teacher_ids"`
+	// JP per tingkat kelas. Kosong berarti seluruh tingkat memakai weekly_hours.
+	LevelHours        []subjectLevelHour `gorm:"-" json:"level_hours"`
+	LevelHoursSummary string             `gorm:"-" json:"level_hours_summary"`
 }
 
 type curriculumRoomRow struct {
@@ -104,6 +107,22 @@ type curriculumScheduleEntryRow struct {
 	SlotLabel         string `gorm:"column:slot_label" json:"slot_label"`
 }
 
+type scheduleIssue struct {
+	Category    string `json:"category"`
+	Title       string `json:"title"`
+	Location    string `json:"location"`
+	Detail      string `json:"detail"`
+	Solution    string `json:"solution"`
+	Route       string `json:"route"`
+	ActionLabel string `json:"action_label"`
+	Severity    string `json:"severity"`
+}
+
+type classSubjectKey struct {
+	ClassID   uint
+	SubjectID uint
+}
+
 func (a *AppContext) GetCurriculumOverview(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 
@@ -117,7 +136,16 @@ func (a *AppContext) GetCurriculumOverview(c *fiber.Ctx) error {
 		"generated_entries":   len(generatedEntries),
 	}
 
+	// Tingkat kelas dikirim agar layar mapel dapat menampilkan satu kolom JP per tingkat.
+	var classLevels []struct {
+		ID        uint   `gorm:"column:id" json:"id"`
+		Name      string `gorm:"column:name" json:"name"`
+		SortOrder int    `gorm:"column:sort_order" json:"sort_order"`
+	}
+	a.DB.Raw(`SELECT id, name, sort_order FROM class_levels WHERE school_id = ? ORDER BY sort_order ASC, name ASC`, schoolID).Scan(&classLevels)
+
 	return utils.Success(c, 200, "Success Get Curriculum Overview", fiber.Map{
+		"class_levels":        classLevels,
 		"subjects":            subjects,
 		"rooms":               rooms,
 		"teacher_loads":       teacherLoads,
@@ -131,12 +159,13 @@ func (a *AppContext) GetCurriculumOverview(c *fiber.Ctx) error {
 func (a *AppContext) CreateCurriculumSubject(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 	var body struct {
-		Code             string `json:"code"`
-		Name             string `json:"name"`
-		Description      string `json:"description"`
-		WeeklyHours      int    `json:"weekly_hours"`
-		RequiredRoomType string `json:"required_room_type"`
-		PreferredRoomID  uint   `json:"preferred_room_id"`
+		Code             string                  `json:"code"`
+		Name             string                  `json:"name"`
+		Description      string                  `json:"description"`
+		WeeklyHours      int                     `json:"weekly_hours"`
+		RequiredRoomType string                  `json:"required_room_type"`
+		PreferredRoomID  uint                    `json:"preferred_room_id"`
+		LevelHours       []subjectLevelHourInput `json:"level_hours"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return utils.Error(c, 400, "Invalid request body")
@@ -160,21 +189,126 @@ func (a *AppContext) CreateCurriculumSubject(c *fiber.Ctx) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
 		RETURNING id, school_id, COALESCE(code, '') AS code, name, COALESCE(description, '') AS description, weekly_hours, required_room_type, COALESCE(preferred_room_id, 0) AS preferred_room_id
 	`, schoolID, nullIfEmpty(strings.ToUpper(strings.TrimSpace(body.Code))), name, nullIfEmpty(body.Description), body.WeeklyHours, roomType, nullIfZero(int(body.PreferredRoomID))).Scan(&row)
+
+	if err := simpanLevelHours(a.DB, schoolID, row.ID, body.LevelHours); err != nil {
+		return utils.Error(c, 400, err.Error())
+	}
+
 	a.DB.Raw(curriculumSubjectQuery()+` WHERE cs.id = ?`, row.ID).Scan(&row)
+	a.lampirkanLevelHours(schoolID, []*curriculumSubjectRow{&row})
 
 	return utils.Success(c, 201, "Success Create Curriculum Subject", row)
+}
+
+func (a *AppContext) BulkCreateCurriculumSubjects(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	var body struct {
+		Subjects []struct {
+			Code             string `json:"code"`
+			Name             string `json:"name"`
+			WeeklyHours      int    `json:"weekly_hours"`
+			RequiredRoomType string `json:"required_room_type"`
+		} `json:"subjects"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return utils.Error(c, 400, "Invalid request body")
+	}
+	if len(body.Subjects) == 0 {
+		return utils.Error(c, 400, "Data mapel kosong")
+	}
+	if len(body.Subjects) > 500 {
+		return utils.Error(c, 400, "Maksimal 500 mapel per import")
+	}
+
+	type existingSubjectRow struct {
+		ID   uint
+		Code string
+		Name string
+	}
+	var existing []existingSubjectRow
+	a.DB.Raw(`
+		SELECT id, COALESCE(code, '') AS code, name
+		FROM curriculum_subjects
+		WHERE school_id = ?
+	`, schoolID).Scan(&existing)
+
+	existingByName := map[string]bool{}
+	existingByCode := map[string]bool{}
+	for _, row := range existing {
+		existingByName[strings.ToLower(strings.TrimSpace(row.Name))] = true
+		if code := strings.TrimSpace(row.Code); code != "" {
+			existingByCode[strings.ToLower(code)] = true
+		}
+	}
+
+	created := 0
+	skipped := 0
+	var skippedNames []string
+	var errorMessages []string
+	seenInBatch := map[string]bool{}
+
+	for index, item := range body.Subjects {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			errorMessages = append(errorMessages, fmt.Sprintf("Baris %d: nama mapel wajib diisi", index+1))
+			continue
+		}
+		key := strings.ToLower(name)
+		if existingByName[key] || seenInBatch[key] {
+			skipped++
+			skippedNames = append(skippedNames, name)
+			continue
+		}
+		code := strings.ToUpper(strings.TrimSpace(item.Code))
+		if code != "" && (existingByCode[strings.ToLower(code)] || seenInBatch["code:"+strings.ToLower(code)]) {
+			skipped++
+			skippedNames = append(skippedNames, name)
+			continue
+		}
+
+		weeklyHours := item.WeeklyHours
+		if weeklyHours <= 0 {
+			weeklyHours = 2
+		}
+		roomType := normalizeCurriculumRoomType(item.RequiredRoomType)
+
+		var row curriculumSubjectRow
+		a.DB.Raw(`
+			INSERT INTO curriculum_subjects (school_id, code, name, description, weekly_hours, required_room_type, preferred_room_id, created_at, updated_at)
+			VALUES (?, ?, ?, '', ?, ?, 0, NOW(), NOW())
+			RETURNING id, school_id, COALESCE(code, '') AS code, name, COALESCE(description, '') AS description, weekly_hours, required_room_type, COALESCE(preferred_room_id, 0) AS preferred_room_id
+		`, schoolID, nullIfEmpty(code), name, weeklyHours, roomType).Scan(&row)
+		if row.ID == 0 {
+			errorMessages = append(errorMessages, fmt.Sprintf("Baris %d: gagal menyimpan %s", index+1, name))
+			continue
+		}
+
+		created++
+		seenInBatch[key] = true
+		if code != "" {
+			seenInBatch["code:"+strings.ToLower(code)] = true
+		}
+	}
+
+	return utils.Success(c, 201, "Success Bulk Create Curriculum Subjects", fiber.Map{
+		"created":       created,
+		"skipped":       skipped,
+		"skipped_names": skippedNames,
+		"errors":        errorMessages,
+	})
 }
 
 func (a *AppContext) UpdateCurriculumSubject(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 	id := c.Params("id")
 	var body struct {
-		Code             string `json:"code"`
-		Name             string `json:"name"`
-		Description      string `json:"description"`
-		WeeklyHours      int    `json:"weekly_hours"`
-		RequiredRoomType string `json:"required_room_type"`
-		PreferredRoomID  uint   `json:"preferred_room_id"`
+		Code             string                  `json:"code"`
+		Name             string                  `json:"name"`
+		Description      string                  `json:"description"`
+		WeeklyHours      int                     `json:"weekly_hours"`
+		RequiredRoomType string                  `json:"required_room_type"`
+		PreferredRoomID  uint                    `json:"preferred_room_id"`
+		LevelHours       []subjectLevelHourInput `json:"level_hours"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return utils.Error(c, 400, "Invalid request body")
@@ -202,7 +336,11 @@ func (a *AppContext) UpdateCurriculumSubject(c *fiber.Ctx) error {
 	if row.ID == 0 {
 		return utils.Error(c, 404, "Data mapel kurikulum tidak ditemukan")
 	}
+	if err := simpanLevelHours(a.DB, schoolID, row.ID, body.LevelHours); err != nil {
+		return utils.Error(c, 400, err.Error())
+	}
 	a.DB.Raw(curriculumSubjectQuery()+` WHERE cs.id = ?`, row.ID).Scan(&row)
+	a.lampirkanLevelHours(schoolID, []*curriculumSubjectRow{&row})
 
 	return utils.Success(c, 200, "Success Update Curriculum Subject", row)
 }
@@ -225,6 +363,44 @@ func (a *AppContext) DeleteCurriculumSubject(c *fiber.Ctx) error {
 	a.DB.Exec(`DELETE FROM curriculum_teacher_loads WHERE school_id = ? AND curriculum_subject_id = ?`, schoolID, row.ID)
 	a.DB.Exec(`DELETE FROM curriculum_schedule_entries WHERE school_id = ? AND curriculum_subject_id = ?`, schoolID, row.ID)
 	return utils.Success(c, 200, "Success Delete Curriculum Subject", row)
+}
+
+func (a *AppContext) BulkDeleteCurriculumSubjects(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	var body struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return utils.Error(c, 400, "Invalid request body")
+	}
+	if len(body.IDs) == 0 {
+		return utils.Error(c, 400, "Pilih minimal satu mapel yang akan dihapus")
+	}
+	if len(body.IDs) > 500 {
+		return utils.Error(c, 400, "Maksimal 500 mapel per penghapusan")
+	}
+
+	tx := a.DB.Begin()
+	if tx.Error != nil {
+		return utils.Error(c, 500, "Gagal memulai transaksi")
+	}
+
+	var count int64
+	tx.Raw(`SELECT COUNT(*) FROM curriculum_subjects WHERE school_id = ? AND id IN ?`, schoolID, body.IDs).Scan(&count)
+	if count == 0 {
+		tx.Rollback()
+		return utils.Error(c, 404, "Tidak ada mapel yang ditemukan")
+	}
+
+	tx.Exec(`DELETE FROM curriculum_class_distributions WHERE school_id = ? AND curriculum_teacher_load_id IN (SELECT id FROM curriculum_teacher_loads WHERE school_id = ? AND curriculum_subject_id IN ?)`, schoolID, schoolID, body.IDs)
+	tx.Exec(`DELETE FROM curriculum_teacher_loads WHERE school_id = ? AND curriculum_subject_id IN ?`, schoolID, body.IDs)
+	tx.Exec(`DELETE FROM curriculum_schedule_entries WHERE school_id = ? AND curriculum_subject_id IN ?`, schoolID, body.IDs)
+	tx.Exec(`DELETE FROM curriculum_subjects WHERE school_id = ? AND id IN ?`, schoolID, body.IDs)
+
+	if err := tx.Commit().Error; err != nil {
+		return utils.Error(c, 500, "Gagal menghapus mapel", err.Error())
+	}
+	return utils.Success(c, 200, "Success Bulk Delete Curriculum Subjects", fiber.Map{"deleted": count})
 }
 
 func (a *AppContext) CreateCurriculumRoom(c *fiber.Ctx) error {
@@ -331,6 +507,61 @@ func (a *AppContext) DeleteCurriculumRoom(c *fiber.Ctx) error {
 	return utils.Success(c, 200, "Success Delete Curriculum Room", row)
 }
 
+func (a *AppContext) BulkDeleteCurriculumRooms(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	var body struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return utils.Error(c, 400, "Invalid request body")
+	}
+	if len(body.IDs) == 0 {
+		return utils.Error(c, 400, "Pilih minimal satu ruang yang akan dihapus")
+	}
+	if len(body.IDs) > 500 {
+		return utils.Error(c, 400, "Maksimal 500 ruang per penghapusan")
+	}
+
+	var blockedIDs []uint
+	a.DB.Raw(`
+		SELECT id FROM curriculum_rooms
+		WHERE school_id = ? AND id IN ?
+		  AND (
+		    id IN (SELECT preferred_room_id FROM curriculum_subjects WHERE school_id = ? AND preferred_room_id IS NOT NULL)
+		    OR id IN (SELECT room_id FROM curriculum_schedule_entries WHERE school_id = ? AND room_id IS NOT NULL)
+		  )
+	`, schoolID, body.IDs, schoolID, schoolID).Scan(&blockedIDs)
+
+	blocked := map[uint]bool{}
+	for _, id := range blockedIDs {
+		blocked[id] = true
+	}
+	deletable := make([]uint, 0, len(body.IDs))
+	for _, id := range body.IDs {
+		if !blocked[id] {
+			deletable = append(deletable, id)
+		}
+	}
+
+	if len(deletable) == 0 {
+		return utils.Error(c, 400, "Semua ruang terpilih masih dipakai oleh mapel atau hasil jadwal")
+	}
+
+	tx := a.DB.Begin()
+	if tx.Error != nil {
+		return utils.Error(c, 500, "Gagal memulai transaksi")
+	}
+	tx.Exec(`DELETE FROM curriculum_rooms WHERE school_id = ? AND id IN ?`, schoolID, deletable)
+	if err := tx.Commit().Error; err != nil {
+		return utils.Error(c, 500, "Gagal menghapus ruang", err.Error())
+	}
+	return utils.Success(c, 200, "Success Bulk Delete Curriculum Rooms", fiber.Map{
+		"deleted":         len(deletable),
+		"skipped":         len(blockedIDs),
+		"skipped_blocked": blockedIDs,
+	})
+}
+
 func (a *AppContext) CreateCurriculumTeacherLoad(c *fiber.Ctx) error {
 	schoolID := c.Locals("schoolID").(uint)
 	var body struct {
@@ -360,6 +591,105 @@ func (a *AppContext) CreateCurriculumTeacherLoad(c *fiber.Ctx) error {
 
 	a.DB.Raw(curriculumTeacherLoadQuery()+` WHERE ctl.id = ?`, row.ID).Scan(&row)
 	return utils.Success(c, 201, "Success Save Curriculum Teacher Load", row)
+}
+
+func (a *AppContext) BulkCreateCurriculumTeacherLoads(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	var body struct {
+		TeacherIDs           []uint `json:"teacher_ids"`
+		CurriculumSubjectIDs []uint `json:"curriculum_subject_ids"`
+		MaxWeeklyHours       int    `json:"max_weekly_hours"`
+		Notes                string `json:"notes"`
+		Overwrite            bool   `json:"overwrite"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return utils.Error(c, 400, "Invalid request body")
+	}
+	if len(body.TeacherIDs) == 0 || len(body.CurriculumSubjectIDs) == 0 {
+		return utils.Error(c, 400, "Guru dan mapel wajib dipilih")
+	}
+	if len(body.TeacherIDs) > 200 || len(body.CurriculumSubjectIDs) > 200 {
+		return utils.Error(c, 400, "Maksimal 200 guru dan 200 mapel per import")
+	}
+	if body.MaxWeeklyHours <= 0 {
+		body.MaxWeeklyHours = 12
+	}
+
+	validTeacherIDs := a.curriculumTeachersBelongToSchool(schoolID, body.TeacherIDs)
+	validSubjectIDs := a.curriculumSubjectsBelongToSchool(schoolID, body.CurriculumSubjectIDs)
+	if len(validTeacherIDs) == 0 || len(validSubjectIDs) == 0 {
+		return utils.Error(c, 400, "Guru atau mapel tidak valid untuk sekolah ini")
+	}
+
+	var invalidTeacherIDs []uint
+	var invalidSubjectIDs []uint
+	cleanTeacherIDs := make([]uint, 0, len(body.TeacherIDs))
+	for _, tid := range body.TeacherIDs {
+		if validTeacherIDs[tid] {
+			cleanTeacherIDs = append(cleanTeacherIDs, tid)
+		} else {
+			invalidTeacherIDs = append(invalidTeacherIDs, tid)
+		}
+	}
+	cleanSubjectIDs := make([]uint, 0, len(body.CurriculumSubjectIDs))
+	for _, sid := range body.CurriculumSubjectIDs {
+		if validSubjectIDs[sid] {
+			cleanSubjectIDs = append(cleanSubjectIDs, sid)
+		} else {
+			invalidSubjectIDs = append(invalidSubjectIDs, sid)
+		}
+	}
+
+	type existingPair struct {
+		TeacherID           uint `gorm:"column:teacher_id"`
+		CurriculumSubjectID uint `gorm:"column:curriculum_subject_id"`
+	}
+	var existingPairs []existingPair
+	if len(cleanTeacherIDs) > 0 && len(cleanSubjectIDs) > 0 {
+		a.DB.Raw(`SELECT teacher_id, curriculum_subject_id FROM curriculum_teacher_loads WHERE school_id = ? AND teacher_id IN ? AND curriculum_subject_id IN ?`, schoolID, cleanTeacherIDs, cleanSubjectIDs).Scan(&existingPairs)
+	}
+	existing := map[string]bool{}
+	for _, p := range existingPairs {
+		existing[fmt.Sprintf("%d:%d", p.TeacherID, p.CurriculumSubjectID)] = true
+	}
+
+	created := 0
+	updated := 0
+	skippedExisting := 0
+	notes := nullIfEmpty(body.Notes)
+
+	tx := a.DB.Begin()
+	if tx.Error != nil {
+		return utils.Error(c, 500, "Gagal memulai transaksi")
+	}
+	for _, teacherID := range cleanTeacherIDs {
+		for _, subjectID := range cleanSubjectIDs {
+			key := fmt.Sprintf("%d:%d", teacherID, subjectID)
+			if existing[key] {
+				if !body.Overwrite {
+					skippedExisting++
+					continue
+				}
+				tx.Exec(`UPDATE curriculum_teacher_loads SET max_weekly_hours = ?, notes = ?, updated_at = NOW() WHERE school_id = ? AND teacher_id = ? AND curriculum_subject_id = ?`, body.MaxWeeklyHours, notes, schoolID, teacherID, subjectID)
+				updated++
+			} else {
+				tx.Exec(`INSERT INTO curriculum_teacher_loads (school_id, teacher_id, curriculum_subject_id, max_weekly_hours, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW()) ON CONFLICT (school_id, teacher_id, curriculum_subject_id) DO NOTHING`, schoolID, teacherID, subjectID, body.MaxWeeklyHours, notes)
+				created++
+			}
+		}
+	}
+	if err := tx.Commit().Error; err != nil {
+		return utils.Error(c, 500, "Gagal menyimpan beban guru", err.Error())
+	}
+
+	return utils.Success(c, 201, "Success Bulk Create Curriculum Teacher Loads", fiber.Map{
+		"created":             created,
+		"updated":             updated,
+		"skipped_existing":    skippedExisting,
+		"invalid_teacher_ids": invalidTeacherIDs,
+		"invalid_subject_ids": invalidSubjectIDs,
+		"overwrite":           body.Overwrite,
+	})
 }
 
 func (a *AppContext) UpdateCurriculumTeacherLoad(c *fiber.Ctx) error {
@@ -412,6 +742,39 @@ func (a *AppContext) DeleteCurriculumTeacherLoad(c *fiber.Ctx) error {
 
 	a.DB.Exec(`DELETE FROM curriculum_class_distributions WHERE school_id = ? AND curriculum_teacher_load_id = ?`, schoolID, row.ID)
 	return utils.Success(c, 200, "Success Delete Curriculum Teacher Load", row)
+}
+
+func (a *AppContext) BulkDeleteCurriculumTeacherLoads(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	var body struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return utils.Error(c, 400, "Invalid request body")
+	}
+	if len(body.IDs) == 0 {
+		return utils.Error(c, 400, "Pilih minimal satu beban guru yang akan dihapus")
+	}
+	if len(body.IDs) > 500 {
+		return utils.Error(c, 400, "Maksimal 500 beban guru per penghapusan")
+	}
+
+	var count int64
+	a.DB.Raw(`SELECT COUNT(*) FROM curriculum_teacher_loads WHERE school_id = ? AND id IN ?`, schoolID, body.IDs).Scan(&count)
+	if count == 0 {
+		return utils.Error(c, 404, "Tidak ada beban guru yang ditemukan")
+	}
+
+	tx := a.DB.Begin()
+	if tx.Error != nil {
+		return utils.Error(c, 500, "Gagal memulai transaksi")
+	}
+	tx.Exec(`DELETE FROM curriculum_class_distributions WHERE school_id = ? AND curriculum_teacher_load_id IN ?`, schoolID, body.IDs)
+	tx.Exec(`DELETE FROM curriculum_teacher_loads WHERE school_id = ? AND id IN ?`, schoolID, body.IDs)
+	if err := tx.Commit().Error; err != nil {
+		return utils.Error(c, 500, "Gagal menghapus beban guru", err.Error())
+	}
+	return utils.Success(c, 200, "Success Bulk Delete Curriculum Teacher Loads", fiber.Map{"deleted": count})
 }
 
 func (a *AppContext) CreateCurriculumClassDistribution(c *fiber.Ctx) error {
@@ -469,6 +832,96 @@ func (a *AppContext) CreateCurriculumClassDistribution(c *fiber.Ctx) error {
 
 	a.DB.Raw(curriculumClassDistributionQuery()+` WHERE ccd.id = ?`, row.ID).Scan(&row)
 	return utils.Success(c, 201, "Success Save Curriculum Class Distribution", row)
+}
+
+func (a *AppContext) BulkCreateCurriculumClassDistributions(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	var body struct {
+		CurriculumTeacherLoadID uint   `json:"curriculum_teacher_load_id"`
+		ClassIDs                []uint `json:"class_ids"`
+		WeeklyHours             int    `json:"weekly_hours"`
+		Notes                   string `json:"notes"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return utils.Error(c, 400, "Invalid request body")
+	}
+	if body.CurriculumTeacherLoadID == 0 {
+		return utils.Error(c, 400, "Beban guru wajib dipilih")
+	}
+	if len(body.ClassIDs) == 0 {
+		return utils.Error(c, 400, "Kelas wajib dipilih")
+	}
+	if len(body.ClassIDs) > 200 {
+		return utils.Error(c, 400, "Maksimal 200 kelas per distribusi")
+	}
+	if body.WeeklyHours <= 0 {
+		body.WeeklyHours = 2
+	}
+
+	var load curriculumTeacherLoadRow
+	a.DB.Raw(curriculumTeacherLoadQuery()+` WHERE ctl.id = ? AND ctl.school_id = ?`, body.CurriculumTeacherLoadID, schoolID).Scan(&load)
+	if load.ID == 0 {
+		return utils.Error(c, 404, "Beban guru tidak ditemukan")
+	}
+
+	validClassIDs := a.classesBelongToSchool(schoolID, body.ClassIDs)
+	created := 0
+	updated := 0
+	skipped := 0
+	var skippedConflicts []string
+	var skippedCapacity []string
+	var skippedInvalid []uint
+	notes := nullIfEmpty(body.Notes)
+
+	seen := map[uint]bool{}
+	for _, classID := range body.ClassIDs {
+		if _, ok := validClassIDs[classID]; !ok {
+			skippedInvalid = append(skippedInvalid, classID)
+			continue
+		}
+		if seen[classID] {
+			continue
+		}
+		seen[classID] = true
+
+		if msg := a.validateCurriculumDistributionConflict(schoolID, 0, body.CurriculumTeacherLoadID, classID); msg != "" {
+			skipped++
+			skippedConflicts = append(skippedConflicts, msg)
+			continue
+		}
+
+		var existingID uint
+		a.DB.Raw(`SELECT id FROM curriculum_class_distributions WHERE school_id = ? AND curriculum_teacher_load_id = ? AND class_id = ? LIMIT 1`, schoolID, body.CurriculumTeacherLoadID, classID).Scan(&existingID)
+
+		var currentTotal int
+		a.DB.Raw(`SELECT COALESCE(SUM(weekly_hours), 0) FROM curriculum_class_distributions WHERE school_id = ? AND curriculum_teacher_load_id = ? AND id <> COALESCE(NULLIF(?, 0), -1)`, schoolID, body.CurriculumTeacherLoadID, existingID).Scan(&currentTotal)
+		if currentTotal+body.WeeklyHours > load.MaxWeeklyHours {
+			skipped++
+			skippedCapacity = append(skippedCapacity, fmt.Sprintf("Kapasitas beban guru tidak cukup untuk kelas (maks %d JP, terpakai %d JP).", load.MaxWeeklyHours, currentTotal))
+			continue
+		}
+
+		a.DB.Exec(`
+			INSERT INTO curriculum_class_distributions (school_id, curriculum_teacher_load_id, class_id, weekly_hours, notes, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, NOW(), NOW())
+			ON CONFLICT (school_id, curriculum_teacher_load_id, class_id)
+			DO UPDATE SET weekly_hours = EXCLUDED.weekly_hours, notes = EXCLUDED.notes, updated_at = NOW()
+		`, schoolID, body.CurriculumTeacherLoadID, classID, body.WeeklyHours, notes)
+		if existingID > 0 {
+			updated++
+		} else {
+			created++
+		}
+	}
+
+	return utils.Success(c, 201, "Success Bulk Create Curriculum Class Distributions", fiber.Map{
+		"created":           created,
+		"updated":           updated,
+		"skipped":           skipped,
+		"skipped_conflicts": skippedConflicts,
+		"skipped_capacity":  skippedCapacity,
+		"skipped_invalid":   skippedInvalid,
+	})
 }
 
 func (a *AppContext) UpdateCurriculumClassDistribution(c *fiber.Ctx) error {
@@ -539,6 +992,31 @@ func (a *AppContext) DeleteCurriculumClassDistribution(c *fiber.Ctx) error {
 	}
 
 	return utils.Success(c, 200, "Success Delete Curriculum Class Distribution", row)
+}
+
+func (a *AppContext) BulkDeleteCurriculumClassDistributions(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	var body struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return utils.Error(c, 400, "Invalid request body")
+	}
+	if len(body.IDs) == 0 {
+		return utils.Error(c, 400, "Pilih minimal satu distribusi yang akan dihapus")
+	}
+	if len(body.IDs) > 500 {
+		return utils.Error(c, 400, "Maksimal 500 distribusi per penghapusan")
+	}
+
+	var count int64
+	a.DB.Raw(`SELECT COUNT(*) FROM curriculum_class_distributions WHERE school_id = ? AND id IN ?`, schoolID, body.IDs).Scan(&count)
+	if count == 0 {
+		return utils.Error(c, 404, "Tidak ada distribusi yang ditemukan")
+	}
+
+	a.DB.Exec(`DELETE FROM curriculum_class_distributions WHERE school_id = ? AND id IN ?`, schoolID, body.IDs)
+	return utils.Success(c, 200, "Success Bulk Delete Curriculum Class Distributions", fiber.Map{"deleted": count})
 }
 
 func (a *AppContext) CreateCurriculumScheduleSlot(c *fiber.Ctx) error {
@@ -838,18 +1316,33 @@ func (a *AppContext) BulkDeleteCurriculumScheduleSlots(c *fiber.Ctx) error {
 	})
 }
 
-func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
-	schoolID := c.Locals("schoolID").(uint)
+func (a *AppContext) validateScheduleReadiness(schoolID uint) (subjects []curriculumSubjectRow, rooms []curriculumRoomRow, teacherLoads []curriculumTeacherLoadRow, classDistributions []curriculumClassDistributionRow, scheduleSlots []curriculumScheduleSlotRow, issues []scheduleIssue) {
+	issues = make([]scheduleIssue, 0)
+	subjects, rooms, teacherLoads, classDistributions, scheduleSlots, _ = a.loadCurriculumOverviewData(schoolID)
 
-	subjects, rooms, teacherLoads, classDistributions, scheduleSlots, _ := a.loadCurriculumOverviewData(schoolID)
 	if len(teacherLoads) == 0 {
-		return utils.Error(c, 400, "Beban guru belum tersedia")
+		issues = append(issues, scheduleIssue{
+			Category: "data_kosong", Title: "Beban Guru Kosong", Location: "Menu Beban Guru",
+			Detail:   "Belum ada data guru + mapel + kapasitas JP.",
+			Solution: "Tambahkan beban guru (pilih guru, mapel, dan total kapasitas JP) pada menu Beban Guru.",
+			Route:    "/learning-admin/teacher-loads", ActionLabel: "Buka Beban Guru", Severity: "error",
+		})
 	}
 	if len(classDistributions) == 0 {
-		return utils.Error(c, 400, "Distribusi guru ke kelas belum tersedia")
+		issues = append(issues, scheduleIssue{
+			Category: "data_kosong", Title: "Distribusi Kelas Kosong", Location: "Menu Distribusi Guru ke Kelas",
+			Detail:   "Belum ada guru yang didistribusikan ke kelas/rombel.",
+			Solution: "Tentukan kelas yang diajar tiap guru beserta JP-nya pada menu Distribusi Guru ke Kelas.",
+			Route:    "/learning-admin/class-distributions", ActionLabel: "Buka Distribusi", Severity: "error",
+		})
 	}
 	if len(scheduleSlots) == 0 {
-		return utils.Error(c, 400, "Slot jadwal pembelajaran belum tersedia")
+		issues = append(issues, scheduleIssue{
+			Category: "data_kosong", Title: "Slot Jadwal Kosong", Location: "Menu Slot Jadwal",
+			Detail:   "Belum ada jam pelajaran (hari & sesi) yang dibuat.",
+			Solution: "Gunakan tombol 'Buat Slot Jadwal Cepat' pada menu Slot Jadwal untuk membuat jam pelajaran.",
+			Route:    "/learning-admin/schedule", ActionLabel: "Buka Slot Jadwal", Severity: "error",
+		})
 	}
 
 	sort.Slice(scheduleSlots, func(i, j int) bool {
@@ -859,49 +1352,108 @@ func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
 		return scheduleSlots[i].DayOrder < scheduleSlots[j].DayOrder
 	})
 
-	loadByID := map[uint]curriculumTeacherLoadRow{}
 	distributionTotals := map[uint]int{}
 	for _, load := range teacherLoads {
-		loadByID[load.ID] = load
+		distributionTotals[load.ID] = 0
 	}
 	for _, distribution := range classDistributions {
 		distributionTotals[distribution.CurriculumTeacherLoad] += distribution.WeeklyHours
 	}
-
-	issues := make([]string, 0)
 	for _, load := range teacherLoads {
 		total := distributionTotals[load.ID]
 		if total > load.MaxWeeklyHours {
-			issues = append(issues, fmt.Sprintf("Distribusi %s untuk %s melebihi kapasitas: %d/%d JP.", load.TeacherName, load.SubjectName, total, load.MaxWeeklyHours))
+			issues = append(issues, scheduleIssue{
+				Category: "kapasitas", Title: "Kapasitas Beban Guru",
+				Location: fmt.Sprintf("Guru '%s' · Mapel '%s'", load.TeacherName, load.SubjectName),
+				Detail:   fmt.Sprintf("Kapasitas %d JP, total distribusi kelas %d JP (kelebihan %d JP).", load.MaxWeeklyHours, total, total-load.MaxWeeklyHours),
+				Solution: "Perbesar 'Total Kapasitas JP' pada menu Beban Guru, atau kurangi distribusi kelasnya pada menu Distribusi Guru ke Kelas.",
+				Route:    "/learning-admin/teacher-loads", ActionLabel: "Buka Beban Guru", Severity: "error",
+			})
 		}
 	}
 
-	type classSubjectKey struct {
-		ClassID   uint
-		SubjectID uint
-	}
 	classSubjectHours := map[classSubjectKey]int{}
-	classSubjectTeacher := map[classSubjectKey]uint{}
+	classSubjectTeacherNames := map[classSubjectKey]map[string]bool{}
 	classSubjectName := map[classSubjectKey]string{}
 	classNameByKey := map[classSubjectKey]string{}
 	for _, distribution := range classDistributions {
-		key := classSubjectKey{
-			ClassID:   distribution.ClassID,
-			SubjectID: distribution.SubjectID,
-		}
+		key := classSubjectKey{ClassID: distribution.ClassID, SubjectID: distribution.SubjectID}
 		classSubjectHours[key] += distribution.WeeklyHours
-		if classSubjectTeacher[key] == 0 {
-			classSubjectTeacher[key] = distribution.TeacherID
-		} else if classSubjectTeacher[key] != distribution.TeacherID {
-			issues = append(issues, fmt.Sprintf("Mapel %s di kelas %s terdistribusi ke lebih dari satu guru. Tetapkan satu guru pengampu per kelas-mapel.", distribution.SubjectName, distribution.ClassName))
+		if classSubjectTeacherNames[key] == nil {
+			classSubjectTeacherNames[key] = map[string]bool{}
+		}
+		if teacherName := strings.TrimSpace(distribution.TeacherName); teacherName != "" {
+			classSubjectTeacherNames[key][teacherName] = true
 		}
 		classSubjectName[key] = distribution.SubjectName
 		classNameByKey[key] = distribution.ClassName
 	}
+	for key, teacherNames := range classSubjectTeacherNames {
+		if len(teacherNames) > 1 {
+			names := make([]string, 0, len(teacherNames))
+			for name := range teacherNames {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			issues = append(issues, scheduleIssue{
+				Category: "konflik_guru", Title: "Konflik Guru Pengampu",
+				Location: fmt.Sprintf("Mapel '%s' · Kelas '%s'", classSubjectName[key], classNameByKey[key]),
+				Detail:   fmt.Sprintf("Diajarkan %d guru sekaligus (%s).", len(names), strings.Join(names, ", ")),
+				Solution: "Hapus distribusi ganda pada menu Distribusi Guru ke Kelas sehingga satu kelas-mapel hanya memiliki satu guru pengampu.",
+				Route:    "/learning-admin/class-distributions", ActionLabel: "Buka Distribusi", Severity: "error",
+			})
+		}
+	}
 	subjectWeeklyHours := map[uint]int{}
-	subjectByID := map[uint]curriculumSubjectRow{}
 	for _, subject := range subjects {
 		subjectWeeklyHours[subject.ID] = subject.WeeklyHours
+	}
+	for key, totalHours := range classSubjectHours {
+		requiredHours := subjectWeeklyHours[key.SubjectID]
+		if requiredHours > 0 && totalHours != requiredHours {
+			issues = append(issues, scheduleIssue{
+				Category: "jp_tidak_cocok", Title: "JP Tidak Cocok",
+				Location: fmt.Sprintf("Mapel '%s' · Kelas '%s'", classSubjectName[key], classNameByKey[key]),
+				Detail:   fmt.Sprintf("Distribusi %d JP/minggu, kebutuhan mapel %d JP/minggu.", totalHours, requiredHours),
+				Solution: "Samakan JP distribusi pada menu Distribusi Guru ke Kelas dengan kolom 'JP/Minggu' pada menu Mapel (atau ubah kebutuhan JP di menu Mapel).",
+				Route:    "/learning-admin/class-distributions", ActionLabel: "Buka Distribusi", Severity: "error",
+			})
+		}
+	}
+	return subjects, rooms, teacherLoads, classDistributions, scheduleSlots, issues
+}
+
+func (a *AppContext) CheckCurriculumScheduleReadiness(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+	subjects, rooms, teacherLoads, classDistributions, scheduleSlots, issues := a.validateScheduleReadiness(schoolID)
+	return utils.Success(c, 200, "Success Check Schedule Readiness", fiber.Map{
+		"ready":  len(issues) == 0,
+		"issues": issues,
+		"summary": fiber.Map{
+			"subjects":            len(subjects),
+			"rooms":               len(rooms),
+			"teacher_loads":       len(teacherLoads),
+			"class_distributions": len(classDistributions),
+			"schedule_slots":      len(scheduleSlots),
+			"issues":              len(issues),
+		},
+	})
+}
+
+func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
+	schoolID := c.Locals("schoolID").(uint)
+
+	subjects, rooms, teacherLoads, classDistributions, scheduleSlots, issues := a.validateScheduleReadiness(schoolID)
+	if len(issues) > 0 {
+		return utils.ErrorData(c, 400, fmt.Sprintf("Generate dibatalkan: ada %d masalah data yang harus diperbaiki terlebih dahulu.", len(issues)), fiber.Map{"issues": issues})
+	}
+
+	loadByID := map[uint]curriculumTeacherLoadRow{}
+	for _, load := range teacherLoads {
+		loadByID[load.ID] = load
+	}
+	subjectByID := map[uint]curriculumSubjectRow{}
+	for _, subject := range subjects {
 		subjectByID[subject.ID] = subject
 	}
 	activeRoomsByType := map[string][]curriculumRoomRow{}
@@ -911,15 +1463,6 @@ func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
 		if room.IsActive {
 			activeRoomsByType[normalizeCurriculumRoomType(room.RoomType)] = append(activeRoomsByType[normalizeCurriculumRoomType(room.RoomType)], room)
 		}
-	}
-	for key, totalHours := range classSubjectHours {
-		requiredHours := subjectWeeklyHours[key.SubjectID]
-		if requiredHours > 0 && totalHours != requiredHours {
-			issues = append(issues, fmt.Sprintf("Distribusi %s di kelas %s adalah %d JP, sedangkan kebutuhan mapel per rombel adalah %d JP.", classSubjectName[key], classNameByKey[key], totalHours, requiredHours))
-		}
-	}
-	if len(issues) > 0 {
-		return utils.Error(c, 400, strings.Join(issues, " "))
 	}
 
 	type generatedSlotAssignment struct {
@@ -1120,7 +1663,16 @@ func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
 	for _, distribution := range distributionQueue {
 		load := loadByID[distribution.CurriculumTeacherLoad]
 		if load.ID == 0 {
-			issues = append(issues, fmt.Sprintf("Distribusi kelas %s tidak punya referensi beban guru yang valid.", distribution.ClassName))
+			issues = append(issues, scheduleIssue{
+				Category:    "referensi_invalid",
+				Title:       "Data Tidak Konsisten",
+				Location:    fmt.Sprintf("Kelas '%s'", distribution.ClassName),
+				Detail:      "Distribusi menunjuk ke beban guru yang sudah tidak ada (kemungkinan guru/mapel terhapus).",
+				Solution:    "Hapus distribusi ini pada menu Distribusi Guru ke Kelas, lalu buat ulang distribusinya.",
+				Route:       "/learning-admin/class-distributions",
+				ActionLabel: "Buka Distribusi",
+				Severity:    "error",
+			})
 			continue
 		}
 		ensureSlotMap(classOccupied, distribution.ClassID)
@@ -1169,11 +1721,29 @@ func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
 		}
 
 		if len(selectedSlots) == 0 {
-			issues = append(issues, fmt.Sprintf("Tidak ada slot tersedia untuk %s mengajar %s di kelas %s.", load.TeacherName, load.SubjectName, distribution.ClassName))
+			issues = append(issues, scheduleIssue{
+				Category:    "slot_tidak_cukup",
+				Title:       "Slot Jadwal Tidak Cukup",
+				Location:    fmt.Sprintf("Guru '%s' · Mapel '%s' · Kelas '%s'", load.TeacherName, load.SubjectName, distribution.ClassName),
+				Detail:      "Tidak ada slot kosong (guru atau kelas tersebut sudah penuh di semua slot).",
+				Solution:    "Tambah jumlah slot pada menu Slot Jadwal, kurangi beban mengajar guru pada menu Beban Guru, atau kurangi JP distribusi pada menu Distribusi Guru ke Kelas.",
+				Route:       "/learning-admin/schedule",
+				ActionLabel: "Buka Slot Jadwal",
+				Severity:    "warning",
+			})
 			continue
 		}
 		if len(selectedSlots) < distribution.WeeklyHours {
-			issues = append(issues, fmt.Sprintf("Alokasi %s di kelas %s hanya mendapat %d dari %d jam.", load.SubjectName, distribution.ClassName, len(selectedSlots), distribution.WeeklyHours))
+			issues = append(issues, scheduleIssue{
+				Category:    "alokasi_parsial",
+				Title:       "Alokasi Belum Lengkap",
+				Location:    fmt.Sprintf("Mapel '%s' · Kelas '%s'", load.SubjectName, distribution.ClassName),
+				Detail:      fmt.Sprintf("Hanya mendapat %d dari %d JP.", len(selectedSlots), distribution.WeeklyHours),
+				Solution:    "Tambah jumlah slot pada menu Slot Jadwal atau kurangi total kebutuhan JP agar alokasi lengkap.",
+				Route:       "/learning-admin/schedule",
+				ActionLabel: "Buka Slot Jadwal",
+				Severity:    "warning",
+			})
 		}
 
 		assignmentKey := classSubjectKeyWithTeacher{
@@ -1202,7 +1772,7 @@ func (a *AppContext) GenerateCurriculumSchedule(c *fiber.Ctx) error {
 	}
 
 	if len(assignments) == 0 {
-		return utils.Error(c, 400, "Generate gagal karena belum ada distribusi kelas yang bisa dijadwalkan")
+		return utils.ErrorData(c, 400, "Generate gagal: tidak ada satu pun distribusi yang berhasil dijadwalkan.", fiber.Map{"issues": issues})
 	}
 
 	type generatedLearningSubjectRow struct {
@@ -1288,6 +1858,12 @@ func (a *AppContext) loadCurriculumOverviewData(schoolID uint) ([]curriculumSubj
 
 	a.DB.Raw(curriculumSubjectQuery()+` WHERE cs.school_id = ? ORDER BY cs.name ASC`, schoolID).Scan(&subjects)
 	if len(subjects) > 0 {
+		pointer := make([]*curriculumSubjectRow, 0, len(subjects))
+		for index := range subjects {
+			pointer = append(pointer, &subjects[index])
+		}
+		a.lampirkanLevelHours(schoolID, pointer)
+
 		var subjectAssignments []struct {
 			CurriculumSubjectID uint `gorm:"column:curriculum_subject_id"`
 			TeacherID           uint `gorm:"column:teacher_id"`
@@ -1381,6 +1957,26 @@ func (a *AppContext) loadCurriculumOverviewData(schoolID uint) ([]curriculumSubj
 	return subjects, rooms, teacherLoads, classDistributions, scheduleSlots, generatedEntries
 }
 
+// lampirkanLevelHours mengisi JP per tingkat pada baris mapel yang akan dikirim
+// ke peramban, dalam satu kueri untuk seluruh baris.
+func (a *AppContext) lampirkanLevelHours(schoolID uint, rows []*curriculumSubjectRow) {
+	if len(rows) == 0 {
+		return
+	}
+	ids := make([]uint, 0, len(rows))
+	for _, row := range rows {
+		if row.ID != 0 {
+			ids = append(ids, row.ID)
+		}
+	}
+	perMapel := levelHoursForSubjects(a.DB, schoolID, ids)
+	for _, row := range rows {
+		items := perMapel[row.ID]
+		row.LevelHours = items
+		row.LevelHoursSummary = ringkasLevelHours(items)
+	}
+}
+
 func curriculumSubjectQuery() string {
 	return `
 		SELECT
@@ -1427,6 +2023,45 @@ func (a *AppContext) curriculumRoomBelongsToSchool(schoolID uint, roomID uint) b
 	var count int64
 	a.DB.Raw(`SELECT COUNT(*) FROM curriculum_rooms WHERE id = ? AND school_id = ?`, roomID, schoolID).Scan(&count)
 	return count > 0
+}
+
+func (a *AppContext) curriculumTeachersBelongToSchool(schoolID uint, teacherIDs []uint) map[uint]bool {
+	result := map[uint]bool{}
+	if len(teacherIDs) == 0 {
+		return result
+	}
+	var rows []uint
+	a.DB.Raw(`SELECT id FROM users WHERE school_id = ? AND role = 'GURU' AND id IN ?`, schoolID, teacherIDs).Scan(&rows)
+	for _, id := range rows {
+		result[id] = true
+	}
+	return result
+}
+
+func (a *AppContext) curriculumSubjectsBelongToSchool(schoolID uint, subjectIDs []uint) map[uint]bool {
+	result := map[uint]bool{}
+	if len(subjectIDs) == 0 {
+		return result
+	}
+	var rows []uint
+	a.DB.Raw(`SELECT id FROM curriculum_subjects WHERE school_id = ? AND id IN ?`, schoolID, subjectIDs).Scan(&rows)
+	for _, id := range rows {
+		result[id] = true
+	}
+	return result
+}
+
+func (a *AppContext) classesBelongToSchool(schoolID uint, classIDs []uint) map[uint]bool {
+	result := map[uint]bool{}
+	if len(classIDs) == 0 {
+		return result
+	}
+	var rows []uint
+	a.DB.Raw(`SELECT id FROM class WHERE school_id = ? AND id IN ?`, schoolID, classIDs).Scan(&rows)
+	for _, id := range rows {
+		result[id] = true
+	}
+	return result
 }
 
 func curriculumTeacherLoadQuery() string {

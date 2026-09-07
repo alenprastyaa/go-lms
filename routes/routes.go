@@ -23,7 +23,6 @@ func Register(app *fiber.App, db *gorm.DB, hub *realtime.Hub) {
 	registerAdmin(api, ctx)
 	registerAcademic(api, ctx)
 	registerMajors(api, ctx)
-	registerSPMB(api, ctx)
 	registerLearningAdmin(api, ctx)
 	registerAI(api, ctx)
 	registerPrivateChat(api, ctx)
@@ -35,6 +34,16 @@ func Register(app *fiber.App, db *gorm.DB, hub *realtime.Hub) {
 	registerNotifications(api, ctx)
 	registerPackages(api, ctx)
 	registerLandingCMS(api, ctx)
+	registerAssistant(api, ctx)
+}
+
+// Asisten AI yang dapat menjalankan aksi. Terbatas pada super admin dan admin
+// sekolah; peran lain tetap memakai chatbot tanya-jawab biasa.
+func registerAssistant(api fiber.Router, ctx *controllers.AppContext) {
+	r := api.Group("/assistant", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(),
+		middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN"))
+	r.Post("/chat", ctx.AskAssistant)
+	r.Post("/execute", ctx.ExecuteAssistantAction)
 }
 
 func registerLandingCMS(api fiber.Router, ctx *controllers.AppContext) {
@@ -78,7 +87,7 @@ func registerSchoolVisitTargets(api fiber.Router, ctx *controllers.AppContext) {
 
 func registerAI(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/ai", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
-	r.Post("/chat", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "ADMIN_SPMB", "GURU", "SISWA", "SARPRAS", "KOPERASI", "BENDAHARA"), ctx.AskSystemChatbot)
+	r.Post("/chat", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "GURU", "SISWA", "SARPRAS", "KOPERASI", "BENDAHARA"), ctx.AskSystemChatbot)
 }
 
 func registerAuth(api fiber.Router, ctx *controllers.AppContext) {
@@ -165,9 +174,6 @@ func registerPublic(api fiber.Router, ctx *controllers.AppContext) {
 	r.Get("/wilayah/provinces", ctx.GetPublicWilayahProvinces)
 	r.Get("/wilayah/regencies/:provinceCode", ctx.GetPublicWilayahRegencies)
 	r.Get("/wilayah/districts/:regencyCode", ctx.GetPublicWilayahDistricts)
-	r.Get("/spmb/options", ctx.GetSPMBPublicOptions)
-	r.Post("/spmb/register", ctx.RegisterSPMBApplicantPublic)
-	r.Get("/spmb/status/:token", ctx.GetSPMBApplicantPublicStatus)
 	r.Post("/student-registration", ctx.RegisterStudentPublic)
 	r.Get("/check-username", ctx.CheckUsernameAvailability)
 }
@@ -182,7 +188,7 @@ func registerReceipt(api fiber.Router, ctx *controllers.AppContext) {
 }
 
 func registerPrivateChat(api fiber.Router, ctx *controllers.AppContext) {
-	r := api.Group("/private-chat", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "ADMIN_SPMB", "KOPERASI", "BENDAHARA", "GURU", "SISWA"), middlewares.ModuleAllowed(ctx.DB, "private_chat"))
+	r := api.Group("/private-chat", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "KOPERASI", "BENDAHARA", "GURU", "SISWA"), middlewares.ModuleAllowed(ctx.DB, "private_chat"))
 	r.Get("/summary", ctx.GetPrivateChatSummary)
 	r.Get("/contacts", ctx.SearchPrivateChatContacts)
 	r.Get("/turn/ice-servers", ctx.GetPrivateChatTurnServers)
@@ -328,7 +334,7 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	d.Get("/parent", middlewares.RoleAllowed("ORANG_TUA"), ctx.GetParentDashboard)
 
 	announcements := api.Group("/announcements", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
-	announcements.Get("/dashboard", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "ADMIN_SPMB", "KOPERASI", "SARPRAS", "GURU", "SISWA"), ctx.GetDashboardAnnouncements)
+	announcements.Get("/dashboard", middlewares.RoleAllowed("SUPER_ADMIN", "ADMIN", "KOPERASI", "SARPRAS", "GURU", "SISWA"), ctx.GetDashboardAnnouncements)
 
 	adminAnnouncements := api.Group("/announcements", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN"))
 	adminAnnouncements.Get("/", ctx.GetSchoolAnnouncements)
@@ -379,26 +385,17 @@ func registerAdmin(api fiber.Router, ctx *controllers.AppContext) {
 
 func registerMajors(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/majors", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
-	r.Get("/", middlewares.RoleAllowed("ADMIN", "ADMIN_SPMB"), ctx.GetMajors)
+	r.Get("/", middlewares.RoleAllowed("ADMIN"), ctx.GetMajors)
 	r.Post("/", middlewares.RoleAllowed("ADMIN"), ctx.CreateMajor)
 	r.Put("/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateMajor)
 	r.Delete("/:id", middlewares.RoleAllowed("ADMIN"), ctx.DeleteMajor)
 }
 
-func registerSPMB(api fiber.Router, ctx *controllers.AppContext) {
-	r := api.Group("/spmb", middlewares.Auth(ctx.DB), middlewares.ExtractClaims(), middlewares.RoleAllowed("ADMIN", "ADMIN_SPMB"), middlewares.ModuleAllowed(ctx.DB, "spmb"))
-	r.Get("/overview", ctx.GetSPMBOverview)
-	r.Get("/applicants", ctx.GetSPMBApplicants)
-	r.Post("/applicants", ctx.CreateSPMBApplicant)
-	r.Put("/applicants/:id", ctx.UpdateSPMBApplicant)
-	r.Delete("/applicants/:id", ctx.DeleteSPMBApplicant)
-	r.Post("/applicants/:id/send-link", ctx.SendSPMBApplicantLink)
-	r.Post("/applicants/:id/convert", ctx.ConvertSPMBApplicantToStudent)
-}
-
 func registerAcademic(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/academic-periods", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	r.Get("/", middlewares.RoleAllowed("ADMIN", "GURU"), ctx.GetAcademicPeriods)
+	r.Get("/suggestion", middlewares.RoleAllowed("ADMIN"), ctx.GetAcademicYearSuggestion)
+	r.Post("/auto-setup", middlewares.RoleAllowed("ADMIN"), ctx.AutoCreateAcademicYear)
 	r.Post("/years", middlewares.RoleAllowed("ADMIN"), ctx.CreateAcademicYear)
 	r.Put("/years/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateAcademicYear)
 	r.Post("/years/:id/activate", middlewares.RoleAllowed("ADMIN"), ctx.ActivateAcademicYear)
@@ -410,16 +407,25 @@ func registerAcademic(api fiber.Router, ctx *controllers.AppContext) {
 func registerLearningAdmin(api fiber.Router, ctx *controllers.AppContext) {
 	r := api.Group("/learning", middlewares.Auth(ctx.DB), middlewares.ExtractClaims())
 	r.Get("/curriculum/overview", middlewares.RoleAllowed("ADMIN"), ctx.GetCurriculumOverview)
+	r.Get("/curriculum/readiness", middlewares.RoleAllowed("ADMIN"), ctx.CheckCurriculumScheduleReadiness)
+	r.Post("/curriculum/generate", middlewares.RoleAllowed("ADMIN"), ctx.GenerateCurriculumSchedule)
 	r.Post("/curriculum/subjects", middlewares.RoleAllowed("ADMIN"), ctx.CreateCurriculumSubject)
+	r.Post("/curriculum/subjects/bulk", middlewares.RoleAllowed("ADMIN"), ctx.BulkCreateCurriculumSubjects)
+	r.Post("/curriculum/subjects/bulk-delete", middlewares.RoleAllowed("ADMIN"), ctx.BulkDeleteCurriculumSubjects)
 	r.Put("/curriculum/subjects/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateCurriculumSubject)
 	r.Delete("/curriculum/subjects/:id", middlewares.RoleAllowed("ADMIN"), ctx.DeleteCurriculumSubject)
 	r.Post("/curriculum/rooms", middlewares.RoleAllowed("ADMIN"), ctx.CreateCurriculumRoom)
+	r.Post("/curriculum/rooms/bulk-delete", middlewares.RoleAllowed("ADMIN"), ctx.BulkDeleteCurriculumRooms)
 	r.Put("/curriculum/rooms/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateCurriculumRoom)
 	r.Delete("/curriculum/rooms/:id", middlewares.RoleAllowed("ADMIN"), ctx.DeleteCurriculumRoom)
 	r.Post("/curriculum/teacher-loads", middlewares.RoleAllowed("ADMIN"), ctx.CreateCurriculumTeacherLoad)
+	r.Post("/curriculum/teacher-loads/bulk", middlewares.RoleAllowed("ADMIN"), ctx.BulkCreateCurriculumTeacherLoads)
+	r.Post("/curriculum/teacher-loads/bulk-delete", middlewares.RoleAllowed("ADMIN"), ctx.BulkDeleteCurriculumTeacherLoads)
 	r.Put("/curriculum/teacher-loads/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateCurriculumTeacherLoad)
 	r.Delete("/curriculum/teacher-loads/:id", middlewares.RoleAllowed("ADMIN"), ctx.DeleteCurriculumTeacherLoad)
 	r.Post("/curriculum/class-distributions", middlewares.RoleAllowed("ADMIN"), ctx.CreateCurriculumClassDistribution)
+	r.Post("/curriculum/class-distributions/bulk", middlewares.RoleAllowed("ADMIN"), ctx.BulkCreateCurriculumClassDistributions)
+	r.Post("/curriculum/class-distributions/bulk-delete", middlewares.RoleAllowed("ADMIN"), ctx.BulkDeleteCurriculumClassDistributions)
 	r.Put("/curriculum/class-distributions/:id", middlewares.RoleAllowed("ADMIN"), ctx.UpdateCurriculumClassDistribution)
 	r.Delete("/curriculum/class-distributions/:id", middlewares.RoleAllowed("ADMIN"), ctx.DeleteCurriculumClassDistribution)
 	r.Post("/curriculum/schedule-slots", middlewares.RoleAllowed("ADMIN"), ctx.CreateCurriculumScheduleSlot)

@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 )
@@ -77,13 +78,15 @@ func GenerateCurriculumTopicSuggestionsWithGemini(input CurriculumTopicSuggestio
 	return topics, nil
 }
 
-func GenerateCurriculumTopicSuggestionsWithHuggingFace(input CurriculumTopicSuggestionInput) ([]string, error) {
+func GenerateCurriculumTopicSuggestionsWithAI(input CurriculumTopicSuggestionInput) ([]string, error) {
 	fallbackTopics := buildFallbackCurriculumTopicSuggestions(input)
 	prompt := buildCurriculumTopicSuggestionPrompt(input)
-	text, err := callHuggingFace(
+	text, err := callOpenRouterText(
+		"question-bank-topic-suggestions",
 		prompt,
 		"Anda adalah asisten kurikulum sekolah Indonesia yang hanya mengembalikan JSON valid tanpa markdown.",
 		0.3,
+		1200,
 	)
 	if err != nil {
 		return fallbackTopics, nil
@@ -405,48 +408,7 @@ func fallbackText(value, fallback string) string {
 	return fallback
 }
 
-func GenerateQuestionBankItemsWithGemini(input QuestionBankAIInput) ([]QuestionBankAIItem, error) {
-	if input.QuestionCount <= 0 {
-		input.QuestionCount = 5
-	}
-
-	systemMessage := "Anda adalah penyusun bank soal sekolah. Kembalikan JSON valid saja tanpa markdown, tanpa penjelasan tambahan."
-
-	// Default: 1 request untuk N soal (lebih hemat prompt_tokens dibanding batch).
-	// Jika JSON invalid/terpotong, fallback ke batch yang lebih kecil.
-	target := input.QuestionCount
-	for _, batch := range []int{target, minInt(5, target), minInt(3, target), 1} {
-		if batch <= 0 {
-			continue
-		}
-		batchInput := input
-		batchInput.QuestionCount = batch
-		prompt := buildQuestionBankPrompt(batchInput)
-
-		items, err := generateQuestionBankItemsWithGemini(prompt, systemMessage, input.QuestionType, batch)
-		if err != nil {
-			// Try smaller batch when JSON is invalid or truncated.
-			if strings.Contains(strings.ToLower(err.Error()), "json") {
-				continue
-			}
-			return nil, err
-		}
-
-		seen := make(map[string]bool, len(items))
-		unique := appendUniqueQuestionBankItems(nil, items, seen, batch, 0)
-		if len(unique) < batch {
-			// Incomplete; try smaller batch.
-			continue
-		}
-
-		unique = populateQuestionBankIllustrations(batchInput, unique)
-		return unique, nil
-	}
-
-	return nil, fmt.Errorf("AI gagal menghasilkan JSON bank soal yang valid. Coba generate ulang.")
-}
-
-func GenerateQuestionBankItemsWithHuggingFace(input QuestionBankAIInput) ([]QuestionBankAIItem, error) {
+func GenerateQuestionBankItemsWithAI(input QuestionBankAIInput) ([]QuestionBankAIItem, error) {
 	if input.QuestionCount <= 0 {
 		input.QuestionCount = 5
 	}
@@ -454,36 +416,82 @@ func GenerateQuestionBankItemsWithHuggingFace(input QuestionBankAIInput) ([]Ques
 	systemMessage := "Anda adalah penyusun bank soal sekolah. Kembalikan JSON valid saja tanpa markdown, tanpa penjelasan tambahan."
 
 	target := input.QuestionCount
-	for _, batch := range []int{target, minInt(5, target), minInt(3, target), 1} {
-		if batch <= 0 {
+	collected := make([]QuestionBankAIItem, 0, target)
+	seen := make(map[string]bool, target)
+	var lastErr error
+
+	// Kumpulkan sampai target terpenuhi. Ukuran batch mengecil bertahap kalau
+	// AI gagal/kurang, TAPI hasil tiap batch tetap diakumulasi -- versi lama
+	// mengembalikan batch kecil pertama yang berhasil, sehingga permintaan 50
+	// soal hanya menghasilkan 5.
+	for _, chunk := range []int{target, 10, 5, 1} {
+		if chunk <= 0 {
 			continue
 		}
-		batchInput := input
-		batchInput.QuestionCount = batch
-		prompt := buildQuestionBankPrompt(batchInput)
+		for len(collected) < target {
+			need := minInt(chunk, target-len(collected))
+			batchInput := input
+			batchInput.QuestionCount = need
+			// Sisipkan soal yang sudah ada agar AI tidak mengulang materi yang sama.
+			batchInput.AdditionalInstructions = appendAvoidDuplicateInstruction(input.AdditionalInstructions, collected)
 
-		items, err := generateQuestionBankItemsWithHuggingFace(prompt, systemMessage, input.QuestionType, batch)
-		if err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "json") {
-				continue
+			items, err := generateQuestionBankItems(buildQuestionBankPrompt(batchInput), systemMessage, input.QuestionType, need)
+			if err != nil {
+				lastErr = err
+				break
 			}
-			return nil, err
-		}
 
-		seen := make(map[string]bool, len(items))
-		unique := appendUniqueQuestionBankItems(nil, items, seen, batch, 0)
-		if len(unique) < batch {
-			continue
+			before := len(collected)
+			collected = appendUniqueQuestionBankItems(collected, items, seen, target, need)
+			if len(collected) == before {
+				// Tidak ada tambahan soal unik: turunkan ukuran batch.
+				break
+			}
 		}
-
-		unique = populateQuestionBankIllustrations(batchInput, unique)
-		return unique, nil
+		if len(collected) >= target {
+			break
+		}
 	}
 
-	return nil, fmt.Errorf("AI gagal menghasilkan JSON bank soal yang valid. Coba generate ulang.")
+	if len(collected) == 0 {
+		if lastErr != nil {
+			return nil, fmt.Errorf("AI gagal menghasilkan bank soal: %w", lastErr)
+		}
+		return nil, fmt.Errorf("AI gagal menghasilkan JSON bank soal yang valid. Coba generate ulang.")
+	}
+
+	log.Printf("question bank generate: diminta=%d dihasilkan=%d", target, len(collected))
+	return populateQuestionBankIllustrations(input, collected), nil
 }
 
-func generateQuestionBankItemsWithGemini(prompt, systemMessage, questionType string, questionCount int) ([]QuestionBankAIItem, error) {
+// appendAvoidDuplicateInstruction menambahkan daftar soal yang sudah dibuat ke
+// instruksi, supaya batch berikutnya tidak menghasilkan soal kembar.
+func appendAvoidDuplicateInstruction(base string, existing []QuestionBankAIItem) string {
+	if len(existing) == 0 {
+		return base
+	}
+	limit := len(existing)
+	if limit > 15 {
+		limit = 15
+	}
+	var builder strings.Builder
+	builder.WriteString(strings.TrimSpace(base))
+	if builder.Len() > 0 {
+		builder.WriteString(" ")
+	}
+	builder.WriteString("Jangan mengulang soal berikut yang sudah dibuat:")
+	for _, item := range existing[len(existing)-limit:] {
+		question := strings.TrimSpace(item.QuestionText)
+		if len(question) > 90 {
+			question = question[:90]
+		}
+		builder.WriteString(" - ")
+		builder.WriteString(question)
+	}
+	return builder.String()
+}
+
+func generateQuestionBankItems(prompt, systemMessage, questionType string, questionCount int) ([]QuestionBankAIItem, error) {
 	maxTokens := 1800
 	if questionCount > 0 {
 		maxTokens = 700 + (questionCount * 450)
@@ -511,33 +519,6 @@ func generateQuestionBankItemsWithGemini(prompt, systemMessage, questionType str
 	items, err := parseQuestionBankItemsFromJSON(extracted, questionType)
 	if err != nil {
 		return nil, fmt.Errorf("hasil OpenRouter tidak bisa diparsing sebagai JSON bank soal: %w", err)
-	}
-
-	return items, nil
-}
-
-func generateQuestionBankItemsWithHuggingFace(prompt, systemMessage, questionType string, questionCount int) ([]QuestionBankAIItem, error) {
-	maxTokens := 1800
-	if questionCount > 0 {
-		maxTokens = 700 + (questionCount * 450)
-		if maxTokens > 6000 {
-			maxTokens = 6000
-		}
-	}
-
-	text, err := callHuggingFaceJSONWithMaxTokens(prompt, systemMessage, 0.7, maxTokens)
-	if err != nil {
-		return nil, err
-	}
-
-	extracted := extractJSONObject(text)
-	if !json.Valid([]byte(extracted)) {
-		return nil, fmt.Errorf("hasil Hugging Face tidak bisa diparsing sebagai JSON bank soal: JSON tidak valid")
-	}
-
-	items, err := parseQuestionBankItemsFromJSON(extracted, questionType)
-	if err != nil {
-		return nil, fmt.Errorf("hasil Hugging Face tidak bisa diparsing sebagai JSON bank soal: %w", err)
 	}
 
 	return items, nil

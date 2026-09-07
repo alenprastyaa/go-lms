@@ -45,7 +45,7 @@ func buildSystemChatbotPrompt(input SystemChatbotInput) string {
 
 func GenerateSystemChatbotAnswer(input SystemChatbotInput) (string, error) {
 	systemMessage := "Anda adalah Qwen, asisten AI umum yang menjawab pertanyaan global dengan jelas, praktis, dan aman."
-	return callHuggingFaceText(buildSystemChatbotPrompt(input), systemMessage, 0.55)
+	return callOpenRouterText("system-chatbot", buildSystemChatbotPrompt(input), systemMessage, 0.55, 0)
 }
 
 func normalizeSystemChatbotHistory(history []SystemChatbotMessage) []string {

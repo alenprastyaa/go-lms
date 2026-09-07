@@ -2147,7 +2147,7 @@ func (a *AppContext) GetLearningQuestionBankTopicSuggestions(c *fiber.Ctx) error
 		curriculumName = "Kurikulum Merdeka"
 	}
 
-	topics, err := services.GenerateCurriculumTopicSuggestionsWithHuggingFace(services.CurriculumTopicSuggestionInput{
+	topics, err := services.GenerateCurriculumTopicSuggestionsWithAI(services.CurriculumTopicSuggestionInput{
 		SubjectName:    subject.Name,
 		ClassName:      subject.ClassName,
 		GradeLabel:     gradeLabel,
@@ -2212,7 +2212,7 @@ func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
 		return utils.Error(c, code, message)
 	}
 
-	items, err := services.GenerateQuestionBankItemsWithHuggingFace(services.QuestionBankAIInput{
+	items, err := services.GenerateQuestionBankItemsWithAI(services.QuestionBankAIInput{
 		SubjectName:            subject.Name,
 		ClassName:              subject.ClassName,
 		GradeLabel:             strings.TrimSpace(body.GradeLabel),
@@ -2230,7 +2230,7 @@ func (a *AppContext) GenerateLearningQuestionBankWithAI(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "Failed Generate Question Bank With AI", err.Error())
 	}
 	if len(items) == 0 {
-		return utils.Error(c, 500, "Failed Generate Question Bank With AI", "Hasil Hugging Face tidak valid untuk dijadikan bank soal")
+		return utils.Error(c, 500, "Failed Generate Question Bank With AI", "Hasil AI tidak valid untuk dijadikan bank soal")
 	}
 
 	return utils.Success(c, 200, "Success Generate Question Bank Preview", fiber.Map{
@@ -2768,7 +2768,7 @@ func (a *AppContext) GenerateLearningMaterialPptWithAI(c *fiber.Ctx) error {
 		return utils.Error(c, 400, "slide_count must be between 3 and 15")
 	}
 
-	outline, err := services.GeneratePowerPointOutlineWithHuggingFace(services.PowerPointAIInput{
+	outline, err := services.GeneratePowerPointOutlineWithAI(services.PowerPointAIInput{
 		SubjectName:            subject.Name,
 		ClassName:              subject.ClassName,
 		Topic:                  topic,
@@ -2805,7 +2805,7 @@ func (a *AppContext) GenerateTeachingModuleWithAI(c *fiber.Ctx) error {
 		return utils.Error(c, 400, validationMessage)
 	}
 
-	draft, err := services.GenerateTeachingModuleDraftWithHuggingFace(input)
+	draft, err := services.GenerateTeachingModuleDraftWithAI(input)
 	if err != nil {
 		return utils.Error(c, 500, "Failed Generate Teaching Module With AI", err.Error())
 	}
@@ -3077,7 +3077,7 @@ func (a *AppContext) GetTeachingModuleSuggestions(c *fiber.Ctx) error {
 		gradeLabel = subject.ClassName
 	}
 
-	suggestions, err := services.GenerateTeachingModuleSuggestionsWithHuggingFace(services.TeachingModuleSuggestionInput{
+	suggestions, err := services.GenerateTeachingModuleSuggestionsWithAI(services.TeachingModuleSuggestionInput{
 		SubjectName:    subject.Name,
 		ClassName:      subject.ClassName,
 		GradeLabel:     gradeLabel,

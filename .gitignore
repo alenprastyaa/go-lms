@@ -1,1 +1,6 @@
 .env
+# Binary hasil build & log runtime
+lms
+main
+*.log
+app

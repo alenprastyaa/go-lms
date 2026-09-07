@@ -192,7 +192,7 @@ func buildTeachingModulePrompt(input TeachingModuleAIInput) string {
 	return strings.Join(parts, "\n")
 }
 
-func GenerateTeachingModuleDraftWithHuggingFace(input TeachingModuleAIInput) (*TeachingModuleAIDraft, error) {
+func GenerateTeachingModuleDraftWithAI(input TeachingModuleAIInput) (*TeachingModuleAIDraft, error) {
 	if input.Meetings <= 0 {
 		input.Meetings = 1
 	}
@@ -259,7 +259,7 @@ func buildTeachingModuleSuggestionPrompt(input TeachingModuleSuggestionInput) st
 	return strings.Join(parts, "\n")
 }
 
-func GenerateTeachingModuleSuggestionsWithHuggingFace(input TeachingModuleSuggestionInput) (*TeachingModuleSuggestionCatalog, error) {
+func GenerateTeachingModuleSuggestionsWithAI(input TeachingModuleSuggestionInput) (*TeachingModuleSuggestionCatalog, error) {
 	if strings.TrimSpace(input.CurriculumName) == "" {
 		input.CurriculumName = "Kurikulum Merdeka"
 	}

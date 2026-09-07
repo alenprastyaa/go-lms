@@ -62,11 +62,11 @@ func UploadLocalFileToAlentest(filePath, fileName, mimeType string) (string, err
 	if err != nil {
 		return "", err
 	}
-	return uploadBytesToR2(context.Background(), content, baseName, mimeType)
+	return uploadBytes(context.Background(), content, baseName, mimeType)
 }
 
 func UploadBytesToR2(ctx context.Context, content []byte, originalName, contentType string) (string, error) {
-	return uploadBytesToR2(ctx, content, originalName, contentType)
+	return uploadBytes(ctx, content, originalName, contentType)
 }
 
 func UploadToR2(c *fiber.Ctx, fh *multipart.FileHeader) (string, error) {
@@ -84,7 +84,7 @@ func UploadToR2(c *fiber.Ctx, fh *multipart.FileHeader) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return uploadBytesToR2(c.Context(), content, fh.Filename, contentType)
+	return uploadBytes(c.Context(), content, fh.Filename, contentType)
 }
 
 func SaveUploadedChatAttachment(c *fiber.Ctx, fh *multipart.FileHeader) (*UploadedAsset, error) {
@@ -109,7 +109,7 @@ func SaveUploadedChatAttachment(c *fiber.Ctx, fh *multipart.FileHeader) (*Upload
 		return nil, err
 	}
 
-	url, err := uploadBytesToR2(c.Context(), normalizedContent, normalizedName, normalizedType)
+	url, err := uploadBytes(c.Context(), normalizedContent, normalizedName, normalizedType)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func SaveUploadedChatAttachment(c *fiber.Ctx, fh *multipart.FileHeader) (*Upload
 
 	if isPDFChatAttachment(normalizedType, normalizedName) {
 		if previewContent, previewName, previewType, previewErr := generatePDFPreview(content, normalizedName); previewErr == nil {
-			if previewURL, uploadErr := uploadBytesToR2(c.Context(), previewContent, previewName, previewType); uploadErr == nil {
+			if previewURL, uploadErr := uploadBytes(c.Context(), previewContent, previewName, previewType); uploadErr == nil {
 				asset.PreviewURL = previewURL
 				asset.PreviewName = previewName
 				asset.PreviewType = previewType

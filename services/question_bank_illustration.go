@@ -21,9 +21,11 @@ import (
 const defaultQuestionIllustrationModel = "black-forest-labs/FLUX.1-schnell"
 
 func generateQuestionIllustrationURL(input QuestionBankAIInput, item QuestionBankAIItem, index int) (string, error) {
-	apiKey := huggingFaceAPIKey()
+	// Nine Router hanya melayani teks, jadi pembuatan gambar memakai penyedia
+	// gambar terpisah lewat IMAGE_API_KEY. Kosongkan untuk mematikan fitur ini.
+	apiKey := questionIllustrationAPIKey()
 	if apiKey == "" {
-		return "", fmt.Errorf("HF_API_KEY belum diatur di server")
+		return "", fmt.Errorf("IMAGE_API_KEY belum diatur di server; fitur ilustrasi soal nonaktif")
 	}
 
 	prompt := buildQuestionIllustrationPrompt(input, item)
@@ -31,8 +33,8 @@ func generateQuestionIllustrationURL(input QuestionBankAIInput, item QuestionBan
 		return "", fmt.Errorf("prompt ilustrasi kosong")
 	}
 
-	model := huggingFaceImageModel()
-	apiURL := huggingFaceImageAPIURL(model)
+	model := questionIllustrationModel()
+	apiURL := questionIllustrationAPIURL(model)
 
 	payload := map[string]interface{}{
 		"inputs": prompt,
@@ -210,7 +212,16 @@ func slugifyForFileName(value string) string {
 	return strings.Trim(builder.String(), "-")
 }
 
-func huggingFaceImageModel() string {
+func questionIllustrationAPIKey() string {
+	for _, key := range []string{"IMAGE_API_KEY", "HF_API_KEY"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func questionIllustrationModel() string {
 	if model := strings.TrimSpace(os.Getenv("HUGGINGFACE_IMAGE_MODEL")); model != "" {
 		return model
 	}
@@ -220,7 +231,7 @@ func huggingFaceImageModel() string {
 	return defaultQuestionIllustrationModel
 }
 
-func huggingFaceImageAPIURL(model string) string {
+func questionIllustrationAPIURL(model string) string {
 	if endpoint := strings.TrimSpace(os.Getenv("HUGGINGFACE_IMAGE_API_URL")); endpoint != "" {
 		return endpoint
 	}

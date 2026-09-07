@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -479,4 +480,47 @@ func (a *AppContext) GetMyClass(c *fiber.Ctx) error {
 		return utils.Error(c, 404, "Homeroom class not found")
 	}
 	return utils.Success(c, 200, "Success Get Homeroom Class", row)
+}
+
+// Dipindahkan ke sini setelah modul SPMB dihapus; dipakai oleh handler kelas.
+func nullableUintFromRaw(value interface{}) (*uint, error) {
+	if value == nil {
+		return nil, nil
+	}
+	switch v := value.(type) {
+	case float64:
+		if v <= 0 {
+			return nil, nil
+		}
+		id := uint(v)
+		return &id, nil
+	case int:
+		if v <= 0 {
+			return nil, nil
+		}
+		id := uint(v)
+		return &id, nil
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return nil, nil
+		}
+		parsed, err := strconv.Atoi(trimmed)
+		if err != nil || parsed <= 0 {
+			return nil, err
+		}
+		id := uint(parsed)
+		return &id, nil
+	default:
+		text := strings.TrimSpace(fmt.Sprint(value))
+		if text == "" || text == "<nil>" {
+			return nil, nil
+		}
+		parsed, err := strconv.Atoi(text)
+		if err != nil || parsed <= 0 {
+			return nil, err
+		}
+		id := uint(parsed)
+		return &id, nil
+	}
 }

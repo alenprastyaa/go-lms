@@ -38,7 +38,7 @@ const (
 
 func isManageableSchoolUserRole(role string) bool {
 	switch utils.NormalizeRoleName(role) {
-	case "ADMIN", "ADMIN_SPMB", "GURU", "SARPRAS", "KOPERASI", "BENDAHARA", "ORANG_TUA":
+	case "ADMIN", "GURU", "SARPRAS", "KOPERASI", "BENDAHARA", "ORANG_TUA":
 		return true
 	default:
 		return false
@@ -185,7 +185,7 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 	var attendanceCheckoutDeadline interface{} = nil
 	var attendanceSeatMapColumns interface{} = nil
 	if user.SchoolID != nil {
-		_ = a.DB.Select("name", "logo_url", "attendance_latitude", "attendance_longitude", "attendance_radius_meters", "attendance_late_after_time", "attendance_checkout_deadline", "attendance_seat_map_columns", "inventory_module_enabled", "attendance_module_enabled", "attendance_teacher_module_enabled", "official_exam_module_enabled", "koperasi_module_enabled", "private_chat_module_enabled", "teaching_module_ai_enabled", "payroll_module_enabled", "spmb_module_enabled").Where("id = ?", *user.SchoolID).First(&school).Error
+		_ = a.DB.Select("name", "logo_url", "attendance_latitude", "attendance_longitude", "attendance_radius_meters", "attendance_late_after_time", "attendance_checkout_deadline", "attendance_seat_map_columns", "inventory_module_enabled", "attendance_module_enabled", "attendance_teacher_module_enabled", "official_exam_module_enabled", "koperasi_module_enabled", "private_chat_module_enabled", "teaching_module_ai_enabled", "payroll_module_enabled").Where("id = ?", *user.SchoolID).First(&school).Error
 		schoolName = school.Name
 		schoolLogo = school.LogoURL
 		schoolLatitude = school.AttendanceLatitude
@@ -206,7 +206,6 @@ func (a *AppContext) Login(c *fiber.Ctx) error {
 			"private_chat_module_enabled":       school.PrivateChatModuleEnabled,
 			"teaching_module_ai_enabled":        school.TeachingModuleAIEnabled,
 			"payroll_module_enabled":            school.PayrollModuleEnabled,
-			"spmb_module_enabled":               school.SPMBModuleEnabled,
 		}, "attendance_latitude": schoolLatitude, "attendance_longitude": schoolLongitude, "attendance_radius_meters": schoolRadius, "attendance_late_after_time": attendanceLateAfterTime, "attendance_checkout_deadline": attendanceCheckoutDeadline, "attendance_seat_map_columns": attendanceSeatMapColumns, "parent_email": user.ParentEmail, "phone_number": user.PhoneNumber, "profile_complete": isStudentProfileComplete(normalizedRole, user.FullName, user.ParentEmail, user.PhoneNumber), "profile_image": user.ProfileImage, "face_reference_image": user.FaceReferenceImage, "face_reference_descriptor": user.FaceReferenceDescriptor, "token": token,
 	})
 }
@@ -977,50 +976,63 @@ func xlsxStylesXML() string {
 }
 
 func xlsxTeacherTemplateSheetXML() string {
+	// Tata letak sengaja dibuat satu tabel saja: judul kolom lebih dahulu,
+	// baris pengisian tepat di bawahnya. Contoh ditulis sebagai keterangan,
+	// bukan sebagai baris tabel, supaya tidak tertukar dengan data yang diisi.
+	const headerRow = 11
+	const lastRow = 60
+
 	var builder strings.Builder
-	builder.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+	builder.WriteString(fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <dimension ref="A1:B40"/>
+  <dimension ref="A1:B%d"/>
   <sheetViews>
     <sheetView workbookViewId="0" showGridLines="0">
-      <pane ySplit="11" topLeftCell="A12" activePane="bottomLeft" state="frozen"/>
-      <selection pane="bottomLeft" activeCell="A12" sqref="A12"/>
+      <pane ySplit="%d" topLeftCell="A%d" activePane="bottomLeft" state="frozen"/>
+      <selection pane="bottomLeft" activeCell="B%d" sqref="B%d"/>
     </sheetView>
   </sheetViews>
   <sheetFormatPr defaultRowHeight="22"/>
   <cols>
-    <col min="1" max="1" width="10" customWidth="1"/>
-    <col min="2" max="2" width="44" customWidth="1"/>
+    <col min="1" max="1" width="8" customWidth="1"/>
+    <col min="2" max="2" width="52" customWidth="1"/>
   </cols>
   <sheetData>
-    <row r="1" ht="34" customHeight="1">` + xlsxStyledCell("A1", "Template Import Data Guru", 1) + `</row>
-    <row r="2" ht="30" customHeight="1">` + xlsxStyledCell("A2", "Gunakan template ini untuk menambahkan akun guru secara massal. Username dan password dibuat otomatis oleh sistem.", 3) + `</row>
-    <row r="4" ht="24" customHeight="1">` + xlsxStyledCell("A4", "Petunjuk Pengisian", 3) + `</row>
-    <row r="5" ht="40" customHeight="1">` + xlsxStyledCell("A5", "1", 4) + xlsxStyledCell("B5", "Template ini hanya membutuhkan Nama Lengkap. Username dan password akan dibuat otomatis oleh sistem.", 3) + `</row>
-    <row r="6" ht="30" customHeight="1">` + xlsxStyledCell("A6", "2", 4) + xlsxStyledCell("B6", "Role akan otomatis dibuat sebagai GURU. Jangan mengubah nama kolom pada baris header.", 3) + `</row>
-    <row r="7" ht="28" customHeight="1">` + xlsxStyledCell("A7", "3", 4) + xlsxStyledCell("B7", "Isi data guru mulai baris 12. Baris contoh hanya sebagai referensi format.", 3) + `</row>
-    <row r="9" ht="24" customHeight="1">` + xlsxStyledCell("A9", "Contoh Format", 4) + `</row>
-    <row r="10" ht="24" customHeight="1">` + xlsxStyledCell("A10", "1", 4) + xlsxStyledCell("B10", "Ahmad Fajri", 7) + `</row>
-    <row r="11" ht="24" customHeight="1">` + xlsxStyledCell("A11", "No.", 4) + xlsxStyledCell("B11", "Nama Lengkap", 4) + `</row>
-`)
+`, lastRow, headerRow, headerRow+1, headerRow+1, headerRow+1))
 
-	for row := 12; row <= 40; row++ {
+	builder.WriteString(`    <row r="1" ht="34" customHeight="1">` + xlsxStyledCell("A1", "Template Import Data Guru", 1) + `</row>` + "\n")
+	builder.WriteString(`    <row r="2" ht="30" customHeight="1">` + xlsxStyledCell("A2", "Isi daftar nama guru pada tabel di bawah, simpan berkas ini, lalu unggah kembali.", 2) + `</row>` + "\n")
+
+	builder.WriteString(`    <row r="4" ht="24" customHeight="1">` + xlsxStyledCell("A4", "Petunjuk Pengisian", 3) + `</row>` + "\n")
+	builder.WriteString(`    <row r="5" ht="32" customHeight="1">` + xlsxStyledCell("A5", "1", 4) + xlsxStyledCell("B5", "Template ini hanya membutuhkan Nama Lengkap. Satu baris untuk satu guru.", 3) + `</row>` + "\n")
+	builder.WriteString(`    <row r="6" ht="32" customHeight="1">` + xlsxStyledCell("A6", "2", 4) + xlsxStyledCell("B6", "Isi pada baris kosong di bawah judul kolom. Jangan mengubah atau menghapus baris judul kolom.", 3) + `</row>` + "\n")
+	builder.WriteString(`    <row r="7" ht="32" customHeight="1">` + xlsxStyledCell("A7", "3", 4) + xlsxStyledCell("B7", "Username dan kata sandi dibuat otomatis oleh sistem, jadi tidak perlu ditulis di sini.", 3) + `</row>` + "\n")
+	builder.WriteString(`    <row r="8" ht="32" customHeight="1">` + xlsxStyledCell("A8", "4", 4) + xlsxStyledCell("B8", "Angka pada kolom No. hanya penanda urutan. Baris yang dibiarkan kosong akan dilewati.", 3) + `</row>` + "\n")
+
+	builder.WriteString(`    <row r="10" ht="26" customHeight="1">` + xlsxStyledCell("A10", "Contoh isian pada kolom Nama Lengkap:  Ahmad Fajri", 6) + `</row>` + "\n")
+
+	builder.WriteString(fmt.Sprintf(`    <row r="%d" ht="26" customHeight="1">`, headerRow))
+	builder.WriteString(xlsxStyledCell(fmt.Sprintf("A%d", headerRow), "No.", 4))
+	builder.WriteString(xlsxStyledCell(fmt.Sprintf("B%d", headerRow), "Nama Lengkap", 4))
+	builder.WriteString("</row>\n")
+
+	for row := headerRow + 1; row <= lastRow; row++ {
 		builder.WriteString(fmt.Sprintf(`    <row r="%d" ht="22" customHeight="1">`, row))
-		builder.WriteString(xlsxStyledCell(fmt.Sprintf("A%d", row), fmt.Sprintf("%d", row-11), 4))
+		builder.WriteString(xlsxStyledCell(fmt.Sprintf("A%d", row), fmt.Sprintf("%d", row-headerRow), 4))
 		builder.WriteString(xlsxStyledCell(fmt.Sprintf("B%d", row), "", 5))
 		builder.WriteString("</row>\n")
 	}
 
-	builder.WriteString(`  </sheetData>
-  <autoFilter ref="A11:B40"/>
+	builder.WriteString(fmt.Sprintf(`  </sheetData>
+  <autoFilter ref="A%d:B%d"/>
   <mergeCells count="4">
     <mergeCell ref="A1:B1"/>
     <mergeCell ref="A2:B2"/>
     <mergeCell ref="A4:B4"/>
-    <mergeCell ref="A9:B9"/>
+    <mergeCell ref="A10:B10"/>
   </mergeCells>
   <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
-</worksheet>`)
+</worksheet>`, headerRow, lastRow))
 	return builder.String()
 }
 
@@ -1441,6 +1453,13 @@ func normalizeExcelHeader(value string) string {
 	lowered = strings.ReplaceAll(lowered, "_", " ")
 	lowered = strings.ReplaceAll(lowered, ".", " ")
 	lowered = strings.Join(strings.Fields(lowered), " ")
+
+	// Judul kolom selalu pendek. Kalimat panjang pada bagian petunjuk kebetulan
+	// bisa memuat kata yang sama, dan tanpa batasan ini baris petunjuk dapat
+	// keliru dianggap sebagai baris judul kolom.
+	if len(lowered) > 40 {
+		return ""
+	}
 	return lowered
 }
 
@@ -1917,7 +1936,7 @@ func (a *AppContext) UpdateUserSchool(c *fiber.Ctx) error {
 		return utils.Error(c, 404, "User school not found")
 	}
 	if !isManageableSchoolUserRole(current.Role) {
-		return utils.Error(c, 400, "Only school admin, admin SPMB, teacher, sarpras, koperasi, bendahara, and parent accounts can be updated here")
+		return utils.Error(c, 400, "Only school admin, teacher, sarpras, koperasi, bendahara, and parent accounts can be updated here")
 	}
 	nextUsername := current.Username
 	if body.Username != nil {
@@ -2007,7 +2026,7 @@ func (a *AppContext) DeleteUserSchool(c *fiber.Ctx) error {
 		return utils.Error(c, 404, "User school not found")
 	}
 	if !isManageableSchoolUserRole(current.Role) {
-		return utils.Error(c, 400, "Only school admin, admin SPMB, teacher, sarpras, koperasi, bendahara, and parent accounts can be deleted here")
+		return utils.Error(c, 400, "Only school admin, teacher, sarpras, koperasi, bendahara, and parent accounts can be deleted here")
 	}
 	if err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if current.Role == "ORANG_TUA" {
@@ -2054,11 +2073,10 @@ func (a *AppContext) GetMyProfile(c *fiber.Ctx) error {
 		PrivateChatModuleEnabled       bool     `json:"private_chat_module_enabled"`
 		TeachingModuleAIEnabled        bool     `json:"teaching_module_ai_enabled"`
 		PayrollModuleEnabled           bool     `json:"payroll_module_enabled"`
-		SPMBModuleEnabled              bool     `json:"spmb_module_enabled"`
 		ProfileComplete                bool     `json:"profile_complete"`
 	}
 	err := a.DB.Table("users u").
-		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, COALESCE(s.attendance_seat_map_columns, 4) as attendance_seat_map_columns, COALESCE(s.inventory_module_enabled, true) as inventory_module_enabled, COALESCE(s.attendance_module_enabled, true) as attendance_module_enabled, COALESCE(s.attendance_teacher_module_enabled, true) as attendance_teacher_module_enabled, COALESCE(s.official_exam_module_enabled, true) as official_exam_module_enabled, COALESCE(s.koperasi_module_enabled, true) as koperasi_module_enabled, COALESCE(s.private_chat_module_enabled, true) as private_chat_module_enabled, COALESCE(s.teaching_module_ai_enabled, true) as teaching_module_ai_enabled, COALESCE(s.payroll_module_enabled, true) as payroll_module_enabled, COALESCE(s.spmb_module_enabled, false) as spmb_module_enabled").
+		Select("u.id, u.full_name, u.username, u.role, u.school_id, u.parent_email, u.phone_number, u.profile_image, u.face_reference_image, u.face_reference_descriptor, s.name as school_name, s.logo_url as school_logo, s.attendance_latitude, s.attendance_longitude, s.attendance_radius_meters, s.attendance_late_after_time, s.attendance_checkout_deadline, COALESCE(s.attendance_seat_map_columns, 4) as attendance_seat_map_columns, COALESCE(s.inventory_module_enabled, true) as inventory_module_enabled, COALESCE(s.attendance_module_enabled, true) as attendance_module_enabled, COALESCE(s.attendance_teacher_module_enabled, true) as attendance_teacher_module_enabled, COALESCE(s.official_exam_module_enabled, true) as official_exam_module_enabled, COALESCE(s.koperasi_module_enabled, true) as koperasi_module_enabled, COALESCE(s.private_chat_module_enabled, true) as private_chat_module_enabled, COALESCE(s.teaching_module_ai_enabled, true) as teaching_module_ai_enabled, COALESCE(s.payroll_module_enabled, true) as payroll_module_enabled").
 		Joins("left join schools s on s.id = u.school_id").
 		Where("u.id = ?", userID).
 		Scan(&profile).Error

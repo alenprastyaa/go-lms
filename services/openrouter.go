@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -81,6 +82,27 @@ func openRouterModel() string {
 	return model
 }
 
+func openRouterTimeout() time.Duration {
+	if value := strings.TrimSpace(os.Getenv("OPENROUTER_TIMEOUT_SECONDS")); value != "" {
+		if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+	}
+	return 5 * time.Minute
+}
+
+func openRouterMaxTokens() int {
+	value := strings.TrimSpace(os.Getenv("OPENROUTER_MAX_TOKENS"))
+	if value == "" {
+		return 0
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit <= 0 {
+		return 0
+	}
+	return limit
+}
+
 func openRouterForceJSON() bool {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv("OPENROUTER_FORCE_JSON")))
 	return value == "1" || value == "true" || value == "yes"
@@ -101,10 +123,14 @@ func callOpenRouterText(purpose string, prompt, systemMessage string, temperatur
 		},
 		Temperature: temperature,
 	}
-	if maxTokens > 0 {
-		reqBody.MaxTokens = &maxTokens
-		reqBody.MaxCompletionTokens = &maxTokens
+	// Batas token dilepas secara default: model reasoning memakai sebagian budget
+	// untuk berpikir, sehingga plafon kecil membuat "content" balik kosong.
+	// Isi OPENROUTER_MAX_TOKENS bila suatu saat perlu dibatasi lagi.
+	if limit := openRouterMaxTokens(); limit > 0 {
+		reqBody.MaxTokens = &limit
+		reqBody.MaxCompletionTokens = &limit
 	}
+	_ = maxTokens
 	if openRouterForceJSON() {
 		reqBody.ResponseFormat = &openRouterResponseFormat{Type: "json_object"}
 	}
@@ -123,7 +149,8 @@ func callOpenRouterText(purpose string, prompt, systemMessage string, temperatur
 	req.Header.Set("HTTP-Referer", "https://school-system.local")
 	req.Header.Set("X-Title", "School System LMS")
 
-	client := &http.Client{Timeout: 90 * time.Second}
+	// Tanpa plafon token, generasi panjang bisa melewati 90 detik.
+	client := &http.Client{Timeout: openRouterTimeout()}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err

@@ -65,6 +65,19 @@ func main() {
 	}))
 	app.Static("/uploads", "./uploads")
 
+	// Dipakai healthcheck container dan load balancer untuk memastikan proses
+	// beserta koneksi database masih melayani permintaan.
+	app.Get("/api/health", func(c *fiber.Ctx) error {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return c.Status(503).JSON(fiber.Map{"status": "error", "database": "unavailable"})
+		}
+		if err := sqlDB.Ping(); err != nil {
+			return c.Status(503).JSON(fiber.Map{"status": "error", "database": "unreachable"})
+		}
+		return c.JSON(fiber.Map{"status": "ok", "database": "ok"})
+	})
+
 	realtimeHub := realtime.NewHub(db)
 	app.Get("/api/realtime/events", realtimeHub.FiberHandler)
 

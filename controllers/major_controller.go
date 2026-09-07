@@ -127,14 +127,6 @@ func (a *AppContext) DeleteMajor(c *fiber.Ctx) error {
 		return utils.Error(c, 404, "Jurusan tidak ditemukan")
 	}
 
-	var used int64
-	a.DB.Table("spmb_applicants").
-		Where("school_id = ? AND (? IN (first_major_id, second_major_id, third_major_id, accepted_major_id))", schoolID, current.ID).
-		Count(&used)
-	if used > 0 {
-		return utils.Error(c, 400, "Jurusan sudah dipakai di data SPMB. Nonaktifkan jurusan jika tidak ingin ditampilkan.")
-	}
-
 	if err := a.DB.Delete(&current).Error; err != nil {
 		return utils.Error(c, 500, "Gagal menghapus jurusan", err.Error())
 	}
