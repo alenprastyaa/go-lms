@@ -1405,11 +1405,43 @@ func (a *AppContext) validateScheduleReadiness(schoolID uint) (subjects []curric
 		}
 	}
 	subjectWeeklyHours := map[uint]int{}
+	subjectIDs := make([]uint, 0, len(subjects))
 	for _, subject := range subjects {
 		subjectWeeklyHours[subject.ID] = subject.WeeklyHours
+		subjectIDs = append(subjectIDs, subject.ID)
 	}
+
+	// Kebutuhan JP dapat berbeda tiap tingkat, jadi pembandingnya mengikuti
+	// tingkat kelas yang bersangkutan, bukan satu angka untuk semua tingkat.
+	levelPerSubject := levelHoursForSubjects(a.DB, schoolID, subjectIDs)
+	jamPerMapelTingkat := map[uint]map[uint]int{}
+	for subjectID, items := range levelPerSubject {
+		perTingkat := map[uint]int{}
+		for _, item := range items {
+			perTingkat[item.ClassLevelID] = item.WeeklyHours
+		}
+		jamPerMapelTingkat[subjectID] = perTingkat
+	}
+
+	tingkatPerKelas := map[uint]uint{}
+	var barisKelas []struct {
+		ID           uint  `gorm:"column:id"`
+		ClassLevelID *uint `gorm:"column:class_level_id"`
+	}
+	a.DB.Raw(`SELECT id, class_level_id FROM class WHERE school_id = ?`, schoolID).Scan(&barisKelas)
+	for _, baris := range barisKelas {
+		if baris.ClassLevelID != nil {
+			tingkatPerKelas[baris.ID] = *baris.ClassLevelID
+		}
+	}
+
 	for key, totalHours := range classSubjectHours {
 		requiredHours := subjectWeeklyHours[key.SubjectID]
+		if levelID, ada := tingkatPerKelas[key.ClassID]; ada {
+			if jam, adaJam := jamPerMapelTingkat[key.SubjectID][levelID]; adaJam && jam > 0 {
+				requiredHours = jam
+			}
+		}
 		if requiredHours > 0 && totalHours != requiredHours {
 			issues = append(issues, scheduleIssue{
 				Category: "jp_tidak_cocok", Title: "JP Tidak Cocok",
